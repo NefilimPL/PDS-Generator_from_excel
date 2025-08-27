@@ -34,10 +34,11 @@ import pandas as pd
 from PIL import Image, ImageTk
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.lib.utils import ImageReader
+from reportlab.lib.colors import HexColor
 import requests
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
+from tkinter import ttk, filedialog, messagebox, simpledialog, colorchooser
 from tkinter import font as tkfont
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
@@ -65,6 +66,8 @@ class DraggableElement:
         self.bold = False
         self.font_family = "Arial"
         self.auto_font = True
+        self.text_color = "black"
+        self.bg_color = "white"
         self._create_items()
 
     # ------------------------------------------------------------------
@@ -74,13 +77,14 @@ class DraggableElement:
             self.y,
             self.x + self.width,
             self.y + self.height,
-            fill="white",
+            fill=self.bg_color,
             outline="black",
         )
         self.label = self.canvas.create_text(
             self.x + self.width / 2,
             self.y + self.height / 2,
             text=self.text,
+            fill=self.text_color,
         )
         self.handle = self.canvas.create_rectangle(
             self.x + self.width - self.HANDLE_SIZE,
@@ -182,6 +186,8 @@ class DraggableElement:
             "height": self.height / scale,
             "font_size": self.font_size / scale,
             "bold": self.bold,
+            "text_color": self.text_color,
+            "bg_color": self.bg_color,
         }
 
     def sync_canvas(self):
@@ -212,6 +218,7 @@ class DraggableElement:
         self.apply_font()
         if self.auto_font:
             self.fit_text()
+        self.update_colors()
 
     def update_value(self, value):
         """Update displayed value (text or image)."""
@@ -251,10 +258,11 @@ class DraggableElement:
             except Exception:
                 pass
         # default: text
-        self.canvas.itemconfig(self.rect, fill="white")
+        self.canvas.itemconfig(self.rect, fill=self.bg_color)
         self.canvas.itemconfig(
             self.label,
             text=str(value),
+            fill=self.text_color,
             state="normal",
         )
         self.text = str(value)
@@ -282,6 +290,10 @@ class DraggableElement:
         self.font_size = max(1, size - 1)
         self.apply_font()
 
+    def update_colors(self):
+        self.canvas.itemconfig(self.rect, fill=self.bg_color)
+        self.canvas.itemconfig(self.label, fill=self.text_color)
+
 
 # ---------------------------------------------------------------------------
 # GUI Application
@@ -308,6 +320,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.selected_element = None
         self.page_width, self.page_height = self.PAGE_SIZES["A4"]
         self.scale = 1.0
+        self.zoom = 1.0
         self.setup_ui()
         self.update_idletasks()
         self.load_config(startup=True)
@@ -340,6 +353,11 @@ class PDSGeneratorGUI(tk.Tk):
         self.font_entry = ttk.Entry(format_frame, textvariable=self.font_size_var, width=4, state="disabled")
         self.font_entry.pack(side="left", padx=5)
         self.font_entry.bind("<Return>", lambda e: self.set_font_size())
+        ttk.Button(format_frame, text="Kolor", command=self.choose_text_color).pack(side="left", padx=2)
+        ttk.Button(format_frame, text="Tło", command=self.choose_bg_color).pack(side="left", padx=2)
+        ttk.Label(format_frame, text="Zoom:").pack(side="left", padx=(20,0))
+        self.zoom_var = tk.DoubleVar(value=1.0)
+        ttk.Scale(format_frame, from_=0.5, to=3.0, variable=self.zoom_var, command=self.change_zoom).pack(side="left")
 
         self.canvas_container = ttk.Frame(self)
         self.canvas_container.pack(side="left", fill="both", expand=True, padx=5, pady=5)
@@ -400,6 +418,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.time_label = ttk.Label(right_frame, text="")
         self.time_label.pack()
         self.draw_grid()
+        self.bind_all("<Delete>", self.delete_selected)
 
     # ------------------------------------------------------------------
     def browse_file(self):
@@ -611,6 +630,8 @@ class PDSGeneratorGUI(tk.Tk):
                 element.height = elconf.get("height", element.height) * self.scale
                 element.font_size = elconf.get("font_size", element.font_size) * self.scale
                 element.bold = elconf.get("bold", element.bold)
+                element.text_color = elconf.get("text_color", element.text_color)
+                element.bg_color = elconf.get("bg_color", element.bg_color)
                 element.sync_canvas()
                 self.elements[name] = element
                 if name in self.columns_vars:
@@ -657,9 +678,13 @@ class PDSGeneratorGUI(tk.Tk):
                             img = img.resize((int(element.width / self.scale), int(element.height / self.scale)), Image.LANCZOS)
                             c.drawImage(ImageReader(img), x, y, width=element.width / self.scale, height=element.height / self.scale)
                         except Exception:
+                            c.setFillColor(HexColor(element.text_color))
                             c.setFont("Helvetica-Bold" if element.bold else "Helvetica", element.font_size / self.scale)
                             c.drawString(x, y + (element.height / self.scale) / 2, str(value))
                     else:
+                        c.setFillColor(HexColor(element.bg_color))
+                        c.rect(x, y, element.width / self.scale, element.height / self.scale, fill=1, stroke=0)
+                        c.setFillColor(HexColor(element.text_color))
                         c.setFont("Helvetica-Bold" if element.bold else "Helvetica", element.font_size / self.scale)
                         c.drawString(x, y + (element.height / self.scale) / 2, str(value))
                 c.showPage()
@@ -682,7 +707,8 @@ class PDSGeneratorGUI(tk.Tk):
         container_h = self.canvas_container.winfo_height()
         if container_w <= 0 or container_h <= 0:
             return
-        new_scale = min(container_w / self.page_width, container_h / self.page_height)
+        base = min(container_w / self.page_width, container_h / self.page_height)
+        new_scale = base * self.zoom
         if new_scale <= 0:
             return
         factor = new_scale / self.scale
@@ -702,15 +728,19 @@ class PDSGeneratorGUI(tk.Tk):
 
     def draw_grid(self):
         self.canvas.delete("grid")
-        step = int(self.grid_size * self.scale)
+        step = self.grid_size * self.scale
         if step <= 0:
             return
-        w = int(self.page_width * self.scale)
-        h = int(self.page_height * self.scale)
-        for i in range(0, w, step):
-            self.canvas.create_line(i, 0, i, h, fill="#8c8c8c", tags="grid")
-        for i in range(0, h, step):
-            self.canvas.create_line(0, i, w, i, fill="#8c8c8c", tags="grid")
+        w = self.page_width * self.scale
+        h = self.page_height * self.scale
+        cols = int(w / step) + 1
+        rows = int(h / step) + 1
+        for i in range(cols):
+            x = int(round(i * step))
+            self.canvas.create_line(x, 0, x, int(h), fill="#8c8c8c", tags="grid")
+        for i in range(rows):
+            y = int(round(i * step))
+            self.canvas.create_line(0, y, int(w), y, fill="#8c8c8c", tags="grid")
         self.canvas.tag_lower("grid")
 
     def select_element(self, element):
@@ -764,6 +794,45 @@ class PDSGeneratorGUI(tk.Tk):
         el.font_size = size
         el.auto_font = False
         el.apply_font()
+
+    def choose_text_color(self):
+        el = self.selected_element
+        if not el:
+            return
+        color = colorchooser.askcolor(color=el.text_color)[1]
+        if color:
+            el.text_color = color
+            el.update_colors()
+
+    def choose_bg_color(self):
+        el = self.selected_element
+        if not el:
+            return
+        color = colorchooser.askcolor(color=el.bg_color)[1]
+        if color:
+            el.bg_color = color
+            el.update_colors()
+
+    def change_zoom(self, value):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return
+        if value <= 0:
+            return
+        self.zoom = value
+        self.resize_canvas()
+
+    def delete_selected(self, event=None):
+        el = self.selected_element
+        if not el:
+            return
+        name = el.name
+        self.remove_element(name)
+        if name in self.columns_vars:
+            self.columns_vars[name].set(False)
+        if name in self.static_vars:
+            self.static_vars[name].set(False)
 
     def _on_mousewheel(self, event):
         self.right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
