@@ -91,10 +91,13 @@ class DraggableElement:
         # Bind events for dragging and resizing
         self.canvas.tag_bind(self.rect, "<ButtonPress-1>", self.start_move)
         self.canvas.tag_bind(self.rect, "<B1-Motion>", self.moving)
+        self.canvas.tag_bind(self.rect, "<ButtonRelease-1>", self.stop_move)
         self.canvas.tag_bind(self.label, "<ButtonPress-1>", self.start_move)
         self.canvas.tag_bind(self.label, "<B1-Motion>", self.moving)
+        self.canvas.tag_bind(self.label, "<ButtonRelease-1>", self.stop_move)
         self.canvas.tag_bind(self.handle, "<ButtonPress-1>", self.start_resize)
         self.canvas.tag_bind(self.handle, "<B1-Motion>", self.resizing)
+        self.canvas.tag_bind(self.handle, "<ButtonRelease-1>", self.stop_resize)
         # Context menu for layering
         self.menu = tk.Menu(self.canvas, tearoff=0)
         self.menu.add_command(label="Przenieś na wierzch", command=self.bring_to_front)
@@ -127,19 +130,19 @@ class DraggableElement:
     def moving(self, event):
         dx = event.x - self.last_x
         dy = event.y - self.last_y
-        new_x = self.x + dx
-        new_y = self.y + dy
-        step = self.parent.grid_size * self.parent.scale
-        new_x = round(new_x / step) * step
-        new_y = round(new_y / step) * step
-        dx = new_x - self.x
-        dy = new_y - self.y
-        for item in (self.rect, self.label, self.handle):
-            self.canvas.move(item, dx, dy)
-        self.x = new_x
-        self.y = new_y
+        for item in (self.rect, self.label, self.handle, getattr(self, "image_id", None)):
+            if item:
+                self.canvas.move(item, dx, dy)
+        self.x += dx
+        self.y += dy
         self.last_x = event.x
         self.last_y = event.y
+
+    def stop_move(self, event):
+        step = self.parent.grid_size * self.parent.scale
+        self.x = round(self.x / step) * step
+        self.y = round(self.y / step) * step
+        self.sync_canvas()
 
     # ------------------------------------------------------------------
     def start_resize(self, event):
@@ -166,6 +169,11 @@ class DraggableElement:
             self.x + self.width,
             self.y + self.height,
         )
+        if hasattr(self, "image_id") and hasattr(self, "raw_image"):
+            resized = self.raw_image.resize((int(self.width), int(self.height)), Image.LANCZOS)
+            self.image_obj = ImageTk.PhotoImage(resized)
+            self.canvas.itemconfig(self.image_id, image=self.image_obj)
+            self.canvas.coords(self.image_id, self.x, self.y)
         self.canvas.coords(
             self.label,
             self.x + self.width / 2,
@@ -179,6 +187,12 @@ class DraggableElement:
             self.y + self.height,
         )
         self.fit_text()
+
+    def stop_resize(self, event):
+        step = self.parent.grid_size * self.parent.scale
+        self.width = round(self.width / step) * step
+        self.height = round(self.height / step) * step
+        self.sync_canvas()
 
     # ------------------------------------------------------------------
     def to_dict(self):
@@ -202,6 +216,11 @@ class DraggableElement:
             self.x + self.width,
             self.y + self.height,
         )
+        if hasattr(self, "image_id") and hasattr(self, "raw_image"):
+            resized = self.raw_image.resize((int(self.width), int(self.height)), Image.LANCZOS)
+            self.image_obj = ImageTk.PhotoImage(resized)
+            self.canvas.itemconfig(self.image_id, image=self.image_obj)
+            self.canvas.coords(self.image_id, self.x, self.y)
         self.canvas.coords(
             self.label,
             self.x + self.width / 2,
@@ -225,13 +244,15 @@ class DraggableElement:
             del self.image_id
             if hasattr(self, "image_obj"):
                 del self.image_obj
+            if hasattr(self, "raw_image"):
+                del self.raw_image
         if value is None:
             value = ""
         if isinstance(value, str) and value.lower().startswith("http"):
             try:
                 resp = requests.get(value, timeout=5)
-                img = Image.open(BytesIO(resp.content))
-                img = img.resize((int(self.width), int(self.height)))
+                self.raw_image = Image.open(BytesIO(resp.content))
+                img = self.raw_image.resize((int(self.width), int(self.height)), Image.LANCZOS)
                 self.image_obj = ImageTk.PhotoImage(img)
                 self.image_id = self.canvas.create_image(
                     self.x,
@@ -239,22 +260,26 @@ class DraggableElement:
                     anchor="nw",
                     image=self.image_obj,
                 )
+                for tag in (self.image_id,):
+                    self.canvas.tag_bind(tag, "<ButtonPress-1>", self.start_move)
+                    self.canvas.tag_bind(tag, "<B1-Motion>", self.moving)
+                    self.canvas.tag_bind(tag, "<ButtonRelease-1>", self.stop_move)
+                    self.canvas.tag_bind(tag, "<Button-3>", self.show_menu)
                 self.canvas.tag_raise(self.rect)
                 self.canvas.tag_raise(self.handle)
-                self.canvas.delete(self.label)
+                self.canvas.itemconfig(self.rect, fill="")
+                self.canvas.itemconfig(self.label, text="", state="hidden")
+                self.text = str(value)
                 return
             except Exception:
                 pass
         # default: text
-        self.canvas.delete(self.label)
-        self.label = self.canvas.create_text(
-            self.x + self.width / 2,
-            self.y + self.height / 2,
+        self.canvas.itemconfig(self.rect, fill="white")
+        self.canvas.itemconfig(
+            self.label,
             text=str(value),
+            state="normal",
         )
-        self.canvas.tag_bind(self.label, "<ButtonPress-1>", self.start_move)
-        self.canvas.tag_bind(self.label, "<B1-Motion>", self.moving)
-        self.canvas.tag_bind(self.label, "<Button-3>", self.show_menu)
         self.text = str(value)
         self.apply_font()
         self.fit_text()
@@ -353,6 +378,10 @@ class PDSGeneratorGUI(tk.Tk):
         right_frame = ttk.Frame(self.right_canvas)
         self.right_canvas.create_window((0,0), window=right_frame, anchor="nw")
         right_frame.bind("<Configure>", lambda e: self.right_canvas.configure(scrollregion=self.right_canvas.bbox("all")))
+        self.right_canvas.bind("<Enter>", lambda e: self.right_canvas.bind_all("<MouseWheel>", self._on_mousewheel))
+        self.right_canvas.bind("<Leave>", lambda e: self.right_canvas.unbind_all("<MouseWheel>"))
+        self.right_canvas.bind("<Button-4>", lambda e: self.right_canvas.yview_scroll(-1, "units"))
+        self.right_canvas.bind("<Button-5>", lambda e: self.right_canvas.yview_scroll(1, "units"))
 
         # Dynamic column checkboxes
         ttk.Label(right_frame, text="Kolumny z Excela:").pack(anchor="w")
@@ -365,16 +394,24 @@ class PDSGeneratorGUI(tk.Tk):
         self.static_frame = ttk.Frame(right_frame)
         self.static_frame.pack(fill="x")
         self.static_vars = {}
+        self.static_entries = {}
         for field in self.STATIC_FIELDS:
+            row = ttk.Frame(self.static_frame)
+            row.pack(fill="x", pady=2)
             var = tk.BooleanVar()
             chk = ttk.Checkbutton(
-                self.static_frame,
-                text=field,
+                row,
                 variable=var,
                 command=lambda f=field, v=var: self.toggle_static(f, v.get()),
             )
-            chk.pack(anchor="w")
+            chk.pack(side="left")
+            ttk.Label(row, text=field).pack(side="left")
+            entry_var = tk.StringVar(value=field)
+            entry = ttk.Entry(row, textvariable=entry_var, width=15)
+            entry.pack(side="left", padx=5)
+            entry_var.trace_add("write", lambda *a, f=field: self.update_static_value(f))
             self.static_vars[field] = var
+            self.static_entries[field] = entry_var
 
         # Row preview controls
         preview_frame = ttk.Frame(right_frame)
@@ -467,11 +504,18 @@ class PDSGeneratorGUI(tk.Tk):
 
     def toggle_static(self, name, state):
         if state:
+            value = self.static_entries[name].get()
             if name not in self.elements:
-                element = DraggableElement(self, self.canvas, name, name)
+                element = DraggableElement(self, self.canvas, name, value)
                 self.elements[name] = element
+            else:
+                self.elements[name].update_value(value)
         else:
             self.remove_element(name)
+
+    def update_static_value(self, name):
+        if name in self.elements:
+            self.elements[name].update_value(self.static_entries[name].get())
 
     def remove_element(self, name):
         element = self.elements.pop(name, None)
@@ -502,7 +546,7 @@ class PDSGeneratorGUI(tk.Tk):
                 if df is not None and 0 <= idx < len(df):
                     value = df.iloc[idx].get(col)
             else:
-                value = name
+                value = self.static_entries[name].get() if name in getattr(self, "static_entries", {}) else name
             element.update_value(value)
 
     # ------------------------------------------------------------------
@@ -555,6 +599,7 @@ class PDSGeneratorGUI(tk.Tk):
                     self.columns_vars[name].set(True)
                 if name in self.static_vars:
                     self.static_vars[name].set(True)
+                    self.static_entries[name].set(elconf.get("text", name))
 
     # ------------------------------------------------------------------
     def generate_pds(self):
@@ -591,7 +636,7 @@ class PDSGeneratorGUI(tk.Tk):
                         try:
                             resp = requests.get(value, timeout=5)
                             img = Image.open(BytesIO(resp.content))
-                            img = img.resize((int(element.width / self.scale), int(element.height / self.scale)))
+                            img = img.resize((int(element.width / self.scale), int(element.height / self.scale)), Image.LANCZOS)
                             c.drawImage(ImageReader(img), x, y, width=element.width / self.scale, height=element.height / self.scale)
                         except Exception:
                             c.setFont("Helvetica-Bold" if element.bold else "Helvetica", element.font_size / self.scale)
@@ -645,9 +690,9 @@ class PDSGeneratorGUI(tk.Tk):
         w = int(self.page_width * self.scale)
         h = int(self.page_height * self.scale)
         for i in range(0, w, step):
-            self.canvas.create_line(i, 0, i, h, fill="#d0d0d0", tags="grid")
+            self.canvas.create_line(i, 0, i, h, fill="#8c8c8c", tags="grid")
         for i in range(0, h, step):
-            self.canvas.create_line(0, i, w, i, fill="#d0d0d0", tags="grid")
+            self.canvas.create_line(0, i, w, i, fill="#8c8c8c", tags="grid")
         self.canvas.tag_lower("grid")
 
     def select_element(self, element):
@@ -698,6 +743,9 @@ class PDSGeneratorGUI(tk.Tk):
             return
         el.font_size = size
         el.apply_font()
+
+    def _on_mousewheel(self, event):
+        self.right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
 
 if __name__ == "__main__":

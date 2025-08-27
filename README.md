@@ -13,9 +13,10 @@ Po uruchomieniu aplikacji:
 1. Wybierz plik Excel zawierający dane.
 2. Zaznacz kolumny oraz pola statyczne, które chcesz umieścić na stronie.
 3. Wybierz rozmiar strony lub podaj własne w formacie `szerokośćxwysokość` (w punktach).
-4. Przeciągnij i zmień rozmiar elementów na polu konfiguracji z widoczną siatką; elementy przyciągają się do siatki.
-5. Użyj przycisków formatowania tekstu nad polem konfiguracji, aby zmienić pogrubienie lub wpisać dokładny rozmiar czcionki zaznaczonego elementu.
-6. Układ dopasowuje się do rozmiaru okna, zachowując proporcje strony.
-7. Zapisz konfigurację (zapamiętuje ostatni plik Excel i ustawienia pól) lub wygeneruj pliki PDF dla wszystkich wierszy Excela.
+4. Przeciągnij i zmień rozmiar elementów na polu konfiguracji z wyraźną siatką; elementy przyciągają się do siatki po puszczeniu przycisku.
+5. Listy po prawej stronie można przewijać kółkiem myszy. Pola statyczne posiadają dodatkowe okna, w których można wpisać własną wartość.
+6. Użyj przycisków formatowania tekstu nad polem konfiguracji, aby zmienić pogrubienie lub wpisać dokładny rozmiar czcionki zaznaczonego elementu.
+7. Układ dopasowuje się do rozmiaru okna, zachowując proporcje strony.
+8. Zapisz konfigurację (zapamiętuje ostatni plik Excel i ustawienia pól) lub wygeneruj pliki PDF dla wszystkich wierszy Excela.
 
 Wymagane biblioteki są instalowane automatycznie przy pierwszym uruchomieniu skryptu.
