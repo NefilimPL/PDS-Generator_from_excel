@@ -38,7 +38,7 @@ from reportlab.lib import colors
 import requests
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog, colorchooser
+from tkinter import ttk, filedialog, messagebox, colorchooser
 from tkinter import font as tkfont
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
@@ -374,6 +374,9 @@ class PDSGeneratorGUI(tk.Tk):
         self.canvas.bind("<Control-MouseWheel>", self.ctrl_zoom)
         self.canvas.bind("<Control-Button-4>", lambda e: self.ctrl_zoom(e, 120))
         self.canvas.bind("<Control-Button-5>", lambda e: self.ctrl_zoom(e, -120))
+        self.canvas.bind("<ButtonPress-2>", self.start_pan)
+        self.canvas.bind("<B2-Motion>", self.pan_canvas)
+        self.canvas.configure(scrollregion=(0, 0, self.page_width, self.page_height))
 
         right_container = ttk.Frame(self)
         right_container.pack(side="left", fill="y", padx=5, pady=5)
@@ -534,12 +537,10 @@ class PDSGeneratorGUI(tk.Tk):
         self.static_rows[name] = row
 
     def add_static_field(self):
-        name = simpledialog.askstring("Nowe pole", "Nazwa pola:")
-        if not name:
-            return
-        if name in self.static_vars:
-            messagebox.showerror("Błąd", "Pole o tej nazwie już istnieje")
-            return
+        idx = 1
+        while f"Static{idx}" in self.static_vars:
+            idx += 1
+        name = f"Static{idx}"
         self.create_static_row(name, "")
 
     def remove_static_field(self, name, row):
@@ -755,6 +756,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.snap_step = step
         w = self.page_width * self.scale
         h = self.page_height * self.scale
+        self.canvas.configure(scrollregion=(0, 0, w, h))
         cols = int(w / step) + 1
         rows = int(h / step) + 1
         for i in range(cols):
@@ -780,7 +782,21 @@ class PDSGeneratorGUI(tk.Tk):
             el.sync_canvas()
             el.apply_font()
         self.scale *= factor
+        new_step = self.grid_size * self.scale
+        for el in self.elements.values():
+            el.x = round(el.x / new_step) * new_step
+            el.y = round(el.y / new_step) * new_step
+            el.width = round(el.width / new_step) * new_step
+            el.height = round(el.height / new_step) * new_step
+            el.sync_canvas()
+            el.apply_font()
         self.draw_grid()
+
+    def start_pan(self, event):
+        self.canvas.scan_mark(event.x, event.y)
+
+    def pan_canvas(self, event):
+        self.canvas.scan_dragto(event.x, event.y, gain=1)
 
     def select_element(self, element):
         if self.selected_element and self.selected_element is not element:
