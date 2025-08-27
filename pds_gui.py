@@ -334,6 +334,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.scale = 1.0
         self.max_scale = 4.0
         self.min_scale = 1.0
+        self.margin = 100  # extra space around the page for panning
         self.snap_step = self.grid_size * self.scale
         self.setup_ui()
         self.update_idletasks()
@@ -374,14 +375,20 @@ class PDSGeneratorGUI(tk.Tk):
         self.canvas_container.pack(side="left", fill="both", expand=True, padx=5, pady=5)
         self.canvas_container.pack_propagate(False)
         self.canvas_container.bind("<Configure>", self.resize_canvas)
-        self.canvas = tk.Canvas(self.canvas_container, bg="white", width=self.page_width, height=self.page_height, highlightthickness=0)
+        self.canvas = tk.Canvas(
+            self.canvas_container,
+            bg="#b0b0b0",
+            width=self.page_width,
+            height=self.page_height,
+            highlightthickness=0,
+        )
         self.canvas.pack(expand=True)
         self.canvas.bind("<Control-MouseWheel>", self.ctrl_zoom)
         self.canvas.bind("<Control-Button-4>", lambda e: self.ctrl_zoom(e, 120))
         self.canvas.bind("<Control-Button-5>", lambda e: self.ctrl_zoom(e, -120))
         self.canvas.bind("<ButtonPress-2>", self.start_pan)
         self.canvas.bind("<B2-Motion>", self.pan_canvas)
-        self.canvas.configure(scrollregion=(0, 0, self.page_width, self.page_height))
+        self.canvas.configure(scrollregion=(-self.margin, -self.margin, self.page_width + self.margin, self.page_height + self.margin))
 
         zoom_frame = ttk.Frame(self.canvas_container)
         zoom_frame.place(relx=1.0, rely=1.0, anchor="se", x=-5, y=-5)
@@ -738,7 +745,7 @@ class PDSGeneratorGUI(tk.Tk):
         container_h = self.canvas_container.winfo_height()
         if container_w <= 0 or container_h <= 0:
             return
-        self.min_scale = min(container_w / self.page_width, container_h / self.page_height)
+        self.min_scale = min(1.0, container_w / self.page_width, container_h / self.page_height)
         if self.scale < self.min_scale:
             self.fit_to_window()
         else:
@@ -747,6 +754,7 @@ class PDSGeneratorGUI(tk.Tk):
 
     def draw_grid(self):
         self.canvas.delete("grid")
+        self.canvas.delete("page")
         step = self.grid_size * self.scale
         while step < 10:
             step *= 2
@@ -755,7 +763,8 @@ class PDSGeneratorGUI(tk.Tk):
         self.snap_step = step
         w = self.page_width * self.scale
         h = self.page_height * self.scale
-        self.canvas.configure(scrollregion=(0, 0, w, h))
+        self.canvas.configure(scrollregion=(-self.margin, -self.margin, w + self.margin, h + self.margin))
+        self.canvas.create_rectangle(0, 0, w, h, fill="white", outline="", tags="page")
         cols = int(w / step) + 1
         rows = int(h / step) + 1
         for i in range(cols):
@@ -765,9 +774,10 @@ class PDSGeneratorGUI(tk.Tk):
             y = int(round(i * step))
             self.canvas.create_line(0, y, int(w), y, fill="#9b9b9b", tags="grid")
         self.canvas.create_rectangle(0, 0, w, h, outline="black", tags="grid")
+        self.canvas.tag_lower("page")
         self.canvas.tag_lower("grid")
+        self.canvas.tag_raise("grid", "page")
         self.zoom_var.set(f"{int(self.scale*100)}%")
-
     def ctrl_zoom(self, event, delta=None):
         if delta is None:
             delta = event.delta
@@ -802,7 +812,7 @@ class PDSGeneratorGUI(tk.Tk):
         container_h = self.canvas_container.winfo_height()
         if container_w <= 0 or container_h <= 0:
             return
-        new_scale = self.min_scale
+        new_scale = min(1.0, container_w / self.page_width, container_h / self.page_height)
         factor = new_scale / self.scale
         for el in self.elements.values():
             el.x *= factor
