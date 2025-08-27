@@ -127,11 +127,13 @@ class DraggableElement:
         self.menu.tk_popup(event.x_root, event.y_root)
 
     def bring_to_front(self):
-        for item in (self.rect, self.label, self.handle):
+        items = [self.rect, self.label, self.handle, getattr(self, "image_id", None)]
+        for item in filter(None, items):
             self.canvas.tag_raise(item)
 
     def send_to_back(self):
-        for item in (self.rect, self.label, self.handle):
+        items = [self.rect, self.label, self.handle, getattr(self, "image_id", None)]
+        for item in filter(None, items):
             self.canvas.tag_lower(item)
 
     # ------------------------------------------------------------------
@@ -316,7 +318,7 @@ class PDSGeneratorGUI(tk.Tk):
         "B5": (516, 729),  # 176 x 250 mm
     }
 
-    grid_size = 20
+    grid_size = 10
 
     DEFAULT_STATIC_FIELDS = ["Data", "Naglowek", "Stopka"]
 
@@ -330,9 +332,12 @@ class PDSGeneratorGUI(tk.Tk):
         self.selected_element = None
         self.page_width, self.page_height = self.PAGE_SIZES["A4"]
         self.scale = 1.0
+        self.max_scale = 4.0
+        self.min_scale = 1.0
         self.snap_step = self.grid_size * self.scale
         self.setup_ui()
         self.update_idletasks()
+        self.resize_canvas()
         self.load_config(startup=True)
 
     # ------------------------------------------------------------------
@@ -365,18 +370,24 @@ class PDSGeneratorGUI(tk.Tk):
         self.font_entry.bind("<Return>", lambda e: self.set_font_size())
         ttk.Button(format_frame, text="Kolor", command=self.choose_text_color).pack(side="left", padx=2)
         ttk.Button(format_frame, text="Tło", command=self.choose_bg_color).pack(side="left", padx=2)
-        self.canvas_container = ttk.Frame(self)
+        self.canvas_container = tk.Frame(self, bg="#b0b0b0")
         self.canvas_container.pack(side="left", fill="both", expand=True, padx=5, pady=5)
         self.canvas_container.pack_propagate(False)
         self.canvas_container.bind("<Configure>", self.resize_canvas)
-        self.canvas = tk.Canvas(self.canvas_container, bg="lightgrey", width=self.page_width, height=self.page_height)
-        self.canvas.pack(expand=True, fill="both")
+        self.canvas = tk.Canvas(self.canvas_container, bg="white", width=self.page_width, height=self.page_height, highlightthickness=0)
+        self.canvas.pack(expand=True)
         self.canvas.bind("<Control-MouseWheel>", self.ctrl_zoom)
         self.canvas.bind("<Control-Button-4>", lambda e: self.ctrl_zoom(e, 120))
         self.canvas.bind("<Control-Button-5>", lambda e: self.ctrl_zoom(e, -120))
         self.canvas.bind("<ButtonPress-2>", self.start_pan)
         self.canvas.bind("<B2-Motion>", self.pan_canvas)
         self.canvas.configure(scrollregion=(0, 0, self.page_width, self.page_height))
+
+        zoom_frame = ttk.Frame(self.canvas_container)
+        zoom_frame.place(relx=1.0, rely=1.0, anchor="se", x=-5, y=-5)
+        ttk.Button(zoom_frame, text="Dopasuj", command=self.fit_to_window).pack(side="right")
+        self.zoom_var = tk.StringVar(value="100%")
+        ttk.Label(zoom_frame, textvariable=self.zoom_var).pack(side="right", padx=5)
 
         right_container = ttk.Frame(self)
         right_container.pack(side="left", fill="y", padx=5, pady=5)
@@ -727,31 +738,19 @@ class PDSGeneratorGUI(tk.Tk):
         container_h = self.canvas_container.winfo_height()
         if container_w <= 0 or container_h <= 0:
             return
-        new_scale = min(container_w / self.page_width, container_h / self.page_height)
-        if new_scale <= 0:
-            return
-        factor = new_scale / self.scale
-        self.canvas.config(width=self.page_width * new_scale, height=self.page_height * new_scale)
-        self.canvas.scale("all", 0, 0, factor, factor)
-        for el in self.elements.values():
-            el.x *= factor
-            el.y *= factor
-            el.width *= factor
-            el.height *= factor
-            el.font_size *= factor
-            el.sync_canvas()
-            el.apply_font()
-        self.scale = new_scale
-        if self.selected_element:
-            self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
-        self.draw_grid()
+        self.min_scale = min(container_w / self.page_width, container_h / self.page_height)
+        if self.scale < self.min_scale:
+            self.fit_to_window()
+        else:
+            self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
+            self.draw_grid()
 
     def draw_grid(self):
         self.canvas.delete("grid")
         step = self.grid_size * self.scale
-        while step < 20:
+        while step < 10:
             step *= 2
-        while step > 80:
+        while step > 40:
             step /= 2
         self.snap_step = step
         w = self.page_width * self.scale
@@ -761,16 +760,21 @@ class PDSGeneratorGUI(tk.Tk):
         rows = int(h / step) + 1
         for i in range(cols):
             x = int(round(i * step))
-            self.canvas.create_line(x, 0, x, int(h), fill="#8c8c8c", tags="grid")
+            self.canvas.create_line(x, 0, x, int(h), fill="#9b9b9b", tags="grid")
         for i in range(rows):
             y = int(round(i * step))
-            self.canvas.create_line(0, y, int(w), y, fill="#8c8c8c", tags="grid")
+            self.canvas.create_line(0, y, int(w), y, fill="#9b9b9b", tags="grid")
+        self.canvas.create_rectangle(0, 0, w, h, outline="black", tags="grid")
         self.canvas.tag_lower("grid")
+        self.zoom_var.set(f"{int(self.scale*100)}%")
 
     def ctrl_zoom(self, event, delta=None):
         if delta is None:
             delta = event.delta
         factor = 1.1 if delta > 0 else 0.9
+        new_scale = self.scale * factor
+        new_scale = max(self.min_scale, min(self.max_scale, new_scale))
+        factor = new_scale / self.scale
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
         for el in self.elements.values():
@@ -781,7 +785,7 @@ class PDSGeneratorGUI(tk.Tk):
             el.font_size *= factor
             el.sync_canvas()
             el.apply_font()
-        self.scale *= factor
+        self.scale = new_scale
         new_step = self.grid_size * self.scale
         for el in self.elements.values():
             el.x = round(el.x / new_step) * new_step
@@ -790,7 +794,29 @@ class PDSGeneratorGUI(tk.Tk):
             el.height = round(el.height / new_step) * new_step
             el.sync_canvas()
             el.apply_font()
+        self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
         self.draw_grid()
+
+    def fit_to_window(self):
+        container_w = self.canvas_container.winfo_width()
+        container_h = self.canvas_container.winfo_height()
+        if container_w <= 0 or container_h <= 0:
+            return
+        new_scale = self.min_scale
+        factor = new_scale / self.scale
+        for el in self.elements.values():
+            el.x *= factor
+            el.y *= factor
+            el.width *= factor
+            el.height *= factor
+            el.font_size *= factor
+            el.sync_canvas()
+            el.apply_font()
+        self.scale = new_scale
+        self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
+        self.draw_grid()
+        if self.selected_element:
+            self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
 
     def start_pan(self, event):
         self.canvas.scan_mark(event.x, event.y)
