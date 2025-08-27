@@ -39,6 +39,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from tkinter import font as tkfont
 
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
+
 # ---------------------------------------------------------------------------
 # Model classes
 # ---------------------------------------------------------------------------
@@ -125,10 +127,17 @@ class DraggableElement:
     def moving(self, event):
         dx = event.x - self.last_x
         dy = event.y - self.last_y
+        new_x = self.x + dx
+        new_y = self.y + dy
+        step = self.parent.grid_size * self.parent.scale
+        new_x = round(new_x / step) * step
+        new_y = round(new_y / step) * step
+        dx = new_x - self.x
+        dy = new_y - self.y
         for item in (self.rect, self.label, self.handle):
             self.canvas.move(item, dx, dy)
-        self.x += dx
-        self.y += dy
+        self.x = new_x
+        self.y = new_y
         self.last_x = event.x
         self.last_y = event.y
 
@@ -141,8 +150,13 @@ class DraggableElement:
     def resizing(self, event):
         dx = event.x - self.last_x
         dy = event.y - self.last_y
-        self.width += dx
-        self.height += dy
+        step = self.parent.grid_size * self.parent.scale
+        new_width = max(step, self.width + dx)
+        new_height = max(step, self.height + dy)
+        new_width = round(new_width / step) * step
+        new_height = round(new_height / step) * step
+        self.width = new_width
+        self.height = new_height
         self.last_x = event.x
         self.last_y = event.y
         self.canvas.coords(
@@ -168,16 +182,40 @@ class DraggableElement:
 
     # ------------------------------------------------------------------
     def to_dict(self):
+        scale = self.parent.scale
         return {
             "name": self.name,
             "text": self.text,
-            "x": self.x,
-            "y": self.y,
-            "width": self.width,
-            "height": self.height,
-            "font_size": self.font_size,
+            "x": self.x / scale,
+            "y": self.y / scale,
+            "width": self.width / scale,
+            "height": self.height / scale,
+            "font_size": self.font_size / scale,
             "bold": self.bold,
         }
+
+    def sync_canvas(self):
+        self.canvas.coords(
+            self.rect,
+            self.x,
+            self.y,
+            self.x + self.width,
+            self.y + self.height,
+        )
+        self.canvas.coords(
+            self.label,
+            self.x + self.width / 2,
+            self.y + self.height / 2,
+        )
+        self.canvas.coords(
+            self.handle,
+            self.x + self.width - self.HANDLE_SIZE,
+            self.y + self.height - self.HANDLE_SIZE,
+            self.x + self.width,
+            self.y + self.height,
+        )
+        self.apply_font()
+        self.fit_text()
 
     def update_value(self, value):
         """Update displayed value (text or image)."""
@@ -253,6 +291,8 @@ class PDSGeneratorGUI(tk.Tk):
         "B5": (516, 729),  # 176 x 250 mm
     }
 
+    grid_size = 20
+
     STATIC_FIELDS = ["Data", "Naglowek", "Stopka"]
 
     def __init__(self):
@@ -263,7 +303,11 @@ class PDSGeneratorGUI(tk.Tk):
         self.dataframes = {}
         self.elements = {}
         self.selected_element = None
+        self.page_width, self.page_height = self.PAGE_SIZES["A4"]
+        self.scale = 1.0
         self.setup_ui()
+        self.update_idletasks()
+        self.load_config(startup=True)
 
     # ------------------------------------------------------------------
     def setup_ui(self):
@@ -288,10 +332,16 @@ class PDSGeneratorGUI(tk.Tk):
         ttk.Button(format_frame, text="B", command=self.toggle_bold).pack(side="left")
         ttk.Button(format_frame, text="A+", command=self.increase_font).pack(side="left", padx=2)
         ttk.Button(format_frame, text="A-", command=self.decrease_font).pack(side="left")
+        self.font_size_var = tk.StringVar()
+        self.font_entry = ttk.Entry(format_frame, textvariable=self.font_size_var, width=4, state="disabled")
+        self.font_entry.pack(side="left", padx=5)
+        self.font_entry.bind("<Return>", lambda e: self.set_font_size())
 
-        self.canvas = tk.Canvas(self, bg="lightgrey", width=595, height=842)
-        self.canvas.pack(side="left", fill="both", expand=True, padx=5, pady=5)
-        self.canvas.bind("<Configure>", lambda e: self.draw_grid())
+        self.canvas_container = ttk.Frame(self)
+        self.canvas_container.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+        self.canvas_container.bind("<Configure>", self.resize_canvas)
+        self.canvas = tk.Canvas(self.canvas_container, bg="lightgrey", width=self.page_width, height=self.page_height)
+        self.canvas.pack(expand=True)
 
         right_container = ttk.Frame(self)
         right_container.pack(side="left", fill="y", padx=5, pady=5)
@@ -354,7 +404,8 @@ class PDSGeneratorGUI(tk.Tk):
             self.path_var.set(path)
             self.excel_path = path
             self.load_excel(path)
-            self.load_config()
+            self.load_config(path=path)
+            self.save_config()
 
     def load_excel(self, path):
         try:
@@ -393,8 +444,17 @@ class PDSGeneratorGUI(tk.Tk):
                 return
         else:
             size = self.PAGE_SIZES.get(value, self.PAGE_SIZES["A4"])
-        self.canvas.config(width=size[0], height=size[1])
-        self.draw_grid()
+        factor_w = size[0] / self.page_width
+        factor_h = size[1] / self.page_height
+        self.page_width, self.page_height = size
+        for el in self.elements.values():
+            el.x *= factor_w
+            el.y *= factor_h
+            el.width *= factor_w
+            el.height *= factor_h
+            el.font_size *= factor_h
+            el.sync_canvas()
+        self.resize_canvas()
 
     # ------------------------------------------------------------------
     def toggle_column(self, name, state):
@@ -422,6 +482,8 @@ class PDSGeneratorGUI(tk.Tk):
                 self.canvas.delete(element.image_id)
             if self.selected_element is element:
                 self.selected_element = None
+                self.font_entry.configure(state="disabled")
+                self.font_size_var.set("")
 
     # ------------------------------------------------------------------
     def preview_row(self):
@@ -449,58 +511,46 @@ class PDSGeneratorGUI(tk.Tk):
             messagebox.showerror("Błąd", "Najpierw wybierz plik Excel")
             return
         config = {
-            "page_size": self.canvas.winfo_width(),
-            "page_height": self.canvas.winfo_height(),
+            "excel_path": self.excel_path,
+            "page_width": self.page_width,
+            "page_height": self.page_height,
             "elements": [el.to_dict() for el in self.elements.values()],
         }
-        config_path = os.path.join(os.path.dirname(self.excel_path), "config.json")
-        with open(config_path, "w", encoding="utf-8") as f:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
-        messagebox.showinfo("Zapisano", f"Zapisano konfigurację do {config_path}")
+        messagebox.showinfo("Zapisano", f"Zapisano konfigurację do {CONFIG_FILE}")
 
-    def load_config(self):
-        config_path = os.path.join(os.path.dirname(self.excel_path), "config.json")
-        if not os.path.exists(config_path):
+    def load_config(self, startup=False, path=None):
+        if not os.path.exists(CONFIG_FILE):
             return
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 config = json.load(f)
         except Exception:
             return
-        self.canvas.config(width=config.get("page_size", 595), height=config.get("page_height", 842))
+        excel_cfg = config.get("excel_path")
+        if startup and excel_cfg and os.path.exists(excel_cfg):
+            self.excel_path = excel_cfg
+            self.path_var.set(excel_cfg)
+            self.load_excel(excel_cfg)
+        if path and excel_cfg != path:
+            return
+        self.page_width = config.get("page_width", self.page_width)
+        self.page_height = config.get("page_height", self.page_height)
+        self.size_var.set(f"{int(self.page_width)}x{int(self.page_height)}")
+        self.resize_canvas()
         for elconf in config.get("elements", []):
             name = elconf["name"]
             if name not in self.elements:
                 element = DraggableElement(self, self.canvas, name, elconf.get("text", name))
-                element.x = elconf.get("x", element.x)
-                element.y = elconf.get("y", element.y)
-                element.width = elconf.get("width", element.width)
-                element.height = elconf.get("height", element.height)
-                element.font_size = elconf.get("font_size", element.font_size)
+                element.x = elconf.get("x", element.x) * self.scale
+                element.y = elconf.get("y", element.y) * self.scale
+                element.width = elconf.get("width", element.width) * self.scale
+                element.height = elconf.get("height", element.height) * self.scale
+                element.font_size = elconf.get("font_size", element.font_size) * self.scale
                 element.bold = elconf.get("bold", element.bold)
-                self.canvas.coords(
-                    element.rect,
-                    element.x,
-                    element.y,
-                    element.x + element.width,
-                    element.y + element.height,
-                )
-                self.canvas.coords(
-                    element.label,
-                    element.x + element.width / 2,
-                    element.y + element.height / 2,
-                )
-                self.canvas.coords(
-                    element.handle,
-                    element.x + element.width - element.HANDLE_SIZE,
-                    element.y + element.height - element.HANDLE_SIZE,
-                    element.x + element.width,
-                    element.y + element.height,
-                )
-                element.apply_font()
-                element.fit_text()
+                element.sync_canvas()
                 self.elements[name] = element
-                # tick checkbox
                 if name in self.columns_vars:
                     self.columns_vars[name].set(True)
                 if name in self.static_vars:
@@ -520,8 +570,8 @@ class PDSGeneratorGUI(tk.Tk):
         output_dir = os.path.join(os.path.dirname(self.excel_path), "PDS")
         os.makedirs(output_dir, exist_ok=True)
 
-        page_width = self.canvas.winfo_width()
-        page_height = self.canvas.winfo_height()
+        page_width = self.page_width
+        page_height = self.page_height
 
         def worker():
             start_time = time.time()
@@ -535,18 +585,20 @@ class PDSGeneratorGUI(tk.Tk):
                         value = df.iloc[idx].get(col, "") if df is not None else ""
                     else:
                         value = name
-                    x = element.x
-                    y = page_height - element.y - element.height
+                    x = element.x / self.scale
+                    y = page_height - (element.y / self.scale) - (element.height / self.scale)
                     if isinstance(value, str) and value.lower().startswith("http"):
                         try:
                             resp = requests.get(value, timeout=5)
                             img = Image.open(BytesIO(resp.content))
-                            img = img.resize((int(element.width), int(element.height)))
-                            c.drawImage(ImageReader(img), x, y, width=element.width, height=element.height)
+                            img = img.resize((int(element.width / self.scale), int(element.height / self.scale)))
+                            c.drawImage(ImageReader(img), x, y, width=element.width / self.scale, height=element.height / self.scale)
                         except Exception:
-                            c.drawString(x, y + element.height / 2, str(value))
+                            c.setFont("Helvetica-Bold" if element.bold else "Helvetica", element.font_size / self.scale)
+                            c.drawString(x, y + (element.height / self.scale) / 2, str(value))
                     else:
-                        c.drawString(x, y + element.height / 2, str(value))
+                        c.setFont("Helvetica-Bold" if element.bold else "Helvetica", element.font_size / self.scale)
+                        c.drawString(x, y + (element.height / self.scale) / 2, str(value))
                 c.showPage()
                 c.save()
                 # Update progress
@@ -562,11 +614,36 @@ class PDSGeneratorGUI(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------------------------------------------
+    def resize_canvas(self, event=None):
+        container_w = self.canvas_container.winfo_width()
+        container_h = self.canvas_container.winfo_height()
+        if container_w <= 0 or container_h <= 0:
+            return
+        new_scale = min(container_w / self.page_width, container_h / self.page_height)
+        if new_scale <= 0:
+            return
+        factor = new_scale / self.scale
+        self.canvas.config(width=self.page_width * new_scale, height=self.page_height * new_scale)
+        self.canvas.scale("all", 0, 0, factor, factor)
+        for el in self.elements.values():
+            el.x *= factor
+            el.y *= factor
+            el.width *= factor
+            el.height *= factor
+            el.font_size *= factor
+            el.apply_font()
+        self.scale = new_scale
+        if self.selected_element:
+            self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
+        self.draw_grid()
+
     def draw_grid(self):
         self.canvas.delete("grid")
-        step = 20
-        w = self.canvas.winfo_width()
-        h = self.canvas.winfo_height()
+        step = int(self.grid_size * self.scale)
+        if step <= 0:
+            return
+        w = int(self.page_width * self.scale)
+        h = int(self.page_height * self.scale)
         for i in range(0, w, step):
             self.canvas.create_line(i, 0, i, h, fill="#d0d0d0", tags="grid")
         for i in range(0, h, step):
@@ -578,6 +655,12 @@ class PDSGeneratorGUI(tk.Tk):
             self.canvas.itemconfig(self.selected_element.rect, outline="black")
         self.selected_element = element
         self.canvas.itemconfig(element.rect, outline="red")
+        if element:
+            self.font_entry.configure(state="normal")
+            self.font_size_var.set(str(int(element.font_size / self.scale)))
+        else:
+            self.font_entry.configure(state="disabled")
+            self.font_size_var.set("")
 
     def toggle_bold(self):
         el = self.selected_element
@@ -590,16 +673,31 @@ class PDSGeneratorGUI(tk.Tk):
         el = self.selected_element
         if not el:
             return
-        el.font_size += 1
+        el.font_size += self.scale
         el.apply_font()
+        self.font_size_var.set(str(int(el.font_size / self.scale)))
 
     def decrease_font(self):
         el = self.selected_element
         if not el:
             return
-        if el.font_size > 1:
-            el.font_size -= 1
+        if el.font_size > self.scale:
+            el.font_size -= self.scale
             el.apply_font()
+            self.font_size_var.set(str(int(el.font_size / self.scale)))
+
+    def set_font_size(self):
+        el = self.selected_element
+        if not el:
+            return
+        try:
+            size = float(self.font_size_var.get()) * self.scale
+        except ValueError:
+            return
+        if size <= 0:
+            return
+        el.font_size = size
+        el.apply_font()
 
 
 if __name__ == "__main__":
