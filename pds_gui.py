@@ -37,6 +37,7 @@ import requests
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from tkinter import font as tkfont
 
 # ---------------------------------------------------------------------------
 # Model classes
@@ -57,6 +58,9 @@ class DraggableElement:
         self.y = canvas.winfo_height() // 2 - 20
         self.width = 100
         self.height = 40
+        self.font_size = 12
+        self.bold = False
+        self.font_family = "Arial"
         self._create_items()
 
     # ------------------------------------------------------------------
@@ -97,6 +101,9 @@ class DraggableElement:
         self.canvas.tag_bind(self.label, "<Button-3>", self.show_menu)
         self.canvas.tag_bind(self.handle, "<Button-3>", self.show_menu)
 
+        self.apply_font()
+        self.fit_text()
+
     # ------------------------------------------------------------------
     def show_menu(self, event):
         self.menu.tk_popup(event.x_root, event.y_root)
@@ -111,6 +118,7 @@ class DraggableElement:
 
     # ------------------------------------------------------------------
     def start_move(self, event):
+        self.parent.select_element(self)
         self.last_x = event.x
         self.last_y = event.y
 
@@ -126,6 +134,7 @@ class DraggableElement:
 
     # ------------------------------------------------------------------
     def start_resize(self, event):
+        self.parent.select_element(self)
         self.last_x = event.x
         self.last_y = event.y
 
@@ -155,6 +164,7 @@ class DraggableElement:
             self.x + self.width,
             self.y + self.height,
         )
+        self.fit_text()
 
     # ------------------------------------------------------------------
     def to_dict(self):
@@ -165,6 +175,8 @@ class DraggableElement:
             "y": self.y,
             "width": self.width,
             "height": self.height,
+            "font_size": self.font_size,
+            "bold": self.bold,
         }
 
     def update_value(self, value):
@@ -201,11 +213,33 @@ class DraggableElement:
             self.x + self.width / 2,
             self.y + self.height / 2,
             text=str(value),
-            width=self.width,
         )
         self.canvas.tag_bind(self.label, "<ButtonPress-1>", self.start_move)
         self.canvas.tag_bind(self.label, "<B1-Motion>", self.moving)
         self.canvas.tag_bind(self.label, "<Button-3>", self.show_menu)
+        self.text = str(value)
+        self.apply_font()
+        self.fit_text()
+
+    def apply_font(self):
+        weight = "bold" if self.bold else "normal"
+        self.canvas.itemconfig(self.label, font=(self.font_family, int(self.font_size), weight))
+
+    def fit_text(self):
+        if hasattr(self, "image_id"):
+            return
+        size = 1
+        weight = "bold" if self.bold else "normal"
+        test_font = tkfont.Font(family=self.font_family, size=size, weight=weight)
+        while True:
+            width = test_font.measure(self.text)
+            height = test_font.metrics("linespace")
+            if width > self.width - 4 or height > self.height - 4:
+                break
+            size += 1
+            test_font.configure(size=size)
+        self.font_size = max(1, size - 1)
+        self.apply_font()
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +262,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.excel_path = ""
         self.dataframes = {}
         self.elements = {}
+        self.selected_element = None
         self.setup_ui()
 
     # ------------------------------------------------------------------
@@ -248,11 +283,26 @@ class PDSGeneratorGUI(tk.Tk):
         self.size_combo.pack(side="left")
         self.size_combo.bind("<<ComboboxSelected>>", lambda e: self.update_canvas_size())
 
+        format_frame = ttk.Frame(self)
+        format_frame.pack(fill="x", padx=5)
+        ttk.Button(format_frame, text="B", command=self.toggle_bold).pack(side="left")
+        ttk.Button(format_frame, text="A+", command=self.increase_font).pack(side="left", padx=2)
+        ttk.Button(format_frame, text="A-", command=self.decrease_font).pack(side="left")
+
         self.canvas = tk.Canvas(self, bg="lightgrey", width=595, height=842)
         self.canvas.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+        self.canvas.bind("<Configure>", lambda e: self.draw_grid())
 
-        right_frame = ttk.Frame(self)
-        right_frame.pack(side="left", fill="y", padx=5, pady=5)
+        right_container = ttk.Frame(self)
+        right_container.pack(side="left", fill="y", padx=5, pady=5)
+        self.right_canvas = tk.Canvas(right_container, width=300)
+        right_scroll = ttk.Scrollbar(right_container, orient="vertical", command=self.right_canvas.yview)
+        self.right_canvas.configure(yscrollcommand=right_scroll.set)
+        right_scroll.pack(side="right", fill="y")
+        self.right_canvas.pack(side="left", fill="both", expand=True)
+        right_frame = ttk.Frame(self.right_canvas)
+        self.right_canvas.create_window((0,0), window=right_frame, anchor="nw")
+        right_frame.bind("<Configure>", lambda e: self.right_canvas.configure(scrollregion=self.right_canvas.bbox("all")))
 
         # Dynamic column checkboxes
         ttk.Label(right_frame, text="Kolumny z Excela:").pack(anchor="w")
@@ -295,6 +345,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.progress.pack(fill="x", pady=(20, 0))
         self.time_label = ttk.Label(right_frame, text="")
         self.time_label.pack()
+        self.draw_grid()
 
     # ------------------------------------------------------------------
     def browse_file(self):
@@ -343,6 +394,7 @@ class PDSGeneratorGUI(tk.Tk):
         else:
             size = self.PAGE_SIZES.get(value, self.PAGE_SIZES["A4"])
         self.canvas.config(width=size[0], height=size[1])
+        self.draw_grid()
 
     # ------------------------------------------------------------------
     def toggle_column(self, name, state):
@@ -368,6 +420,8 @@ class PDSGeneratorGUI(tk.Tk):
                 self.canvas.delete(item)
             if hasattr(element, "image_id"):
                 self.canvas.delete(element.image_id)
+            if self.selected_element is element:
+                self.selected_element = None
 
     # ------------------------------------------------------------------
     def preview_row(self):
@@ -422,6 +476,8 @@ class PDSGeneratorGUI(tk.Tk):
                 element.y = elconf.get("y", element.y)
                 element.width = elconf.get("width", element.width)
                 element.height = elconf.get("height", element.height)
+                element.font_size = elconf.get("font_size", element.font_size)
+                element.bold = elconf.get("bold", element.bold)
                 self.canvas.coords(
                     element.rect,
                     element.x,
@@ -441,6 +497,8 @@ class PDSGeneratorGUI(tk.Tk):
                     element.x + element.width,
                     element.y + element.height,
                 )
+                element.apply_font()
+                element.fit_text()
                 self.elements[name] = element
                 # tick checkbox
                 if name in self.columns_vars:
@@ -502,6 +560,46 @@ class PDSGeneratorGUI(tk.Tk):
             messagebox.showinfo("Zakończono", f"Pliki zapisane w {output_dir}")
 
         threading.Thread(target=worker, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    def draw_grid(self):
+        self.canvas.delete("grid")
+        step = 20
+        w = self.canvas.winfo_width()
+        h = self.canvas.winfo_height()
+        for i in range(0, w, step):
+            self.canvas.create_line(i, 0, i, h, fill="#d0d0d0", tags="grid")
+        for i in range(0, h, step):
+            self.canvas.create_line(0, i, w, i, fill="#d0d0d0", tags="grid")
+        self.canvas.tag_lower("grid")
+
+    def select_element(self, element):
+        if self.selected_element and self.selected_element is not element:
+            self.canvas.itemconfig(self.selected_element.rect, outline="black")
+        self.selected_element = element
+        self.canvas.itemconfig(element.rect, outline="red")
+
+    def toggle_bold(self):
+        el = self.selected_element
+        if not el:
+            return
+        el.bold = not el.bold
+        el.apply_font()
+
+    def increase_font(self):
+        el = self.selected_element
+        if not el:
+            return
+        el.font_size += 1
+        el.apply_font()
+
+    def decrease_font(self):
+        el = self.selected_element
+        if not el:
+            return
+        if el.font_size > 1:
+            el.font_size -= 1
+            el.apply_font()
 
 
 if __name__ == "__main__":

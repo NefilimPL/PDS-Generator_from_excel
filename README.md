@@ -13,7 +13,8 @@ Po uruchomieniu aplikacji:
 1. Wybierz plik Excel zawierający dane.
 2. Zaznacz kolumny oraz pola statyczne, które chcesz umieścić na stronie.
 3. Wybierz rozmiar strony lub podaj własne w formacie `szerokośćxwysokość` (w punktach).
-4. Przeciągnij i zmień rozmiar elementów na polu konfiguracji.
-5. Zapisz konfigurację lub wygeneruj pliki PDF dla wszystkich wierszy Excela.
+4. Przeciągnij i zmień rozmiar elementów na polu konfiguracji z widoczną siatką.
+5. Użyj przycisków formatowania tekstu nad polem konfiguracji, aby zmienić pogrubienie i rozmiar czcionki zaznaczonego elementu.
+6. Zapisz konfigurację lub wygeneruj pliki PDF dla wszystkich wierszy Excela.
 
 Wymagane biblioteki są instalowane automatycznie przy pierwszym uruchomieniu skryptu.
