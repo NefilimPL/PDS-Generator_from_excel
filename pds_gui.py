@@ -5,6 +5,7 @@ import time
 import threading
 import subprocess
 import importlib
+import math
 from io import BytesIO
 
 # Automatically ensure required third-party modules are available
@@ -36,7 +37,7 @@ from reportlab.lib.utils import ImageReader
 import requests
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 from tkinter import font as tkfont
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
@@ -63,6 +64,7 @@ class DraggableElement:
         self.font_size = 12
         self.bold = False
         self.font_family = "Arial"
+        self.auto_font = True
         self._create_items()
 
     # ------------------------------------------------------------------
@@ -140,8 +142,8 @@ class DraggableElement:
 
     def stop_move(self, event):
         step = self.parent.grid_size * self.parent.scale
-        self.x = round(self.x / step) * step
-        self.y = round(self.y / step) * step
+        self.x = math.floor(self.x / step) * step
+        self.y = math.floor(self.y / step) * step
         self.sync_canvas()
 
     # ------------------------------------------------------------------
@@ -151,47 +153,21 @@ class DraggableElement:
         self.last_y = event.y
 
     def resizing(self, event):
-        dx = event.x - self.last_x
-        dy = event.y - self.last_y
         step = self.parent.grid_size * self.parent.scale
-        new_width = max(step, self.width + dx)
-        new_height = max(step, self.height + dy)
-        new_width = round(new_width / step) * step
-        new_height = round(new_height / step) * step
+        new_width = max(step, event.x - self.x)
+        new_height = max(step, event.y - self.y)
+        new_width = math.floor(new_width / step) * step
+        new_height = math.floor(new_height / step) * step
         self.width = new_width
         self.height = new_height
         self.last_x = event.x
         self.last_y = event.y
-        self.canvas.coords(
-            self.rect,
-            self.x,
-            self.y,
-            self.x + self.width,
-            self.y + self.height,
-        )
-        if hasattr(self, "image_id") and hasattr(self, "raw_image"):
-            resized = self.raw_image.resize((int(self.width), int(self.height)), Image.LANCZOS)
-            self.image_obj = ImageTk.PhotoImage(resized)
-            self.canvas.itemconfig(self.image_id, image=self.image_obj)
-            self.canvas.coords(self.image_id, self.x, self.y)
-        self.canvas.coords(
-            self.label,
-            self.x + self.width / 2,
-            self.y + self.height / 2,
-        )
-        self.canvas.coords(
-            self.handle,
-            self.x + self.width - self.HANDLE_SIZE,
-            self.y + self.height - self.HANDLE_SIZE,
-            self.x + self.width,
-            self.y + self.height,
-        )
-        self.fit_text()
+        self.sync_canvas()
 
     def stop_resize(self, event):
         step = self.parent.grid_size * self.parent.scale
-        self.width = round(self.width / step) * step
-        self.height = round(self.height / step) * step
+        self.width = math.floor(self.width / step) * step
+        self.height = math.floor(self.height / step) * step
         self.sync_canvas()
 
     # ------------------------------------------------------------------
@@ -234,7 +210,8 @@ class DraggableElement:
             self.y + self.height,
         )
         self.apply_font()
-        self.fit_text()
+        if self.auto_font:
+            self.fit_text()
 
     def update_value(self, value):
         """Update displayed value (text or image)."""
@@ -282,14 +259,15 @@ class DraggableElement:
         )
         self.text = str(value)
         self.apply_font()
-        self.fit_text()
+        if self.auto_font:
+            self.fit_text()
 
     def apply_font(self):
         weight = "bold" if self.bold else "normal"
         self.canvas.itemconfig(self.label, font=(self.font_family, int(self.font_size), weight))
 
     def fit_text(self):
-        if hasattr(self, "image_id"):
+        if hasattr(self, "image_id") or not self.auto_font:
             return
         size = 1
         weight = "bold" if self.bold else "normal"
@@ -318,7 +296,7 @@ class PDSGeneratorGUI(tk.Tk):
 
     grid_size = 20
 
-    STATIC_FIELDS = ["Data", "Naglowek", "Stopka"]
+    DEFAULT_STATIC_FIELDS = ["Data", "Naglowek", "Stopka"]
 
     def __init__(self):
         super().__init__()
@@ -351,6 +329,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.size_combo = ttk.Combobox(top_frame, textvariable=self.size_var, values=sizes)
         self.size_combo.pack(side="left")
         self.size_combo.bind("<<ComboboxSelected>>", lambda e: self.update_canvas_size())
+        self.size_combo.bind("<Return>", lambda e: self.update_canvas_size())
 
         format_frame = ttk.Frame(self)
         format_frame.pack(fill="x", padx=5)
@@ -395,23 +374,11 @@ class PDSGeneratorGUI(tk.Tk):
         self.static_frame.pack(fill="x")
         self.static_vars = {}
         self.static_entries = {}
-        for field in self.STATIC_FIELDS:
-            row = ttk.Frame(self.static_frame)
-            row.pack(fill="x", pady=2)
-            var = tk.BooleanVar()
-            chk = ttk.Checkbutton(
-                row,
-                variable=var,
-                command=lambda f=field, v=var: self.toggle_static(f, v.get()),
-            )
-            chk.pack(side="left")
-            ttk.Label(row, text=field).pack(side="left")
-            entry_var = tk.StringVar(value=field)
-            entry = ttk.Entry(row, textvariable=entry_var, width=15)
-            entry.pack(side="left", padx=5)
-            entry_var.trace_add("write", lambda *a, f=field: self.update_static_value(f))
-            self.static_vars[field] = var
-            self.static_entries[field] = entry_var
+        self.static_rows = {}
+        for field in self.DEFAULT_STATIC_FIELDS:
+            self.create_static_row(field, field)
+        self.add_static_btn = ttk.Button(self.static_frame, text="Dodaj pole", command=self.add_static_field)
+        self.add_static_btn.pack(fill="x", pady=5)
 
         # Row preview controls
         preview_frame = ttk.Frame(right_frame)
@@ -517,6 +484,43 @@ class PDSGeneratorGUI(tk.Tk):
         if name in self.elements:
             self.elements[name].update_value(self.static_entries[name].get())
 
+    def create_static_row(self, name, value=None):
+        row = ttk.Frame(self.static_frame)
+        if hasattr(self, "add_static_btn"):
+            row.pack(fill="x", pady=2, before=self.add_static_btn)
+        else:
+            row.pack(fill="x", pady=2)
+        var = tk.BooleanVar()
+        chk = ttk.Checkbutton(row, variable=var, command=lambda n=name, v=var: self.toggle_static(n, v.get()))
+        chk.pack(side="left")
+        ttk.Label(row, text=name).pack(side="left")
+        entry_var = tk.StringVar(value=value if value is not None else name)
+        entry = ttk.Entry(row, textvariable=entry_var, width=15)
+        entry.pack(side="left", padx=5)
+        entry_var.trace_add("write", lambda *a, f=name: self.update_static_value(f))
+        del_btn = ttk.Button(row, text="X", width=2, command=lambda n=name, r=row: self.remove_static_field(n, r))
+        del_btn.pack(side="left")
+        self.static_vars[name] = var
+        self.static_entries[name] = entry_var
+        self.static_rows[name] = row
+
+    def add_static_field(self):
+        name = simpledialog.askstring("Nowe pole", "Nazwa pola:")
+        if not name:
+            return
+        if name in self.static_vars:
+            messagebox.showerror("Błąd", "Pole o tej nazwie już istnieje")
+            return
+        self.create_static_row(name, name)
+
+    def remove_static_field(self, name, row):
+        if name in self.elements:
+            self.remove_element(name)
+        row.destroy()
+        self.static_vars.pop(name, None)
+        self.static_entries.pop(name, None)
+        self.static_rows.pop(name, None)
+
     def remove_element(self, name):
         element = self.elements.pop(name, None)
         if element:
@@ -559,6 +563,7 @@ class PDSGeneratorGUI(tk.Tk):
             "page_width": self.page_width,
             "page_height": self.page_height,
             "elements": [el.to_dict() for el in self.elements.values()],
+            "static_fields": {name: var.get() for name, var in self.static_entries.items()},
         }
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
@@ -581,8 +586,21 @@ class PDSGeneratorGUI(tk.Tk):
             return
         self.page_width = config.get("page_width", self.page_width)
         self.page_height = config.get("page_height", self.page_height)
-        self.size_var.set(f"{int(self.page_width)}x{int(self.page_height)}")
+        set_name = None
+        for n, sz in self.PAGE_SIZES.items():
+            if abs(sz[0] - self.page_width) < 1 and abs(sz[1] - self.page_height) < 1:
+                set_name = n
+                break
+        if set_name:
+            self.size_var.set(set_name)
+        else:
+            self.size_var.set(f"{int(self.page_width)}x{int(self.page_height)}")
         self.resize_canvas()
+        for name, val in config.get("static_fields", {}).items():
+            if name not in self.static_vars:
+                self.create_static_row(name, val)
+            else:
+                self.static_entries[name].set(val)
         for elconf in config.get("elements", []):
             name = elconf["name"]
             if name not in self.elements:
@@ -719,6 +737,7 @@ class PDSGeneratorGUI(tk.Tk):
         if not el:
             return
         el.font_size += self.scale
+        el.auto_font = False
         el.apply_font()
         self.font_size_var.set(str(int(el.font_size / self.scale)))
 
@@ -728,6 +747,7 @@ class PDSGeneratorGUI(tk.Tk):
             return
         if el.font_size > self.scale:
             el.font_size -= self.scale
+            el.auto_font = False
             el.apply_font()
             self.font_size_var.set(str(int(el.font_size / self.scale)))
 
@@ -742,6 +762,7 @@ class PDSGeneratorGUI(tk.Tk):
         if size <= 0:
             return
         el.font_size = size
+        el.auto_font = False
         el.apply_font()
 
     def _on_mousewheel(self, event):
