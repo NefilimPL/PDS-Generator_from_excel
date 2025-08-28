@@ -164,6 +164,7 @@ class DraggableElement:
     # ------------------------------------------------------------------
     def start_resize(self, event):
         self.parent.select_element(self)
+        # record initial dimensions to allow free drag; snapping happens on release
         self.last_x = event.x
         self.last_y = event.y
 
@@ -171,12 +172,8 @@ class DraggableElement:
         step = self.parent.snap_step
         new_width = max(step, event.x - self.x)
         new_height = max(step, event.y - self.y)
-        new_width = math.floor(new_width / step) * step
-        new_height = math.floor(new_height / step) * step
         self.width = new_width
         self.height = new_height
-        self.last_x = event.x
-        self.last_y = event.y
         self.sync_canvas()
 
     def stop_resize(self, event):
@@ -815,6 +812,7 @@ class PDSGeneratorGUI(tk.Tk):
         else:
             self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
             self.draw_grid()
+            self.center_page()
 
     def draw_grid(self):
         self.canvas.delete("grid")
@@ -828,12 +826,11 @@ class PDSGeneratorGUI(tk.Tk):
         self.snap_step = step
         w = self.page_width * self.scale
         h = self.page_height * self.scale
-        # allow panning up to window edges
+        # keep a constant margin based on the window size so zooming
+        # does not shrink the available panning area
         self.margin = max(
             self.canvas_container.winfo_width(),
             self.canvas_container.winfo_height(),
-            w,
-            h,
         )
         self.canvas.configure(
             scrollregion=(
@@ -869,6 +866,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.zoom_var.set(f"{int(self.scale*100)}%")
 
     def center_page(self):
+        self.canvas.update_idletasks()
         w = self.page_width * self.scale
         h = self.page_height * self.scale
         container_w = self.canvas_container.winfo_width()
@@ -935,7 +933,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.scale = new_scale
         self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
         self.draw_grid()
-        self.center_page()
+        self.after_idle(self.center_page)
         if self.selected_element:
             self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
 
