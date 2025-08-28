@@ -197,6 +197,7 @@ class DraggableElement:
             "height": self.height / scale,
             "font_size": self.font_size / scale,
             "bold": self.bold,
+            "auto_font": self.auto_font,
             "text_color": self.text_color,
             "bg_color": self.bg_color,
             "bg_visible": self.bg_visible,
@@ -239,8 +240,12 @@ class DraggableElement:
                 del self.image_obj
             if hasattr(self, "raw_image"):
                 del self.raw_image
-        if value is None:
-            value = ""
+        try:
+            if value is None or pd.isna(value):
+                value = ""
+        except Exception:
+            if value is None:
+                value = ""
         if isinstance(value, str) and value.lower().startswith("http"):
             try:
                 resp = requests.get(value, timeout=5)
@@ -320,6 +325,121 @@ class DraggableElement:
 
 
 # ---------------------------------------------------------------------------
+# Group areas for automatic stacking
+# ---------------------------------------------------------------------------
+
+
+class GroupArea:
+    """Semi-transparent rectangle grouping elements."""
+
+    HANDLE_SIZE = 8
+
+    def __init__(self, parent, canvas: tk.Canvas, name: str):
+        self.parent = parent
+        self.canvas = canvas
+        self.name = name
+        self.x = canvas.winfo_width() // 2 - 50
+        self.y = canvas.winfo_height() // 2 - 50
+        self.width = 100
+        self.height = 100
+        self.rect = canvas.create_rectangle(
+            self.x,
+            self.y,
+            self.x + self.width,
+            self.y + self.height,
+            outline="blue",
+            dash=(4, 2),
+            fill="#88aaff20",
+        )
+        self.handle = canvas.create_rectangle(
+            self.x + self.width - self.HANDLE_SIZE,
+            self.y + self.height - self.HANDLE_SIZE,
+            self.x + self.width,
+            self.y + self.height,
+            fill="blue",
+        )
+        for tag in (self.rect,):
+            canvas.tag_bind(tag, "<ButtonPress-1>", self.start_move)
+            canvas.tag_bind(tag, "<B1-Motion>", self.moving)
+            canvas.tag_bind(tag, "<ButtonRelease-1>", self.stop_move)
+        canvas.tag_bind(self.handle, "<ButtonPress-1>", self.start_resize)
+        canvas.tag_bind(self.handle, "<B1-Motion>", self.resizing)
+        canvas.tag_bind(self.handle, "<ButtonRelease-1>", self.stop_resize)
+        self.send_to_back()
+
+    def send_to_back(self):
+        self.canvas.tag_lower(self.rect)
+        self.canvas.tag_lower(self.handle)
+
+    def start_move(self, event):
+        self.last_x = event.x
+        self.last_y = event.y
+
+    def moving(self, event):
+        dx = event.x - self.last_x
+        dy = event.y - self.last_y
+        for item in (self.rect, self.handle):
+            self.canvas.move(item, dx, dy)
+        self.x += dx
+        self.y += dy
+        self.last_x = event.x
+        self.last_y = event.y
+
+    def stop_move(self, event):
+        step = self.parent.snap_step
+        self.x = round(self.x / step) * step
+        self.y = round(self.y / step) * step
+        self.sync_canvas()
+
+    def start_resize(self, event):
+        self.start_x = event.x
+        self.start_y = event.y
+        self.start_w = self.width
+        self.start_h = self.height
+
+    def resizing(self, event):
+        step = self.parent.snap_step
+        dx = event.x - self.start_x
+        dy = event.y - self.start_y
+        self.width = max(step, self.start_w + dx)
+        self.height = max(step, self.start_h + dy)
+        self.sync_canvas()
+
+    def stop_resize(self, event):
+        step = self.parent.snap_step
+        self.width = max(step, round(self.width / step) * step)
+        self.height = max(step, round(self.height / step) * step)
+        self.sync_canvas()
+
+    def sync_canvas(self):
+        self.canvas.coords(
+            self.rect,
+            self.x,
+            self.y,
+            self.x + self.width,
+            self.y + self.height,
+        )
+        self.canvas.coords(
+            self.handle,
+            self.x + self.width - self.HANDLE_SIZE,
+            self.y + self.height - self.HANDLE_SIZE,
+            self.x + self.width,
+            self.y + self.height,
+        )
+        self.send_to_back()
+
+    def to_dict(self):
+        scale = self.parent.scale
+        return {
+            "name": self.name,
+            "x": self.x / scale,
+            "y": self.y / scale,
+            "width": self.width / scale,
+            "height": self.height / scale,
+        }
+
+
+# ---------------------------------------------------------------------------
 # GUI Application
 # ---------------------------------------------------------------------------
 
@@ -341,6 +461,8 @@ class PDSGeneratorGUI(tk.Tk):
         self.excel_path = ""
         self.dataframes = {}
         self.elements = {}
+        self.groups = {}
+        self.conditions = []
         self.selected_elements = []
         self.selected_element = None
         self.sel_rect = None
@@ -472,6 +594,8 @@ class PDSGeneratorGUI(tk.Tk):
         button_frame = ttk.Frame(right_frame)
         button_frame.pack(fill="x", pady=(20, 0))
         ttk.Button(button_frame, text="Zapisz konfigurację", command=self.save_config).pack(fill="x")
+        ttk.Button(button_frame, text="Warunki", command=self.open_conditions).pack(fill="x", pady=5)
+        ttk.Button(button_frame, text="Dodaj grupę", command=self.add_group).pack(fill="x", pady=5)
         ttk.Button(button_frame, text="Generuj PDS", command=self.generate_pds).pack(fill="x", pady=5)
 
         # Progress bar
@@ -620,6 +744,96 @@ class PDSGeneratorGUI(tk.Tk):
                 self.font_entry.configure(state="disabled")
                 self.font_size_var.set("")
 
+    def add_group(self):
+        idx = 1
+        while f"Group{idx}" in self.groups:
+            idx += 1
+        name = f"Group{idx}"
+        group = GroupArea(self, self.canvas, name)
+        self.groups[name] = group
+
+    def open_conditions(self):
+        win = tk.Toplevel(self)
+        win.title("Warunki")
+        src_var = tk.StringVar()
+        tgt_var = tk.StringVar()
+        options = list(self.elements.keys())
+        ttk.Label(win, text="Jeśli puste:").grid(row=0, column=0)
+        ttk.Combobox(win, values=options, textvariable=src_var, width=20).grid(row=0, column=1)
+        ttk.Label(win, text="ukryj:").grid(row=1, column=0)
+        ttk.Combobox(win, values=options, textvariable=tgt_var, width=20).grid(row=1, column=1)
+        listbox = tk.Listbox(win, width=40)
+        listbox.grid(row=3, column=0, columnspan=2, pady=5)
+        for s, t in self.conditions:
+            listbox.insert("end", f"{t} jeśli {s} puste")
+        def add():
+            s = src_var.get()
+            t = tgt_var.get()
+            if s and t and (s, t) not in self.conditions:
+                self.conditions.append((s, t))
+                listbox.insert("end", f"{t} jeśli {s} puste")
+        ttk.Button(win, text="Dodaj", command=add).grid(row=2, column=0, columnspan=2, pady=5)
+        def remove():
+            sel = listbox.curselection()
+            if sel:
+                idx = sel[0]
+                listbox.delete(idx)
+                self.conditions.pop(idx)
+        ttk.Button(win, text="Usuń zaznaczone", command=remove).grid(row=4, column=0, columnspan=2, pady=5)
+
+    def element_in_group(self, el, group):
+        return (
+            el.x >= group.x
+            and el.y >= group.y
+            and el.x + el.width <= group.x + group.width
+            and el.y + el.height <= group.y + group.height
+        )
+
+    def draw_pdf_element(self, c, element, value, x, y):
+        if isinstance(value, str) and value.lower().startswith("http"):
+            try:
+                resp = requests.get(value, timeout=5)
+                img = Image.open(BytesIO(resp.content))
+                c.drawImage(
+                    ImageReader(img),
+                    x,
+                    y,
+                    width=element.width / self.scale,
+                    height=element.height / self.scale,
+                )
+                return
+            except Exception:
+                pass
+        if element.bg_visible:
+            c.setFillColor(to_reportlab_color(element.bg_color))
+            c.rect(
+                x,
+                y,
+                element.width / self.scale,
+                element.height / self.scale,
+                fill=1,
+                stroke=0,
+            )
+        c.setFillColor(to_reportlab_color(element.text_color))
+        c.setFont(
+            "Helvetica-Bold" if element.bold else "Helvetica",
+            element.font_size / self.scale,
+        )
+        if element.align == "center":
+            c.drawCentredString(
+                x + (element.width / self.scale) / 2,
+                y + (element.height / self.scale) / 2,
+                str(value),
+            )
+        elif element.align == "right":
+            c.drawRightString(
+                x + (element.width / self.scale),
+                y + (element.height / self.scale) / 2,
+                str(value),
+            )
+        else:
+            c.drawString(x, y + (element.height / self.scale) / 2, str(value))
+
     # ------------------------------------------------------------------
     def preview_row(self):
         if not self.dataframes:
@@ -651,6 +865,8 @@ class PDSGeneratorGUI(tk.Tk):
             "page_height": self.page_height,
             "elements": [el.to_dict() for el in self.elements.values()],
             "static_fields": {name: var.get() for name, var in self.static_entries.items()},
+            "conditions": self.conditions,
+            "groups": [g.to_dict() for g in self.groups.values()],
         }
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
@@ -688,6 +904,7 @@ class PDSGeneratorGUI(tk.Tk):
                 self.create_static_row(name, val)
             else:
                 self.static_entries[name].set(val)
+        self.conditions = config.get("conditions", [])
         for elconf in config.get("elements", []):
             name = elconf["name"]
             if name not in self.elements:
@@ -702,6 +919,7 @@ class PDSGeneratorGUI(tk.Tk):
                 element.bg_color = elconf.get("bg_color", element.bg_color)
                 element.bg_visible = elconf.get("bg_visible", element.bg_visible)
                 element.align = elconf.get("align", element.align)
+                element.auto_font = elconf.get("auto_font", element.auto_font)
                 element.sync_canvas()
                 self.elements[name] = element
                 if name in self.columns_vars:
@@ -709,6 +927,14 @@ class PDSGeneratorGUI(tk.Tk):
                 if name in self.static_vars:
                     self.static_vars[name].set(True)
                     self.static_entries[name].set(elconf.get("text", ""))
+        for gconf in config.get("groups", []):
+            group = GroupArea(self, self.canvas, gconf.get("name", f"Group{len(self.groups)+1}"))
+            group.x = gconf.get("x", group.x) * self.scale
+            group.y = gconf.get("y", group.y) * self.scale
+            group.width = gconf.get("width", group.width) * self.scale
+            group.height = gconf.get("height", group.height) * self.scale
+            group.sync_canvas()
+            self.groups[group.name] = group
 
     # ------------------------------------------------------------------
     def generate_pds(self):
@@ -733,6 +959,7 @@ class PDSGeneratorGUI(tk.Tk):
                 pdf_path = os.path.join(output_dir, f"pds_{idx+1}.pdf")
                 tmp_path = pdf_path + ".tmp"
                 c = pdf_canvas.Canvas(tmp_path, pagesize=(page_width, page_height))
+                values = {}
                 for name, element in self.elements.items():
                     if ":" in name:
                         sheet, col = name.split(":", 1)
@@ -740,55 +967,36 @@ class PDSGeneratorGUI(tk.Tk):
                         value = df.iloc[idx].get(col, "") if df is not None else ""
                     else:
                         value = self.static_entries.get(name, tk.StringVar()).get()
+                    if pd.isna(value):
+                        value = ""
+                    values[name] = value
+                hidden = set()
+                for src, tgt in self.conditions:
+                    if pd.isna(values.get(src)) or values.get(src) == "":
+                        hidden.add(tgt)
+                processed = set()
+                for group in self.groups.values():
+                    inside = [el for el in self.elements.values() if self.element_in_group(el, group)]
+                    inside.sort(key=lambda e: e.y)
+                    current_y = group.y
+                    for el in inside:
+                        if el.name in hidden:
+                            continue
+                        val = values.get(el.name, "")
+                        if val == "":
+                            continue
+                        x = el.x / self.scale
+                        y = page_height - (current_y / self.scale) - (el.height / self.scale)
+                        self.draw_pdf_element(c, el, val, x, y)
+                        current_y += el.height
+                        processed.add(el.name)
+                for name, element in self.elements.items():
+                    if name in hidden or name in processed:
+                        continue
+                    val = values.get(name, "")
                     x = element.x / self.scale
                     y = page_height - (element.y / self.scale) - (element.height / self.scale)
-                    if isinstance(value, str) and value.lower().startswith("http"):
-                        try:
-                            resp = requests.get(value, timeout=5)
-                            img = Image.open(BytesIO(resp.content))
-                            c.drawImage(
-                                ImageReader(img),
-                                x,
-                                y,
-                                width=element.width / self.scale,
-                                height=element.height / self.scale,
-                            )
-                        except Exception:
-                            c.setFillColor(to_reportlab_color(element.text_color))
-                            c.setFont("Helvetica-Bold" if element.bold else "Helvetica", element.font_size / self.scale)
-                            if element.align == "center":
-                                c.drawCentredString(x + (element.width / self.scale) / 2, y + (element.height / self.scale) / 2, str(value))
-                            elif element.align == "right":
-                                c.drawRightString(x + (element.width / self.scale), y + (element.height / self.scale) / 2, str(value))
-                            else:
-                                c.drawString(x, y + (element.height / self.scale) / 2, str(value))
-                    else:
-                        if element.bg_visible:
-                            c.setFillColor(to_reportlab_color(element.bg_color))
-                            c.rect(
-                                x,
-                                y,
-                                element.width / self.scale,
-                                element.height / self.scale,
-                                fill=1,
-                                stroke=0,
-                            )
-                        c.setFillColor(to_reportlab_color(element.text_color))
-                        c.setFont("Helvetica-Bold" if element.bold else "Helvetica", element.font_size / self.scale)
-                        if element.align == "center":
-                            c.drawCentredString(
-                                x + (element.width / self.scale) / 2,
-                                y + (element.height / self.scale) / 2,
-                                str(value),
-                            )
-                        elif element.align == "right":
-                            c.drawRightString(
-                                x + (element.width / self.scale),
-                                y + (element.height / self.scale) / 2,
-                                str(value),
-                            )
-                        else:
-                            c.drawString(x, y + (element.height / self.scale) / 2, str(value))
+                    self.draw_pdf_element(c, element, val, x, y)
                 c.showPage()
                 c.save()
                 try:

@@ -21,6 +21,8 @@ Po uruchomieniu aplikacji:
 9. Układ dopasowuje się do rozmiaru okna, zachowując proporcje strony i ograniczając maksymalne oddalenie tak, by kartka pozostawała w polu widzenia. Przycisk **Dopasuj** centruje stronę w oknie, a obszar przewijania nie zmienia się przy zmianie powiększenia, dzięki czemu kartka nie znika za niewidzialnymi granicami. Ostatnio zapisany rozmiar strony jest wczytywany przy kolejnym uruchomieniu, a obrazki w PDF-ach są zapisywane w pełnej jakości.
 10. Zaznaczone pole może mieć przezroczyste tło (przycisk **Przezroczyste**) lub kolor, dzięki czemu tekst da się nakładać na inne elementy.
 11. Zapisz konfigurację (zapamiętuje ostatni plik Excel i ustawienia pól) lub wygeneruj pliki PDF dla wszystkich wierszy Excela; generator próbuje nadpisać istniejące pliki, a gdy są zablokowane, zapisuje nową wersję z inną nazwą.
+12. Przyciskiem **Warunki** można zdefiniować zależności: jeżeli wskazane pole jest puste, inne pola zostaną pominięte podczas generowania.
+13. **Dodaj grupę** tworzy półprzezroczyste pole grupy, w którym elementy układają się jeden pod drugim z pominięciem pustych wartości.
 
 Wymagane biblioteki są instalowane automatycznie przy pierwszym uruchomieniu skryptu.
 
