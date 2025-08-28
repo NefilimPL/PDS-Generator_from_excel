@@ -755,6 +755,7 @@ class PDSGeneratorGUI(tk.Tk):
     def draw_grid(self):
         self.canvas.delete("grid")
         self.canvas.delete("page")
+        self.canvas.delete("ruler")
         step = self.grid_size * self.scale
         while step < 10:
             step *= 2
@@ -770,13 +771,20 @@ class PDSGeneratorGUI(tk.Tk):
         for i in range(cols):
             x = int(round(i * step))
             self.canvas.create_line(x, 0, x, int(h), fill="#9b9b9b", tags="grid")
+            self.canvas.create_line(x, -10, x, 0, fill="black", tags="ruler")
+            if i % 5 == 0:
+                self.canvas.create_text(x + 2, -10, text=str(int(x / self.scale)), anchor="nw", tags="ruler")
         for i in range(rows):
             y = int(round(i * step))
             self.canvas.create_line(0, y, int(w), y, fill="#9b9b9b", tags="grid")
+            self.canvas.create_line(-10, y, 0, y, fill="black", tags="ruler")
+            if i % 5 == 0:
+                self.canvas.create_text(-30, y + 2, text=str(int(y / self.scale)), anchor="nw", tags="ruler")
         self.canvas.create_rectangle(0, 0, w, h, outline="black", tags="grid")
         self.canvas.tag_lower("page")
         self.canvas.tag_lower("grid")
         self.canvas.tag_raise("grid", "page")
+        self.canvas.tag_raise("ruler", "grid")
         self.zoom_var.set(f"{int(self.scale*100)}%")
     def ctrl_zoom(self, event, delta=None):
         if delta is None:
@@ -788,24 +796,20 @@ class PDSGeneratorGUI(tk.Tk):
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
         for el in self.elements.values():
-            el.x = x + (el.x - x) * factor
-            el.y = y + (el.y - y) * factor
+            el.x *= factor
+            el.y *= factor
             el.width *= factor
             el.height *= factor
             el.font_size *= factor
             el.sync_canvas()
             el.apply_font()
         self.scale = new_scale
-        new_step = self.grid_size * self.scale
-        for el in self.elements.values():
-            el.x = round(el.x / new_step) * new_step
-            el.y = round(el.y / new_step) * new_step
-            el.width = round(el.width / new_step) * new_step
-            el.height = round(el.height / new_step) * new_step
-            el.sync_canvas()
-            el.apply_font()
         self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
         self.draw_grid()
+        w = self.page_width * self.scale
+        h = self.page_height * self.scale
+        self.canvas.xview_moveto((x * factor - event.x + self.margin) / (w + 2 * self.margin))
+        self.canvas.yview_moveto((y * factor - event.y + self.margin) / (h + 2 * self.margin))
 
     def fit_to_window(self):
         container_w = self.canvas_container.winfo_width()

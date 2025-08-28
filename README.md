@@ -13,7 +13,7 @@ Po uruchomieniu aplikacji:
 1. Wybierz plik Excel zawierający dane.
 2. Zaznacz kolumny oraz pola statyczne, które chcesz umieścić na stronie.
 3. Wybierz rozmiar strony lub podaj własne w formacie `szerokośćxwysokość` (w punktach).
-4. Przeciągnij i zmień rozmiar elementów na białej stronie wyświetlanej na szarym tle z drobną siatką; elementy przyciągają się do siatki po puszczeniu przycisku.
+4. Przeciągnij i zmień rozmiar elementów na białej stronie wyświetlanej na szarym tle z drobną siatką; elementy przyciągają się do siatki po puszczeniu przycisku, a przy górnej i lewej krawędzi widoczna jest linijka w punktach ułatwiająca precyzyjne pozycjonowanie.
 5. Listy po prawej stronie można przewijać kółkiem myszy. Pola statyczne można dodawać w dowolnej liczbie i dla każdego wpisać własną wartość.
 6. Nad polem konfiguracji znajdziesz przyciski formatowania tekstu oraz wybór kolorów tekstu i tła zaznaczonego elementu. Nowe pola statyczne są tworzone jako puste.
 7. Przytrzymaj `Ctrl` i użyj kółka myszy, aby przybliżać widok w miejscu kursora (maksymalnie do 400%); gęstość siatki dopasowuje się do skali, a aktualne powiększenie w procentach widać w prawym dolnym rogu obok przycisku dopasowania strony. Widok można przesuwać, trzymając wciśnięty środkowy przycisk myszy. Klawisz `Del` usuwa zaznaczony element i odznacza jego checkbox.
