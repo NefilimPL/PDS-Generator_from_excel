@@ -164,16 +164,19 @@ class DraggableElement:
     # ------------------------------------------------------------------
     def start_resize(self, event):
         self.parent.select_element(self)
-        # record initial dimensions to allow free drag; snapping happens on release
-        self.last_x = event.x
-        self.last_y = event.y
+        # remember starting mouse position and dimensions so the handle
+        # follows the cursor smoothly without jumping to the handle corner
+        self.start_w = self.width
+        self.start_h = self.height
+        self.start_x = event.x
+        self.start_y = event.y
 
     def resizing(self, event):
         step = self.parent.snap_step
-        new_width = max(step, event.x - self.x)
-        new_height = max(step, event.y - self.y)
-        self.width = new_width
-        self.height = new_height
+        dx = event.x - self.start_x
+        dy = event.y - self.start_y
+        self.width = max(step, self.start_w + dx)
+        self.height = max(step, self.start_h + dy)
         self.sync_canvas()
 
     def stop_resize(self, event):
@@ -828,10 +831,11 @@ class PDSGeneratorGUI(tk.Tk):
         h = self.page_height * self.scale
         # keep a constant margin based on the window size so zooming
         # does not shrink the available panning area
-        self.margin = max(
+        base = max(
             self.canvas_container.winfo_width(),
             self.canvas_container.winfo_height(),
         )
+        self.margin = base * 2
         self.canvas.configure(
             scrollregion=(
                 -self.margin - 20,
