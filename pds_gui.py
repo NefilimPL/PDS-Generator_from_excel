@@ -349,7 +349,9 @@ class GroupArea:
             self.y + self.height,
             outline="blue",
             dash=(4, 2),
-            fill="#88aaff20",
+            # Tkinter doesn't support 8-digit hex colors; use stipple for translucency
+            fill="#88aaff",
+            stipple="gray50",
         )
         self.handle = canvas.create_rectangle(
             self.x + self.width - self.HANDLE_SIZE,
