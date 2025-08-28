@@ -75,6 +75,7 @@ class DraggableElement:
         self.auto_font = True
         self.text_color = "black"
         self.bg_color = "white"
+        self.bg_visible = True
         self.align = "left"
         self._create_items()
 
@@ -198,6 +199,7 @@ class DraggableElement:
             "bold": self.bold,
             "text_color": self.text_color,
             "bg_color": self.bg_color,
+            "bg_visible": self.bg_visible,
             "align": self.align,
         }
 
@@ -265,7 +267,7 @@ class DraggableElement:
             except Exception:
                 pass
         # default: text
-        self.canvas.itemconfig(self.rect, fill=self.bg_color)
+        self.canvas.itemconfig(self.rect, fill=self.bg_color if self.bg_visible else "")
         self.canvas.itemconfig(
             self.label,
             text=str(value),
@@ -302,7 +304,7 @@ class DraggableElement:
         if hasattr(self, "image_id"):
             self.canvas.itemconfig(self.rect, fill="")
         else:
-            self.canvas.itemconfig(self.rect, fill=self.bg_color)
+            self.canvas.itemconfig(self.rect, fill=self.bg_color if self.bg_visible else "")
         self.canvas.itemconfig(self.label, fill=self.text_color)
 
     def _update_label_position(self):
@@ -381,6 +383,15 @@ class PDSGeneratorGUI(tk.Tk):
         self.font_entry.bind("<Return>", lambda e: self.set_font_size())
         ttk.Button(format_frame, text="Kolor", command=self.choose_text_color).pack(side="left", padx=2)
         ttk.Button(format_frame, text="Tło", command=self.choose_bg_color).pack(side="left", padx=2)
+        self.transparent_var = tk.BooleanVar(value=False)
+        self.bg_check = ttk.Checkbutton(
+            format_frame,
+            text="Przezroczyste",
+            variable=self.transparent_var,
+            command=self.toggle_bg_visible,
+        )
+        self.bg_check.pack(side="left", padx=2)
+        self.bg_check.state(["disabled"])
         ttk.Button(format_frame, text="L", command=lambda: self.set_alignment("left")).pack(side="left", padx=2)
         ttk.Button(format_frame, text="C", command=lambda: self.set_alignment("center")).pack(side="left", padx=2)
         ttk.Button(format_frame, text="R", command=lambda: self.set_alignment("right")).pack(side="left", padx=2)
@@ -679,6 +690,7 @@ class PDSGeneratorGUI(tk.Tk):
                 element.bold = elconf.get("bold", element.bold)
                 element.text_color = elconf.get("text_color", element.text_color)
                 element.bg_color = elconf.get("bg_color", element.bg_color)
+                element.bg_visible = elconf.get("bg_visible", element.bg_visible)
                 element.align = elconf.get("align", element.align)
                 element.sync_canvas()
                 self.elements[name] = element
@@ -709,7 +721,8 @@ class PDSGeneratorGUI(tk.Tk):
             start_time = time.time()
             for idx in range(total_rows):
                 pdf_path = os.path.join(output_dir, f"pds_{idx+1}.pdf")
-                c = pdf_canvas.Canvas(pdf_path, pagesize=(page_width, page_height))
+                tmp_path = pdf_path + ".tmp"
+                c = pdf_canvas.Canvas(tmp_path, pagesize=(page_width, page_height))
                 for name, element in self.elements.items():
                     if ":" in name:
                         sheet, col = name.split(":", 1)
@@ -740,18 +753,44 @@ class PDSGeneratorGUI(tk.Tk):
                             else:
                                 c.drawString(x, y + (element.height / self.scale) / 2, str(value))
                     else:
-                        c.setFillColor(to_reportlab_color(element.bg_color))
-                        c.rect(x, y, element.width / self.scale, element.height / self.scale, fill=1, stroke=0)
+                        if element.bg_visible:
+                            c.setFillColor(to_reportlab_color(element.bg_color))
+                            c.rect(
+                                x,
+                                y,
+                                element.width / self.scale,
+                                element.height / self.scale,
+                                fill=1,
+                                stroke=0,
+                            )
                         c.setFillColor(to_reportlab_color(element.text_color))
                         c.setFont("Helvetica-Bold" if element.bold else "Helvetica", element.font_size / self.scale)
                         if element.align == "center":
-                            c.drawCentredString(x + (element.width / self.scale) / 2, y + (element.height / self.scale) / 2, str(value))
+                            c.drawCentredString(
+                                x + (element.width / self.scale) / 2,
+                                y + (element.height / self.scale) / 2,
+                                str(value),
+                            )
                         elif element.align == "right":
-                            c.drawRightString(x + (element.width / self.scale), y + (element.height / self.scale) / 2, str(value))
+                            c.drawRightString(
+                                x + (element.width / self.scale),
+                                y + (element.height / self.scale) / 2,
+                                str(value),
+                            )
                         else:
                             c.drawString(x, y + (element.height / self.scale) / 2, str(value))
                 c.showPage()
                 c.save()
+                try:
+                    os.replace(tmp_path, pdf_path)
+                except Exception:
+                    alt_path = pdf_path.replace(
+                        ".pdf", f"_{int(time.time())}.pdf"
+                    )
+                    try:
+                        os.replace(tmp_path, alt_path)
+                    except Exception:
+                        pass
                 # Update progress
                 progress = (idx + 1) / total_rows * 100
                 elapsed = time.time() - start_time
@@ -919,9 +958,13 @@ class PDSGeneratorGUI(tk.Tk):
         if self.selected_element:
             self.font_entry.configure(state="normal")
             self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
+            self.bg_check.state(["!disabled"])
+            self.transparent_var.set(not self.selected_element.bg_visible)
         else:
             self.font_entry.configure(state="disabled")
             self.font_size_var.set("")
+            self.transparent_var.set(False)
+            self.bg_check.state(["disabled"])
 
     def canvas_click(self, event):
         if not self.canvas.find_withtag("current"):
@@ -983,7 +1026,16 @@ class PDSGeneratorGUI(tk.Tk):
         color = colorchooser.askcolor(color=el.bg_color)[1]
         if color:
             el.bg_color = color
+            el.bg_visible = True
+            self.transparent_var.set(False)
             el.update_colors()
+
+    def toggle_bg_visible(self):
+        el = self.selected_element
+        if not el:
+            return
+        el.bg_visible = not self.transparent_var.get()
+        el.update_colors()
 
     def set_alignment(self, align):
         if not self.selected_elements:
