@@ -764,22 +764,27 @@ class PDSGeneratorGUI(tk.Tk):
         self.snap_step = step
         w = self.page_width * self.scale
         h = self.page_height * self.scale
-        self.canvas.configure(scrollregion=(-self.margin, -self.margin, w + self.margin, h + self.margin))
+        # allow panning up to window edges
+        self.margin = max(self.canvas_container.winfo_width(), self.canvas_container.winfo_height())
+        self.canvas.configure(scrollregion=(-self.margin - 20, -self.margin - 20, w + self.margin, h + self.margin))
         self.canvas.create_rectangle(0, 0, w, h, fill="white", outline="", tags="page")
+        # draw rulers background
+        self.canvas.create_rectangle(0, -20, w, 0, fill="#e0e0e0", outline="black", tags="ruler")
+        self.canvas.create_rectangle(-20, 0, 0, h, fill="#e0e0e0", outline="black", tags="ruler")
         cols = int(w / step) + 1
         rows = int(h / step) + 1
         for i in range(cols):
             x = int(round(i * step))
             self.canvas.create_line(x, 0, x, int(h), fill="#9b9b9b", tags="grid")
-            self.canvas.create_line(x, -10, x, 0, fill="black", tags="ruler")
+            self.canvas.create_line(x, -20, x, 0, fill="black", tags="ruler")
             if i % 5 == 0:
-                self.canvas.create_text(x + 2, -10, text=str(int(x / self.scale)), anchor="nw", tags="ruler")
+                self.canvas.create_text(x + 2, -18, text=str(int(x / self.scale)), anchor="nw", tags="ruler")
         for i in range(rows):
             y = int(round(i * step))
             self.canvas.create_line(0, y, int(w), y, fill="#9b9b9b", tags="grid")
-            self.canvas.create_line(-10, y, 0, y, fill="black", tags="ruler")
+            self.canvas.create_line(-20, y, 0, y, fill="black", tags="ruler")
             if i % 5 == 0:
-                self.canvas.create_text(-30, y + 2, text=str(int(y / self.scale)), anchor="nw", tags="ruler")
+                self.canvas.create_text(-18, y + 2, text=str(int(y / self.scale)), anchor="nw", tags="ruler")
         self.canvas.create_rectangle(0, 0, w, h, outline="black", tags="grid")
         self.canvas.tag_lower("page")
         self.canvas.tag_lower("grid")
@@ -796,11 +801,16 @@ class PDSGeneratorGUI(tk.Tk):
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
         for el in self.elements.values():
-            el.x *= factor
-            el.y *= factor
-            el.width *= factor
-            el.height *= factor
-            el.font_size *= factor
+            rel_x = el.x / self.scale
+            rel_y = el.y / self.scale
+            rel_w = el.width / self.scale
+            rel_h = el.height / self.scale
+            rel_f = el.font_size / self.scale
+            el.x = rel_x * new_scale
+            el.y = rel_y * new_scale
+            el.width = rel_w * new_scale
+            el.height = rel_h * new_scale
+            el.font_size = rel_f * new_scale
             el.sync_canvas()
             el.apply_font()
         self.scale = new_scale
@@ -817,13 +827,17 @@ class PDSGeneratorGUI(tk.Tk):
         if container_w <= 0 or container_h <= 0:
             return
         new_scale = min(1.0, container_w / self.page_width, container_h / self.page_height)
-        factor = new_scale / self.scale
         for el in self.elements.values():
-            el.x *= factor
-            el.y *= factor
-            el.width *= factor
-            el.height *= factor
-            el.font_size *= factor
+            rel_x = el.x / self.scale
+            rel_y = el.y / self.scale
+            rel_w = el.width / self.scale
+            rel_h = el.height / self.scale
+            rel_f = el.font_size / self.scale
+            el.x = rel_x * new_scale
+            el.y = rel_y * new_scale
+            el.width = rel_w * new_scale
+            el.height = rel_h * new_scale
+            el.font_size = rel_f * new_scale
             el.sync_canvas()
             el.apply_font()
         self.scale = new_scale
