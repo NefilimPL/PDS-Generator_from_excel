@@ -75,6 +75,7 @@ class DraggableElement:
         self.auto_font = True
         self.text_color = "black"
         self.bg_color = "white"
+        self.align = "left"
         self._create_items()
 
     # ------------------------------------------------------------------
@@ -87,12 +88,7 @@ class DraggableElement:
             fill=self.bg_color,
             outline="black",
         )
-        self.label = self.canvas.create_text(
-            self.x + self.width / 2,
-            self.y + self.height / 2,
-            text=self.text,
-            fill=self.text_color,
-        )
+        self.label = self.canvas.create_text(0, 0, text=self.text, fill=self.text_color)
         self.handle = self.canvas.create_rectangle(
             self.x + self.width - self.HANDLE_SIZE,
             self.y + self.height - self.HANDLE_SIZE,
@@ -118,9 +114,9 @@ class DraggableElement:
         self.canvas.tag_bind(self.rect, "<Button-3>", self.show_menu)
         self.canvas.tag_bind(self.label, "<Button-3>", self.show_menu)
         self.canvas.tag_bind(self.handle, "<Button-3>", self.show_menu)
-
         self.apply_font()
         self.fit_text()
+        self._update_label_position()
 
     # ------------------------------------------------------------------
     def show_menu(self, event):
@@ -138,26 +134,31 @@ class DraggableElement:
 
     # ------------------------------------------------------------------
     def start_move(self, event):
-        self.parent.select_element(self)
+        additive = bool(event.state & 0x0001)
+        if self in self.parent.selected_elements:
+            additive = True
+        self.parent.select_element(self, additive=additive)
         self.last_x = event.x
         self.last_y = event.y
 
     def moving(self, event):
         dx = event.x - self.last_x
         dy = event.y - self.last_y
-        for item in (self.rect, self.label, self.handle, getattr(self, "image_id", None)):
-            if item:
-                self.canvas.move(item, dx, dy)
-        self.x += dx
-        self.y += dy
+        for el in self.parent.selected_elements:
+            for item in (el.rect, el.label, el.handle, getattr(el, "image_id", None)):
+                if item:
+                    el.canvas.move(item, dx, dy)
+            el.x += dx
+            el.y += dy
         self.last_x = event.x
         self.last_y = event.y
 
     def stop_move(self, event):
         step = self.parent.snap_step
-        self.x = math.floor(self.x / step) * step
-        self.y = math.floor(self.y / step) * step
-        self.sync_canvas()
+        for el in self.parent.selected_elements:
+            el.x = math.floor(el.x / step) * step
+            el.y = math.floor(el.y / step) * step
+            el.sync_canvas()
 
     # ------------------------------------------------------------------
     def start_resize(self, event):
@@ -197,6 +198,7 @@ class DraggableElement:
             "bold": self.bold,
             "text_color": self.text_color,
             "bg_color": self.bg_color,
+            "align": self.align,
         }
 
     def sync_canvas(self):
@@ -212,11 +214,7 @@ class DraggableElement:
             self.image_obj = ImageTk.PhotoImage(resized)
             self.canvas.itemconfig(self.image_id, image=self.image_obj)
             self.canvas.coords(self.image_id, self.x, self.y)
-        self.canvas.coords(
-            self.label,
-            self.x + self.width / 2,
-            self.y + self.height / 2,
-        )
+        self._update_label_position()
         self.canvas.coords(
             self.handle,
             self.x + self.width - self.HANDLE_SIZE,
@@ -278,6 +276,7 @@ class DraggableElement:
         self.apply_font()
         if self.auto_font:
             self.fit_text()
+        self._update_label_position()
 
     def apply_font(self):
         weight = "bold" if self.bold else "normal"
@@ -306,6 +305,17 @@ class DraggableElement:
             self.canvas.itemconfig(self.rect, fill=self.bg_color)
         self.canvas.itemconfig(self.label, fill=self.text_color)
 
+    def _update_label_position(self):
+        if self.align == "left":
+            self.canvas.itemconfig(self.label, anchor="w")
+            self.canvas.coords(self.label, self.x + 2, self.y + self.height / 2)
+        elif self.align == "right":
+            self.canvas.itemconfig(self.label, anchor="e")
+            self.canvas.coords(self.label, self.x + self.width - 2, self.y + self.height / 2)
+        else:
+            self.canvas.itemconfig(self.label, anchor="center")
+            self.canvas.coords(self.label, self.x + self.width / 2, self.y + self.height / 2)
+
 
 # ---------------------------------------------------------------------------
 # GUI Application
@@ -329,6 +339,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.excel_path = ""
         self.dataframes = {}
         self.elements = {}
+        self.selected_elements = []
         self.selected_element = None
         self.page_width, self.page_height = self.PAGE_SIZES["A4"]
         self.scale = 1.0
@@ -354,11 +365,10 @@ class PDSGeneratorGUI(tk.Tk):
 
         ttk.Label(top_frame, text="Rozmiar strony:").pack(side="left", padx=(20, 0))
         self.size_var = tk.StringVar(value="A4")
-        sizes = list(self.PAGE_SIZES.keys())
-        self.size_combo = ttk.Combobox(top_frame, textvariable=self.size_var, values=sizes)
-        self.size_combo.pack(side="left")
-        self.size_combo.bind("<<ComboboxSelected>>", lambda e: self.update_canvas_size())
-        self.size_combo.bind("<Return>", lambda e: self.update_canvas_size())
+        self.size_entry = ttk.Entry(top_frame, textvariable=self.size_var, width=10)
+        self.size_entry.pack(side="left")
+        ttk.Button(top_frame, text="Ustaw", command=self.update_canvas_size).pack(side="left", padx=2)
+        self.size_entry.bind("<Return>", lambda e: self.update_canvas_size())
 
         format_frame = ttk.Frame(self)
         format_frame.pack(fill="x", padx=5)
@@ -371,6 +381,11 @@ class PDSGeneratorGUI(tk.Tk):
         self.font_entry.bind("<Return>", lambda e: self.set_font_size())
         ttk.Button(format_frame, text="Kolor", command=self.choose_text_color).pack(side="left", padx=2)
         ttk.Button(format_frame, text="Tło", command=self.choose_bg_color).pack(side="left", padx=2)
+        ttk.Button(format_frame, text="L", command=lambda: self.set_alignment("left")).pack(side="left", padx=2)
+        ttk.Button(format_frame, text="C", command=lambda: self.set_alignment("center")).pack(side="left", padx=2)
+        ttk.Button(format_frame, text="R", command=lambda: self.set_alignment("right")).pack(side="left", padx=2)
+        ttk.Button(format_frame, text="Środek H", command=self.center_selected_horizontal).pack(side="left", padx=2)
+        ttk.Button(format_frame, text="Środek V", command=self.center_selected_vertical).pack(side="left", padx=2)
         self.canvas_container = tk.Frame(self, bg="#b0b0b0")
         self.canvas_container.pack(side="left", fill="both", expand=True, padx=5, pady=5)
         self.canvas_container.pack_propagate(False)
@@ -383,6 +398,7 @@ class PDSGeneratorGUI(tk.Tk):
             highlightthickness=0,
         )
         self.canvas.pack(expand=True)
+        self.canvas.bind("<Button-1>", self.canvas_click)
         self.canvas.bind("<Control-MouseWheel>", self.ctrl_zoom)
         self.canvas.bind("<Control-Button-4>", lambda e: self.ctrl_zoom(e, 120))
         self.canvas.bind("<Control-Button-5>", lambda e: self.ctrl_zoom(e, -120))
@@ -488,16 +504,16 @@ class PDSGeneratorGUI(tk.Tk):
 
     # ------------------------------------------------------------------
     def update_canvas_size(self):
-        value = self.size_var.get()
-        if "x" in value:
+        value = self.size_var.get().strip()
+        if "x" in value.lower():
             try:
-                w, h = value.split("x")
+                w, h = value.lower().split("x", 1)
                 size = (int(float(w)), int(float(h)))
             except Exception:
                 messagebox.showerror("Błąd", "Nieprawidłowy format rozmiaru. Użyj np. 595x842")
                 return
         else:
-            size = self.PAGE_SIZES.get(value, self.PAGE_SIZES["A4"])
+            size = self.PAGE_SIZES.get(value.upper(), self.PAGE_SIZES["A4"])
         factor_w = size[0] / self.page_width
         factor_h = size[1] / self.page_height
         self.page_width, self.page_height = size
@@ -576,6 +592,8 @@ class PDSGeneratorGUI(tk.Tk):
                 self.canvas.delete(item)
             if hasattr(element, "image_id"):
                 self.canvas.delete(element.image_id)
+            if element in self.selected_elements:
+                self.selected_elements.remove(element)
             if self.selected_element is element:
                 self.selected_element = None
                 self.font_entry.configure(state="disabled")
@@ -661,6 +679,7 @@ class PDSGeneratorGUI(tk.Tk):
                 element.bold = elconf.get("bold", element.bold)
                 element.text_color = elconf.get("text_color", element.text_color)
                 element.bg_color = elconf.get("bg_color", element.bg_color)
+                element.align = elconf.get("align", element.align)
                 element.sync_canvas()
                 self.elements[name] = element
                 if name in self.columns_vars:
@@ -714,13 +733,23 @@ class PDSGeneratorGUI(tk.Tk):
                         except Exception:
                             c.setFillColor(to_reportlab_color(element.text_color))
                             c.setFont("Helvetica-Bold" if element.bold else "Helvetica", element.font_size / self.scale)
-                            c.drawString(x, y + (element.height / self.scale) / 2, str(value))
+                            if element.align == "center":
+                                c.drawCentredString(x + (element.width / self.scale) / 2, y + (element.height / self.scale) / 2, str(value))
+                            elif element.align == "right":
+                                c.drawRightString(x + (element.width / self.scale), y + (element.height / self.scale) / 2, str(value))
+                            else:
+                                c.drawString(x, y + (element.height / self.scale) / 2, str(value))
                     else:
                         c.setFillColor(to_reportlab_color(element.bg_color))
                         c.rect(x, y, element.width / self.scale, element.height / self.scale, fill=1, stroke=0)
                         c.setFillColor(to_reportlab_color(element.text_color))
                         c.setFont("Helvetica-Bold" if element.bold else "Helvetica", element.font_size / self.scale)
-                        c.drawString(x, y + (element.height / self.scale) / 2, str(value))
+                        if element.align == "center":
+                            c.drawCentredString(x + (element.width / self.scale) / 2, y + (element.height / self.scale) / 2, str(value))
+                        elif element.align == "right":
+                            c.drawRightString(x + (element.width / self.scale), y + (element.height / self.scale) / 2, str(value))
+                        else:
+                            c.drawString(x, y + (element.height / self.scale) / 2, str(value))
                 c.showPage()
                 c.save()
                 # Update progress
@@ -877,17 +906,26 @@ class PDSGeneratorGUI(tk.Tk):
     def pan_canvas(self, event):
         self.canvas.scan_dragto(event.x, event.y, gain=1)
 
-    def select_element(self, element):
-        if self.selected_element and self.selected_element is not element:
-            self.canvas.itemconfig(self.selected_element.rect, outline="black")
-        self.selected_element = element
-        self.canvas.itemconfig(element.rect, outline="red")
-        if element:
+    def select_element(self, element, additive=False):
+        if not additive:
+            for el in self.selected_elements:
+                self.canvas.itemconfig(el.rect, outline="black")
+            self.selected_elements = []
+        if element and element not in self.selected_elements:
+            self.selected_elements.append(element)
+        for el in self.selected_elements:
+            self.canvas.itemconfig(el.rect, outline="red")
+        self.selected_element = self.selected_elements[-1] if self.selected_elements else None
+        if self.selected_element:
             self.font_entry.configure(state="normal")
-            self.font_size_var.set(str(int(element.font_size / self.scale)))
+            self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
         else:
             self.font_entry.configure(state="disabled")
             self.font_size_var.set("")
+
+    def canvas_click(self, event):
+        if not self.canvas.find_withtag("current"):
+            self.select_element(None)
 
     def toggle_bold(self):
         el = self.selected_element
@@ -947,16 +985,41 @@ class PDSGeneratorGUI(tk.Tk):
             el.bg_color = color
             el.update_colors()
 
-    def delete_selected(self, event=None):
-        el = self.selected_element
-        if not el:
+    def set_alignment(self, align):
+        if not self.selected_elements:
             return
-        name = el.name
-        self.remove_element(name)
-        if name in self.columns_vars:
-            self.columns_vars[name].set(False)
-        if name in self.static_vars:
-            self.static_vars[name].set(False)
+        for el in self.selected_elements:
+            el.align = align
+            el.sync_canvas()
+
+    def center_selected_horizontal(self):
+        if not self.selected_elements:
+            return
+        for el in self.selected_elements:
+            el.x = (self.page_width * self.scale - el.width) / 2
+            el.sync_canvas()
+
+    def center_selected_vertical(self):
+        if not self.selected_elements:
+            return
+        for el in self.selected_elements:
+            el.y = (self.page_height * self.scale - el.height) / 2
+            el.sync_canvas()
+
+    def delete_selected(self, event=None):
+        if not self.selected_elements:
+            return
+        for el in list(self.selected_elements):
+            name = el.name
+            self.remove_element(name)
+            if name in self.columns_vars:
+                self.columns_vars[name].set(False)
+            if name in self.static_vars:
+                self.static_vars[name].set(False)
+        self.selected_elements = []
+        self.selected_element = None
+        self.font_entry.configure(state="disabled")
+        self.font_size_var.set("")
 
     def _on_mousewheel(self, event):
         self.right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
