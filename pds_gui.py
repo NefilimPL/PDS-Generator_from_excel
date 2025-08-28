@@ -157,8 +157,8 @@ class DraggableElement:
     def stop_move(self, event):
         step = self.parent.snap_step
         for el in self.parent.selected_elements:
-            el.x = math.floor(el.x / step) * step
-            el.y = math.floor(el.y / step) * step
+            el.x = round(el.x / step) * step
+            el.y = round(el.y / step) * step
             el.sync_canvas()
 
     # ------------------------------------------------------------------
@@ -181,8 +181,8 @@ class DraggableElement:
 
     def stop_resize(self, event):
         step = self.parent.snap_step
-        self.width = math.floor(self.width / step) * step
-        self.height = math.floor(self.height / step) * step
+        self.width = max(step, round(self.width / step) * step)
+        self.height = max(step, round(self.height / step) * step)
         self.sync_canvas()
 
     # ------------------------------------------------------------------
@@ -343,6 +343,8 @@ class PDSGeneratorGUI(tk.Tk):
         self.elements = {}
         self.selected_elements = []
         self.selected_element = None
+        self.sel_rect = None
+        self.sel_start = None
         self.page_width, self.page_height = self.PAGE_SIZES["A4"]
         self.scale = 1.0
         self.max_scale = 4.0
@@ -409,7 +411,9 @@ class PDSGeneratorGUI(tk.Tk):
             highlightthickness=0,
         )
         self.canvas.pack(expand=True)
-        self.canvas.bind("<Button-1>", self.canvas_click)
+        self.canvas.bind("<ButtonPress-1>", self.canvas_button_press)
+        self.canvas.bind("<B1-Motion>", self.canvas_drag_select)
+        self.canvas.bind("<ButtonRelease-1>", self.canvas_button_release)
         self.canvas.bind("<Control-MouseWheel>", self.ctrl_zoom)
         self.canvas.bind("<Control-Button-4>", lambda e: self.ctrl_zoom(e, 120))
         self.canvas.bind("<Control-Button-5>", lambda e: self.ctrl_zoom(e, -120))
@@ -534,7 +538,13 @@ class PDSGeneratorGUI(tk.Tk):
             el.width *= factor_w
             el.height *= factor_h
             el.font_size *= factor_h
+            step = self.snap_step
+            el.x = round(el.x / step) * step
+            el.y = round(el.y / step) * step
+            el.width = max(step, round(el.width / step) * step)
+            el.height = max(step, round(el.height / step) * step)
             el.sync_canvas()
+            el.apply_font()
         self.resize_canvas()
 
     # ------------------------------------------------------------------
@@ -968,9 +978,50 @@ class PDSGeneratorGUI(tk.Tk):
             self.transparent_var.set(False)
             self.bg_check.state(["disabled"])
 
-    def canvas_click(self, event):
-        if not self.canvas.find_withtag("current"):
-            self.select_element(None)
+    def canvas_button_press(self, event):
+        if self.canvas.find_withtag("current"):
+            return
+        self.select_element(None)
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        self.sel_start = (x, y)
+        self.sel_rect = self.canvas.create_rectangle(
+            x,
+            y,
+            x,
+            y,
+            outline="blue",
+            dash=(2, 2),
+        )
+
+    def canvas_drag_select(self, event):
+        if not self.sel_start:
+            return
+        x0, y0 = self.sel_start
+        x1 = self.canvas.canvasx(event.x)
+        y1 = self.canvas.canvasy(event.y)
+        self.canvas.coords(self.sel_rect, x0, y0, x1, y1)
+
+    def canvas_button_release(self, event):
+        if not self.sel_start:
+            if not self.canvas.find_withtag("current"):
+                self.select_element(None)
+            return
+        x0, y0 = self.sel_start
+        x1 = self.canvas.canvasx(event.x)
+        y1 = self.canvas.canvasy(event.y)
+        self.canvas.delete(self.sel_rect)
+        self.sel_start = None
+        self.sel_rect = None
+        if x0 > x1:
+            x0, x1 = x1, x0
+        if y0 > y1:
+            y0, y1 = y1, y0
+        self.select_element(None)
+        for el in self.elements.values():
+            ex0, ey0, ex1, ey1 = self.canvas.coords(el.rect)
+            if ex0 >= x0 and ex1 <= x1 and ey0 >= y0 and ey1 <= y1:
+                self.select_element(el, additive=True)
 
     def toggle_bold(self):
         el = self.selected_element
