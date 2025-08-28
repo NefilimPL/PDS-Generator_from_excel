@@ -704,10 +704,6 @@ class PDSGeneratorGUI(tk.Tk):
                         try:
                             resp = requests.get(value, timeout=5)
                             img = Image.open(BytesIO(resp.content))
-                            img = img.resize(
-                                (int(element.width / self.scale), int(element.height / self.scale)),
-                                Image.LANCZOS,
-                            )
                             c.drawImage(
                                 ImageReader(img),
                                 x,
@@ -765,8 +761,20 @@ class PDSGeneratorGUI(tk.Tk):
         w = self.page_width * self.scale
         h = self.page_height * self.scale
         # allow panning up to window edges
-        self.margin = max(self.canvas_container.winfo_width(), self.canvas_container.winfo_height())
-        self.canvas.configure(scrollregion=(-self.margin - 20, -self.margin - 20, w + self.margin, h + self.margin))
+        self.margin = max(
+            self.canvas_container.winfo_width(),
+            self.canvas_container.winfo_height(),
+            w,
+            h,
+        )
+        self.canvas.configure(
+            scrollregion=(
+                -self.margin - 20,
+                -self.margin - 20,
+                w + self.margin + 20,
+                h + self.margin + 20,
+            )
+        )
         self.canvas.create_rectangle(0, 0, w, h, fill="white", outline="", tags="page")
         # draw rulers background
         self.canvas.create_rectangle(0, -20, w, 0, fill="#e0e0e0", outline="black", tags="ruler")
@@ -791,6 +799,20 @@ class PDSGeneratorGUI(tk.Tk):
         self.canvas.tag_raise("grid", "page")
         self.canvas.tag_raise("ruler", "grid")
         self.zoom_var.set(f"{int(self.scale*100)}%")
+
+    def center_page(self):
+        w = self.page_width * self.scale
+        h = self.page_height * self.scale
+        container_w = self.canvas_container.winfo_width()
+        container_h = self.canvas_container.winfo_height()
+        if container_w <= 0 or container_h <= 0:
+            return
+        total_w = w + 2 * (self.margin + 20)
+        total_h = h + 2 * (self.margin + 20)
+        left = (w - container_w) / 2 + self.margin + 20
+        top = (h - container_h) / 2 + self.margin + 20
+        self.canvas.xview_moveto(left / total_w)
+        self.canvas.yview_moveto(top / total_h)
     def ctrl_zoom(self, event, delta=None):
         if delta is None:
             delta = event.delta
@@ -818,8 +840,10 @@ class PDSGeneratorGUI(tk.Tk):
         self.draw_grid()
         w = self.page_width * self.scale
         h = self.page_height * self.scale
-        self.canvas.xview_moveto((x * factor - event.x + self.margin) / (w + 2 * self.margin))
-        self.canvas.yview_moveto((y * factor - event.y + self.margin) / (h + 2 * self.margin))
+        total_w = w + 2 * (self.margin + 20)
+        total_h = h + 2 * (self.margin + 20)
+        self.canvas.xview_moveto((x * factor - event.x + self.margin + 20) / total_w)
+        self.canvas.yview_moveto((y * factor - event.y + self.margin + 20) / total_h)
 
     def fit_to_window(self):
         container_w = self.canvas_container.winfo_width()
@@ -843,6 +867,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.scale = new_scale
         self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
         self.draw_grid()
+        self.center_page()
         if self.selected_element:
             self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
 
