@@ -347,6 +347,8 @@ class GroupArea:
         self.height = 100
         self.columns = 1
         self.fields = []  # names of elements contained in this group
+        self.field_cols = {}  # mapping field name -> column index (1-based)
+        self.preview_items = []
         self.rect = canvas.create_rectangle(
             self.x,
             self.y,
@@ -375,6 +377,7 @@ class GroupArea:
         canvas.tag_bind(self.handle, "<ButtonRelease-1>", self.stop_resize)
         canvas.tag_bind(self.handle, "<Double-1>", self.open_editor)
         self.send_to_back()
+        self.draw_preview()
 
     def send_to_back(self):
         self.canvas.tag_lower(self.rect)
@@ -464,6 +467,7 @@ class GroupArea:
             self.y + self.height,
         )
         self.send_to_back()
+        self.draw_preview()
 
     def open_editor(self, event=None):
         GroupEditor(self.parent, self)
@@ -477,8 +481,34 @@ class GroupArea:
             "width": self.width / scale,
             "height": self.height / scale,
             "fields": list(self.fields),
+            "field_cols": self.field_cols,
             "columns": self.columns,
         }
+
+    def draw_preview(self):
+        for item in getattr(self, "preview_items", []):
+            self.canvas.delete(item)
+        self.preview_items = []
+        cols = max(1, self.columns)
+        col_w = self.width / cols
+        by_col = {i: [] for i in range(1, cols + 1)}
+        for name in self.fields:
+            col = self.field_cols.get(name, 1)
+            col = min(max(1, col), cols)
+            by_col[col].append(name)
+        row_h = 25
+        for col_idx, names in by_col.items():
+            for row, name in enumerate(names):
+                y1 = self.y + row * row_h
+                if y1 + row_h > self.y + self.height:
+                    break
+                x1 = self.x + (col_idx - 1) * col_w
+                x2 = x1 + col_w
+                y2 = y1 + row_h
+                r = self.canvas.create_rectangle(x1, y1, x2, y2, outline="blue")
+                t = self.canvas.create_text(x1 + 2, y1 + row_h / 2, anchor="w", text=name)
+                self.preview_items.extend([r, t])
+        self.send_to_back()
 
 
 class GroupEditor(tk.Toplevel):
@@ -490,6 +520,7 @@ class GroupEditor(tk.Toplevel):
         self.group = group
         self.title(group.name)
         self.fields = list(group.fields)
+        self.field_cols = dict(group.field_cols)
 
         left = ttk.Frame(self)
         left.pack(side="left", fill="both", expand=True)
@@ -506,6 +537,10 @@ class GroupEditor(tk.Toplevel):
         hs = ttk.Scrollbar(left, orient="horizontal", command=self.canvas.xview)
         hs.grid(row=1, column=0, sticky="ew")
         self.canvas.configure(xscrollcommand=hs.set, yscrollcommand=vs.set)
+        self.canvas.bind("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-e.delta/120), "units"))
+        self.canvas.bind("<Shift-MouseWheel>", lambda e: self.canvas.xview_scroll(int(-e.delta/120), "units"))
+        self.canvas.bind("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
+        self.canvas.bind("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
         left.rowconfigure(0, weight=1)
         left.columnconfigure(0, weight=1)
 
@@ -522,7 +557,9 @@ class GroupEditor(tk.Toplevel):
 
         ttk.Label(right, text="Kolumny:").pack(anchor="w")
         self.col_var = tk.IntVar(value=group.columns)
-        ttk.Spinbox(right, from_=1, to=10, textvariable=self.col_var, width=5).pack(anchor="w")
+        col_spin = ttk.Spinbox(right, from_=1, to=10, textvariable=self.col_var, width=5)
+        col_spin.pack(anchor="w")
+        self.col_var.trace_add("write", lambda *a: self.update_field_col_limit())
 
         ttk.Label(right, text="Kolejność:").pack(anchor="w", pady=(10, 0))
         list_frame = ttk.Frame(right)
@@ -534,8 +571,15 @@ class GroupEditor(tk.Toplevel):
         self.field_list.configure(yscrollcommand=list_scroll.set)
         for f in self.fields:
             self.field_list.insert("end", f)
+        self.field_list.bind("<<ListboxSelect>>", self.on_field_select)
         ttk.Button(right, text="Góra", command=self.move_up).pack(fill="x")
         ttk.Button(right, text="Dół", command=self.move_down).pack(fill="x", pady=(0, 5))
+
+        ttk.Label(right, text="Kolumna pola:").pack(anchor="w")
+        self.field_col_var = tk.IntVar(value=1)
+        self.field_col_spin = ttk.Spinbox(right, from_=1, to=self.col_var.get(), textvariable=self.field_col_var, width=5, command=self.apply_field_col)
+        self.field_col_spin.pack(anchor="w", pady=(0,5))
+        self.update_field_col_limit()
 
         ttk.Label(right, text="Pola:").pack(anchor="w")
         avail_container = ttk.Frame(right)
@@ -605,27 +649,65 @@ class GroupEditor(tk.Toplevel):
     def draw_items(self):
         self.canvas.delete("all")
         cols = max(1, self.col_var.get())
+        step = self.parent.snap_step
+        for x in range(0, int(self.group.width) + 1, int(step)):
+            self.canvas.create_line(x, 0, x, self.group.height, fill="#ddd")
+        for y in range(0, int(self.group.height) + 1, int(step)):
+            self.canvas.create_line(0, y, self.group.width, y, fill="#ddd")
         col_w = self.group.width / cols
-        for idx, name in enumerate(self.fields):
-            row = idx // cols
-            col = idx % cols
-            y = row * 25
-            x = col * col_w
-            self.canvas.create_rectangle(x, y, x + col_w, y + 25, outline="black")
-            self.canvas.create_text(x + 2, y + 12, anchor="w", text=name)
+        by_col = {i: [] for i in range(1, cols + 1)}
+        for name in self.fields:
+            col = self.field_cols.get(name, 1)
+            col = min(max(1, col), cols)
+            by_col[col].append(name)
+        row_h = 25
+        for col_idx, names in by_col.items():
+            for row, name in enumerate(names):
+                y = row * row_h
+                if y + row_h > self.group.height:
+                    break
+                x = (col_idx - 1) * col_w
+                self.canvas.create_rectangle(x, y, x + col_w, y + row_h, outline="black")
+                self.canvas.create_text(x + 2, y + row_h / 2, anchor="w", text=name)
 
     def toggle_field(self, name, var):
         if var.get():
             if name not in self.fields:
                 self.fields.append(name)
+                self.field_cols[name] = 1
         else:
             if name in self.fields:
                 self.fields.remove(name)
+                self.field_cols.pop(name, None)
         self.refresh_field_list()
+        self.draw_items()
+
+    def on_field_select(self, event=None):
+        sel = self.field_list.curselection()
+        if not sel:
+            return
+        name = self.fields[sel[0]]
+        self.field_col_var.set(self.field_cols.get(name, 1))
+
+    def apply_field_col(self):
+        sel = self.field_list.curselection()
+        if not sel:
+            return
+        name = self.fields[sel[0]]
+        col = self.field_col_var.get()
+        self.field_cols[name] = col
+        self.draw_items()
+
+    def update_field_col_limit(self):
+        self.field_col_spin.config(to=self.col_var.get())
+        for k, v in list(self.field_cols.items()):
+            if v > self.col_var.get():
+                self.field_cols[k] = self.col_var.get()
         self.draw_items()
 
     def close(self):
         self.group.fields = list(self.fields)
+        self.group.field_cols = dict(self.field_cols)
         self.group.columns = self.col_var.get()
         self.group.width = self.width_var.get()
         self.group.height = self.height_var.get()
@@ -875,6 +957,17 @@ class PDSGeneratorGUI(tk.Tk):
             el.height = max(step, round(el.height / step) * step)
             el.sync_canvas()
             el.apply_font()
+        for group in self.groups.values():
+            group.x *= factor_w
+            group.y *= factor_h
+            group.width *= factor_w
+            group.height *= factor_h
+            step = self.snap_step
+            group.x = round(group.x / step) * step
+            group.y = round(group.y / step) * step
+            group.width = max(step, round(group.width / step) * step)
+            group.height = max(step, round(group.height / step) * step)
+            group.sync_canvas()
         self.resize_canvas()
 
     # ------------------------------------------------------------------
@@ -1162,7 +1255,9 @@ class PDSGeneratorGUI(tk.Tk):
             group.height = gconf.get("height", group.height) * self.scale
             group.sync_canvas()
             group.fields = gconf.get("fields", [])
+            group.field_cols = gconf.get("field_cols", {})
             group.columns = gconf.get("columns", 1)
+            group.draw_preview()
             self.groups[group.name] = group
             if hasattr(self, "groups_list"):
                 self.groups_list.insert("end", group.name)
@@ -1209,50 +1304,54 @@ class PDSGeneratorGUI(tk.Tk):
                 for group in self.groups.values():
                     cols = max(1, group.columns)
                     col_w = group.width / cols
-                    slot = 0
+                    by_col = {i: [] for i in range(1, cols + 1)}
                     for fname in group.fields:
-                        if fname in hidden:
-                            continue
-                        val = values.get(fname, "")
-                        if val == "":
-                            continue
-                        el = self.elements.get(fname)
-                        if el:
-                            height = el.height
-                            font_size = el.font_size
-                            bold = el.bold
-                            text_color = el.text_color
-                            bg_color = el.bg_color
-                            bg_visible = el.bg_visible
-                            align = el.align
-                            auto_font = el.auto_font
-                        else:
-                            height = 20
-                            font_size = 12
-                            bold = False
-                            text_color = "black"
-                            bg_color = "white"
-                            bg_visible = False
-                            align = "left"
-                            auto_font = True
-                        dummy = SimpleNamespace(
-                            width=col_w,
-                            height=height,
-                            font_size=font_size,
-                            bold=bold,
-                            text_color=text_color,
-                            bg_color=bg_color,
-                            bg_visible=bg_visible,
-                            align=align,
-                            auto_font=auto_font,
-                        )
-                        col = slot % cols
-                        row = slot // cols
-                        x = (group.x + col * col_w) / self.scale
-                        y = page_height - ((group.y + row * height) / self.scale) - (height / self.scale)
-                        self.draw_pdf_element(c, dummy, val, x, y)
-                        slot += 1
-                        processed.add(fname)
+                        col = group.field_cols.get(fname, 1)
+                        col = min(max(1, col), cols)
+                        by_col[col].append(fname)
+                    for col_idx, names in by_col.items():
+                        for row, fname in enumerate(names):
+                            if fname in hidden:
+                                continue
+                            val = values.get(fname, "")
+                            if val == "":
+                                continue
+                            el = self.elements.get(fname)
+                            if el:
+                                height = el.height
+                                font_size = el.font_size
+                                bold = el.bold
+                                text_color = el.text_color
+                                bg_color = el.bg_color
+                                bg_visible = el.bg_visible
+                                align = el.align
+                                auto_font = el.auto_font
+                            else:
+                                height = 20
+                                font_size = 12
+                                bold = False
+                                text_color = "black"
+                                bg_color = "white"
+                                bg_visible = False
+                                align = "left"
+                                auto_font = True
+                            if (row + 1) * height > group.height:
+                                continue
+                            dummy = SimpleNamespace(
+                                width=col_w,
+                                height=height,
+                                font_size=font_size,
+                                bold=bold,
+                                text_color=text_color,
+                                bg_color=bg_color,
+                                bg_visible=bg_visible,
+                                align=align,
+                                auto_font=auto_font,
+                            )
+                            x = (group.x + (col_idx - 1) * col_w) / self.scale
+                            y = page_height - ((group.y + row * height) / self.scale) - (height / self.scale)
+                            self.draw_pdf_element(c, dummy, val, x, y)
+                            processed.add(fname)
                 for name, element in self.elements.items():
                     if name in hidden or name in processed:
                         continue
@@ -1386,6 +1485,16 @@ class PDSGeneratorGUI(tk.Tk):
             el.font_size = rel_f * new_scale
             el.sync_canvas()
             el.apply_font()
+        for group in self.groups.values():
+            rel_x = group.x / self.scale
+            rel_y = group.y / self.scale
+            rel_w = group.width / self.scale
+            rel_h = group.height / self.scale
+            group.x = rel_x * new_scale
+            group.y = rel_y * new_scale
+            group.width = rel_w * new_scale
+            group.height = rel_h * new_scale
+            group.sync_canvas()
         self.scale = new_scale
         self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
         self.draw_grid()
@@ -1415,6 +1524,16 @@ class PDSGeneratorGUI(tk.Tk):
             el.font_size = rel_f * new_scale
             el.sync_canvas()
             el.apply_font()
+        for group in self.groups.values():
+            rel_x = group.x / self.scale
+            rel_y = group.y / self.scale
+            rel_w = group.width / self.scale
+            rel_h = group.height / self.scale
+            group.x = rel_x * new_scale
+            group.y = rel_y * new_scale
+            group.width = rel_w * new_scale
+            group.height = rel_h * new_scale
+            group.sync_canvas()
         self.scale = new_scale
         self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
         self.draw_grid()
