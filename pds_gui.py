@@ -333,7 +333,7 @@ class DraggableElement:
 class GroupArea:
     """Semi-transparent rectangle grouping elements."""
 
-    HANDLE_SIZE = 8
+    HANDLE_SIZE = 12
 
     def __init__(self, parent, canvas: tk.Canvas, name: str):
         self.parent = parent
@@ -345,6 +345,7 @@ class GroupArea:
         self.y = parent.page_height * parent.scale / 2 - 50
         self.width = 100
         self.height = 100
+        self.columns = 1
         self.fields = []  # names of elements contained in this group
         self.rect = canvas.create_rectangle(
             self.x,
@@ -476,6 +477,7 @@ class GroupArea:
             "width": self.width / scale,
             "height": self.height / scale,
             "fields": list(self.fields),
+            "columns": self.columns,
         }
 
 
@@ -489,20 +491,73 @@ class GroupEditor(tk.Toplevel):
         self.title(group.name)
         self.fields = list(group.fields)
 
-        self.canvas = tk.Canvas(self, bg="white", width=group.width, height=group.height)
-        self.canvas.pack(side="left", fill="both", expand=True)
+        left = ttk.Frame(self)
+        left.pack(side="left", fill="both", expand=True)
+        self.canvas = tk.Canvas(
+            left,
+            bg="white",
+            width=group.width,
+            height=group.height,
+            scrollregion=(0, 0, group.width, group.height),
+        )
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        vs = ttk.Scrollbar(left, orient="vertical", command=self.canvas.yview)
+        vs.grid(row=0, column=1, sticky="ns")
+        hs = ttk.Scrollbar(left, orient="horizontal", command=self.canvas.xview)
+        hs.grid(row=1, column=0, sticky="ew")
+        self.canvas.configure(xscrollcommand=hs.set, yscrollcommand=vs.set)
+        left.rowconfigure(0, weight=1)
+        left.columnconfigure(0, weight=1)
 
         right = ttk.Frame(self)
         right.pack(side="right", fill="y", padx=5, pady=5)
+
+        ttk.Label(right, text="Szerokość:").pack(anchor="w")
+        self.width_var = tk.IntVar(value=int(group.width))
+        ttk.Entry(right, textvariable=self.width_var, width=6).pack(anchor="w")
+        ttk.Label(right, text="Wysokość:").pack(anchor="w")
+        self.height_var = tk.IntVar(value=int(group.height))
+        ttk.Entry(right, textvariable=self.height_var, width=6).pack(anchor="w")
+        ttk.Button(right, text="Zmień rozmiar", command=self.apply_size).pack(fill="x", pady=(0, 5))
+
+        ttk.Label(right, text="Kolumny:").pack(anchor="w")
+        self.col_var = tk.IntVar(value=group.columns)
+        ttk.Spinbox(right, from_=1, to=10, textvariable=self.col_var, width=5).pack(anchor="w")
+
+        ttk.Label(right, text="Kolejność:").pack(anchor="w", pady=(10, 0))
+        list_frame = ttk.Frame(right)
+        list_frame.pack(fill="x")
+        self.field_list = tk.Listbox(list_frame, height=6)
+        self.field_list.pack(side="left", fill="both", expand=True)
+        list_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.field_list.yview)
+        list_scroll.pack(side="right", fill="y")
+        self.field_list.configure(yscrollcommand=list_scroll.set)
+        for f in self.fields:
+            self.field_list.insert("end", f)
+        ttk.Button(right, text="Góra", command=self.move_up).pack(fill="x")
+        ttk.Button(right, text="Dół", command=self.move_down).pack(fill="x", pady=(0, 5))
+
         ttk.Label(right, text="Pola:").pack(anchor="w")
+        avail_container = ttk.Frame(right)
+        avail_container.pack(fill="both", expand=True)
+        avail_canvas = tk.Canvas(avail_container, height=150)
+        avail_canvas.pack(side="left", fill="both", expand=True)
+        avail_scroll = ttk.Scrollbar(avail_container, orient="vertical", command=avail_canvas.yview)
+        avail_scroll.pack(side="right", fill="y")
+        avail_canvas.configure(yscrollcommand=avail_scroll.set)
+        self.avail_frame = ttk.Frame(avail_canvas)
+        avail_canvas.create_window((0, 0), window=self.avail_frame, anchor="nw")
+        self.avail_frame.bind("<Configure>", lambda e: avail_canvas.configure(scrollregion=avail_canvas.bbox("all")))
 
         self.vars = {}
         available = list(parent.columns_vars.keys()) + list(parent.static_vars.keys())
         for name in available:
             var = tk.BooleanVar(value=name in self.fields)
             cb = ttk.Checkbutton(
-                right, text=name, variable=var,
-                command=lambda n=name, v=var: self.toggle_field(n, v)
+                self.avail_frame,
+                text=name,
+                variable=var,
+                command=lambda n=name, v=var: self.toggle_field(n, v),
             )
             cb.pack(anchor="w")
             self.vars[name] = var
@@ -510,12 +565,54 @@ class GroupEditor(tk.Toplevel):
         self.draw_items()
         self.protocol("WM_DELETE_WINDOW", self.close)
 
+    def apply_size(self):
+        try:
+            w = int(self.width_var.get())
+            h = int(self.height_var.get())
+        except ValueError:
+            return
+        self.group.width = w
+        self.group.height = h
+        self.group.sync_canvas()
+        self.canvas.configure(width=w, height=h, scrollregion=(0, 0, w, h))
+        self.draw_items()
+
+    def refresh_field_list(self, sel=None):
+        self.field_list.delete(0, "end")
+        for f in self.fields:
+            self.field_list.insert("end", f)
+        if sel is not None:
+            self.field_list.selection_set(sel)
+
+    def move_up(self):
+        sel = self.field_list.curselection()
+        if not sel or sel[0] == 0:
+            return
+        i = sel[0]
+        self.fields[i - 1], self.fields[i] = self.fields[i], self.fields[i - 1]
+        self.refresh_field_list(i - 1)
+        self.draw_items()
+
+    def move_down(self):
+        sel = self.field_list.curselection()
+        if not sel or sel[0] == len(self.fields) - 1:
+            return
+        i = sel[0]
+        self.fields[i], self.fields[i + 1] = self.fields[i + 1], self.fields[i]
+        self.refresh_field_list(i + 1)
+        self.draw_items()
+
     def draw_items(self):
         self.canvas.delete("all")
+        cols = max(1, self.col_var.get())
+        col_w = self.group.width / cols
         for idx, name in enumerate(self.fields):
-            y = idx * 25
-            self.canvas.create_rectangle(0, y, self.group.width, y + 25, outline="black")
-            self.canvas.create_text(2, y + 12, anchor="w", text=name)
+            row = idx // cols
+            col = idx % cols
+            y = row * 25
+            x = col * col_w
+            self.canvas.create_rectangle(x, y, x + col_w, y + 25, outline="black")
+            self.canvas.create_text(x + 2, y + 12, anchor="w", text=name)
 
     def toggle_field(self, name, var):
         if var.get():
@@ -524,10 +621,15 @@ class GroupEditor(tk.Toplevel):
         else:
             if name in self.fields:
                 self.fields.remove(name)
+        self.refresh_field_list()
         self.draw_items()
 
     def close(self):
         self.group.fields = list(self.fields)
+        self.group.columns = self.col_var.get()
+        self.group.width = self.width_var.get()
+        self.group.height = self.height_var.get()
+        self.group.sync_canvas()
         self.destroy()
 
 
@@ -681,6 +783,18 @@ class PDSGeneratorGUI(tk.Tk):
         self.row_var = tk.StringVar(value="1")
         ttk.Entry(preview_frame, textvariable=self.row_var, width=6).pack(side="left")
         ttk.Button(preview_frame, text="Podgląd", command=self.preview_row).pack(side="left", padx=5)
+
+        # Group list
+        ttk.Label(right_frame, text="Grupy:").pack(anchor="w", pady=(10, 0))
+        grp_container = ttk.Frame(right_frame)
+        grp_container.pack(fill="x")
+        self.groups_list = tk.Listbox(grp_container, height=5)
+        self.groups_list.pack(side="left", fill="both", expand=True)
+        grp_scroll = ttk.Scrollbar(grp_container, orient="vertical", command=self.groups_list.yview)
+        grp_scroll.pack(side="right", fill="y")
+        self.groups_list.configure(yscrollcommand=grp_scroll.set)
+        self.groups_list.bind("<Double-1>", lambda e: self.edit_selected_group())
+        ttk.Button(right_frame, text="Usuń grupę", command=self.remove_group).pack(fill="x", pady=(5, 0))
 
         # Buttons
         button_frame = ttk.Frame(right_frame)
@@ -843,6 +957,27 @@ class PDSGeneratorGUI(tk.Tk):
         name = f"Group{idx}"
         group = GroupArea(self, self.canvas, name)
         self.groups[name] = group
+        if hasattr(self, "groups_list"):
+            self.groups_list.insert("end", name)
+
+    def edit_selected_group(self):
+        sel = self.groups_list.curselection()
+        if sel:
+            name = self.groups_list.get(sel[0])
+            group = self.groups.get(name)
+            if group:
+                GroupEditor(self, group)
+
+    def remove_group(self):
+        sel = self.groups_list.curselection()
+        if not sel:
+            return
+        name = self.groups_list.get(sel[0])
+        group = self.groups.pop(name, None)
+        if group:
+            self.canvas.delete(group.rect)
+            self.canvas.delete(group.handle)
+        self.groups_list.delete(sel[0])
 
     def open_conditions(self):
         win = tk.Toplevel(self)
@@ -1027,7 +1162,10 @@ class PDSGeneratorGUI(tk.Tk):
             group.height = gconf.get("height", group.height) * self.scale
             group.sync_canvas()
             group.fields = gconf.get("fields", [])
+            group.columns = gconf.get("columns", 1)
             self.groups[group.name] = group
+            if hasattr(self, "groups_list"):
+                self.groups_list.insert("end", group.name)
 
     # ------------------------------------------------------------------
     def generate_pds(self):
@@ -1069,7 +1207,9 @@ class PDSGeneratorGUI(tk.Tk):
                         hidden.add(tgt)
                 processed = set()
                 for group in self.groups.values():
-                    current_y = group.y
+                    cols = max(1, group.columns)
+                    col_w = group.width / cols
+                    slot = 0
                     for fname in group.fields:
                         if fname in hidden:
                             continue
@@ -1078,7 +1218,6 @@ class PDSGeneratorGUI(tk.Tk):
                             continue
                         el = self.elements.get(fname)
                         if el:
-                            width = el.width
                             height = el.height
                             font_size = el.font_size
                             bold = el.bold
@@ -1088,7 +1227,6 @@ class PDSGeneratorGUI(tk.Tk):
                             align = el.align
                             auto_font = el.auto_font
                         else:
-                            width = group.width
                             height = 20
                             font_size = 12
                             bold = False
@@ -1098,7 +1236,7 @@ class PDSGeneratorGUI(tk.Tk):
                             align = "left"
                             auto_font = True
                         dummy = SimpleNamespace(
-                            width=width,
+                            width=col_w,
                             height=height,
                             font_size=font_size,
                             bold=bold,
@@ -1108,10 +1246,12 @@ class PDSGeneratorGUI(tk.Tk):
                             align=align,
                             auto_font=auto_font,
                         )
-                        x = group.x / self.scale
-                        y = page_height - (current_y / self.scale) - (height / self.scale)
+                        col = slot % cols
+                        row = slot // cols
+                        x = (group.x + col * col_w) / self.scale
+                        y = page_height - ((group.y + row * height) / self.scale) - (height / self.scale)
                         self.draw_pdf_element(c, dummy, val, x, y)
-                        current_y += height
+                        slot += 1
                         processed.add(fname)
                 for name, element in self.elements.items():
                     if name in hidden or name in processed:
