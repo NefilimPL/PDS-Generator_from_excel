@@ -593,14 +593,6 @@ class GroupEditor(tk.Toplevel):
         right = ttk.Frame(main)
         right.pack(side="right", fill="y", padx=5, pady=5)
 
-        ttk.Label(right, text="Szerokość:").pack(anchor="w")
-        self.width_var = tk.IntVar(value=int(group.width))
-        ttk.Entry(right, textvariable=self.width_var, width=6).pack(anchor="w")
-        ttk.Label(right, text="Wysokość:").pack(anchor="w")
-        self.height_var = tk.IntVar(value=int(group.height))
-        ttk.Entry(right, textvariable=self.height_var, width=6).pack(anchor="w")
-        ttk.Button(right, text="Zmień rozmiar", command=self.apply_size).pack(fill="x", pady=(0, 5))
-
         ttk.Label(right, text="Pola:").pack(anchor="w")
         avail_container = ttk.Frame(right)
         avail_container.pack(fill="both", expand=True)
@@ -683,18 +675,6 @@ class GroupEditor(tk.Toplevel):
                         self.canvas.delete(item)
             if name in self.group.fields:
                 self.group.fields.remove(name)
-
-    def apply_size(self):
-        try:
-            w = int(self.width_var.get())
-            h = int(self.height_var.get())
-        except ValueError:
-            return
-        self.group.width = w
-        self.group.height = h
-        self.group.sync_canvas()
-        self.canvas.config(width=max(400, w), height=max(300, h), scrollregion=(0, 0, w, h))
-        self.draw_grid()
 
     def select_element(self, element, additive=False):
         if not additive:
@@ -912,8 +892,6 @@ class GroupEditor(tk.Toplevel):
             }
             for name, el in self.elements.items()
         }
-        self.group.width = self.width_var.get()
-        self.group.height = self.height_var.get()
         self.group.sync_canvas()
         self.group.draw_preview()
         self.parent.push_history()
@@ -1617,14 +1595,20 @@ class PDSGeneratorGUI(tk.Tk):
                     if pd.isna(value):
                         value = ""
                     values[name] = value
+                group_field_names = {fname for g in self.groups.values() for fname in g.fields}
+
                 hidden = set()
                 for src, tgt in self.conditions:
+                    if src in group_field_names or tgt in group_field_names:
+                        continue
                     if pd.isna(values.get(src)) or values.get(src) == "":
                         hidden.add(tgt)
                 processed = set()
                 for group in self.groups.values():
                     g_hidden = set()
                     for src, tgt in group.conditions:
+                        if src not in group.fields or tgt not in group.fields:
+                            continue
                         if pd.isna(values.get(src)) or values.get(src) == "":
                             g_hidden.add(tgt)
                     step = self.snap_step
