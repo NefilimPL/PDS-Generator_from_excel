@@ -514,29 +514,24 @@ class GroupArea:
         self.preview_items = []
         if not self.fields:
             return
-        items = []
+        columns = {}
         for name in self.fields:
             x, y = self.field_pos.get(name, (0, 0))
             conf = self.field_conf.get(name, {})
             w = conf.get("width", 50)
             h = conf.get("height", 25)
-            items.append((y, x, name, w, h))
-        items.sort()
-        placed = []
-        for y0, x, name, w, h in items:
-            new_y = y0
-            for px, py, pw, ph in placed:
-                if not (x + w <= px or x >= px + pw):
-                    if new_y < py + ph:
-                        new_y = py + ph
-            if new_y + h > self.height:
-                continue
-            x1 = self.x + x
-            y1 = self.y + new_y
-            r = self.canvas.create_rectangle(x1, y1, x1 + w, y1 + h, outline="blue")
-            t = self.canvas.create_text(x1 + 2, y1 + h / 2, anchor="w", text=name)
-            self.preview_items.extend([r, t])
-            placed.append((x, new_y, w, h))
+            columns.setdefault(x, []).append((y, name, w, h))
+        for x in sorted(columns):
+            y_cursor = 0
+            for _, name, w, h in sorted(columns[x]):
+                if y_cursor + h > self.height:
+                    continue
+                x1 = self.x + x
+                y1 = self.y + y_cursor
+                r = self.canvas.create_rectangle(x1, y1, x1 + w, y1 + h, outline="blue")
+                t = self.canvas.create_text(x1 + 2, y1 + h / 2, anchor="w", text=name)
+                self.preview_items.extend([r, t])
+                y_cursor += h
         self.send_to_back()
 
 
@@ -785,21 +780,23 @@ class GroupEditor(tk.Toplevel):
         el = self.selected_element
         if not el:
             return
-        color = colorchooser.askcolor(color=el.text_color)[1]
+        color = colorchooser.askcolor(color=el.text_color, parent=self)[1]
         if color:
             el.text_color = color
             el.update_colors()
+        self.focus_force()
 
     def choose_bg_color(self):
         el = self.selected_element
         if not el:
             return
-        color = colorchooser.askcolor(color=el.bg_color)[1]
+        color = colorchooser.askcolor(color=el.bg_color, parent=self)[1]
         if color:
             el.bg_color = color
             el.bg_visible = True
             self.transparent_var.set(False)
             el.update_colors()
+        self.focus_force()
 
     def toggle_bg_visible(self):
         el = self.selected_element
@@ -1338,6 +1335,8 @@ class PDSGeneratorGUI(tk.Tk):
         if group:
             self.canvas.delete(group.rect)
             self.canvas.delete(group.handle)
+            for item in getattr(group, "preview_items", []):
+                self.canvas.delete(item)
         self.groups_list.delete(sel[0])
         self.push_history()
 
@@ -1612,32 +1611,30 @@ class PDSGeneratorGUI(tk.Tk):
                         width = conf.get("width", el.width if el else 0)
                         height = conf.get("height", el.height if el else 0)
                         x0, y0 = positions.get(fname, (0, 0))
-                        items.append((y0, x0, fname, width, height, conf, el, val))
-                    items.sort()
-                    placed = []
-                    for y0, x0, fname, width, height, conf, el, val in items:
-                        new_y = y0
-                        for px, py, pw, ph in placed:
-                            if not (x0 + width <= px or x0 >= px + pw):
-                                if new_y < py + ph:
-                                    new_y = py + ph
-                        if new_y + height > group.height:
-                            continue
-                        dummy = SimpleNamespace(
-                            width=width,
-                            height=height,
-                            font_size=conf.get("font_size", el.font_size if el else 12),
-                            bold=conf.get("bold", el.bold if el else False),
-                            text_color=conf.get("text_color", el.text_color if el else "black"),
-                            bg_color=conf.get("bg_color", el.bg_color if el else "white"),
-                            bg_visible=conf.get("bg_visible", el.bg_visible if el else True),
-                            align=conf.get("align", el.align if el else "left"),
-                            auto_font=conf.get("auto_font", el.auto_font if el else True),
-                        )
-                        x_pdf = (group.x + x0) / self.scale
-                        y_pdf = page_height - (group.y + new_y + height) / self.scale
-                        self.draw_pdf_element(c, dummy, val, x_pdf, y_pdf)
-                        placed.append((x0, new_y, width, height))
+                        items.append((x0, y0, fname, width, height, conf, el, val))
+                    columns = {}
+                    for x0, y0, fname, width, height, conf, el, val in items:
+                        columns.setdefault(x0, []).append((y0, fname, width, height, conf, el, val))
+                    for x0 in sorted(columns):
+                        y_cursor = 0
+                        for _, fname, width, height, conf, el, val in sorted(columns[x0]):
+                            if y_cursor + height > group.height:
+                                continue
+                            dummy = SimpleNamespace(
+                                width=width,
+                                height=height,
+                                font_size=conf.get("font_size", el.font_size if el else 12),
+                                bold=conf.get("bold", el.bold if el else False),
+                                text_color=conf.get("text_color", el.text_color if el else "black"),
+                                bg_color=conf.get("bg_color", el.bg_color if el else "white"),
+                                bg_visible=conf.get("bg_visible", el.bg_visible if el else True),
+                                align=conf.get("align", el.align if el else "left"),
+                                auto_font=conf.get("auto_font", el.auto_font if el else True),
+                            )
+                            x_pdf = (group.x + x0) / self.scale
+                            y_pdf = page_height - (group.y + y_cursor + height) / self.scale
+                            self.draw_pdf_element(c, dummy, val, x_pdf, y_pdf)
+                            y_cursor += height
                 for name, element in self.elements.items():
                     if name in hidden:
                         continue
@@ -1946,23 +1943,25 @@ class PDSGeneratorGUI(tk.Tk):
         el = self.selected_element
         if not el:
             return
-        color = colorchooser.askcolor(color=el.text_color)[1]
+        color = colorchooser.askcolor(color=el.text_color, parent=self)[1]
         if color:
             el.text_color = color
             el.update_colors()
             self.push_history()
+        self.focus_force()
 
     def choose_bg_color(self):
         el = self.selected_element
         if not el:
             return
-        color = colorchooser.askcolor(color=el.bg_color)[1]
+        color = colorchooser.askcolor(color=el.bg_color, parent=self)[1]
         if color:
             el.bg_color = color
             el.bg_visible = True
             self.transparent_var.set(False)
             el.update_colors()
             self.push_history()
+        self.focus_force()
 
     def toggle_bg_visible(self):
         el = self.selected_element
