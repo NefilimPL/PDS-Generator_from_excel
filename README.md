@@ -23,6 +23,9 @@ Po uruchomieniu aplikacji:
 11. Zapisz konfigurację (zapamiętuje ostatni plik Excel i ustawienia pól) lub wygeneruj pliki PDF dla wszystkich wierszy Excela; generator próbuje nadpisać istniejące pliki, a gdy są zablokowane, zapisuje nową wersję z inną nazwą.
 12. Przyciskiem **Warunki** można zdefiniować zależności: jeżeli wskazane pole jest puste, inne pola zostaną pominięte podczas generowania.
 13. **Dodaj grupę** tworzy na stronie półprzezroczyste pole z podglądem zawartości. Dwukrotne kliknięcie otwiera edytor z taką samą siatką i paskiem formatowania jak w głównym oknie; pola można dodawać z listy, przeciągać, zmieniać ich czcionkę, kolory, wyrównanie oraz definiować warunki ukrywania. Kolumny powstają automatycznie w zależności od położenia elementów, a ich kolejność ustala się przez przeciąganie. Podgląd na stronie głównej pokazuje układ bloków ograniczony do obszaru grupy i nie pozwala, by dane wychodziły poza jej granice.
+    Ustawienia pól w grupie (rozmiary, kolory, wyrównanie) są niezależne od tych samych pól na głównej stronie i zapisywane w konfiguracji.
+
+14. Skrót `Ctrl+Z` cofa ostatnią zmianę na stronie, a `Ctrl+X` przywraca cofniętą modyfikację.
 
 Wymagane biblioteki są instalowane automatycznie przy pierwszym uruchomieniu skryptu.
 
