@@ -845,6 +845,11 @@ class GroupEditor(tk.Toplevel):
         ttk.Button(win, text="Dodaj", command=add).grid(row=3, column=0, sticky="ew")
         ttk.Button(win, text="Usuń", command=remove).grid(row=3, column=1, sticky="ew")
 
+    def push_history(self):
+        """Delegate history recording to the main window."""
+        if hasattr(self.parent, "push_history"):
+            self.parent.push_history()
+
     def close(self):
         self.group.field_pos = {name: (el.x, el.y) for name, el in self.elements.items()}
         self.group.fields = list(self.group.field_pos.keys())
@@ -1586,7 +1591,6 @@ class PDSGeneratorGUI(tk.Tk):
                         continue
                     if pd.isna(values.get(src)) or values.get(src) == "":
                         hidden.add(tgt)
-                processed = set()
                 for group in self.groups.values():
                     g_hidden = set()
                     for src, tgt in group.conditions:
@@ -1633,9 +1637,8 @@ class PDSGeneratorGUI(tk.Tk):
                             y = page_height - (y_cursor / self.scale) - (height / self.scale)
                             self.draw_pdf_element(c, dummy, val, x, y)
                             y_cursor += height
-                            processed.add(fname)
                 for name, element in self.elements.items():
-                    if name in hidden or name in processed:
+                    if name in hidden:
                         continue
                     val = values.get(name, "")
                     x = element.x / self.scale
