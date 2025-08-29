@@ -378,6 +378,9 @@ class GroupArea:
     def send_to_back(self):
         self.canvas.tag_lower(self.rect)
         self.canvas.tag_lower(self.handle)
+        # keep the group visible above the page/grid but behind elements
+        self.canvas.tag_raise(self.rect, "grid")
+        self.canvas.tag_raise(self.handle, "grid")
 
     def start_move(self, event):
         self.last_x = event.x
