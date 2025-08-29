@@ -376,12 +376,25 @@ class GroupArea:
     def start_move(self, event):
         self.last_x = event.x
         self.last_y = event.y
+        # capture elements currently inside so they move with the group
+        self.children = [
+            el
+            for el in self.parent.elements.values()
+            if self.parent.element_in_group(el, self)
+        ]
 
     def moving(self, event):
         dx = event.x - self.last_x
         dy = event.y - self.last_y
         for item in (self.rect, self.handle):
             self.canvas.move(item, dx, dy)
+        # move contained elements together with the group
+        for el in self.children:
+            for item in (el.rect, el.label, el.handle, getattr(el, "image_id", None)):
+                if item:
+                    self.canvas.move(item, dx, dy)
+            el.x += dx
+            el.y += dy
         self.x += dx
         self.y += dy
         self.last_x = event.x
@@ -389,9 +402,21 @@ class GroupArea:
 
     def stop_move(self, event):
         step = self.parent.snap_step
-        self.x = round(self.x / step) * step
-        self.y = round(self.y / step) * step
+        new_x = round(self.x / step) * step
+        new_y = round(self.y / step) * step
+        dx = new_x - self.x
+        dy = new_y - self.y
+        self.x = new_x
+        self.y = new_y
         self.sync_canvas()
+        # snap children by the same offset
+        if dx or dy:
+            for el in self.children:
+                for item in (el.rect, el.label, el.handle, getattr(el, "image_id", None)):
+                    if item:
+                        self.canvas.move(item, dx, dy)
+                el.x += dx
+                el.y += dy
 
     def start_resize(self, event):
         self.start_x = event.x

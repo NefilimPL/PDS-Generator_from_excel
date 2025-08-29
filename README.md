@@ -22,7 +22,7 @@ Po uruchomieniu aplikacji:
 10. Zaznaczone pole może mieć przezroczyste tło (przycisk **Przezroczyste**) lub kolor, dzięki czemu tekst da się nakładać na inne elementy.
 11. Zapisz konfigurację (zapamiętuje ostatni plik Excel i ustawienia pól) lub wygeneruj pliki PDF dla wszystkich wierszy Excela; generator próbuje nadpisać istniejące pliki, a gdy są zablokowane, zapisuje nową wersję z inną nazwą.
 12. Przyciskiem **Warunki** można zdefiniować zależności: jeżeli wskazane pole jest puste, inne pola zostaną pominięte podczas generowania.
-13. **Dodaj grupę** tworzy półprzezroczyste pole grupy, w którym elementy układają się jeden pod drugim z pominięciem pustych wartości.
+13. **Dodaj grupę** tworzy półprzezroczyste pole grupy, w którym elementy układają się jeden pod drugim z pominięciem pustych wartości i przemieszczają się razem z grupą.
 
 Wymagane biblioteki są instalowane automatycznie przy pierwszym uruchomieniu skryptu.
 
