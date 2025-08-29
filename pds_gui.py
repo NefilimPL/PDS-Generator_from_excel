@@ -514,27 +514,41 @@ class GroupArea:
         self.preview_items = []
         if not self.fields:
             return
-        # Stack fields within each column from the top, skipping empty space
-        # so that the preview mirrors the final PDF layout.
+        # Build columns keyed by their x position
         cols = {}
         for name in self.fields:
-            x, y = self.field_pos.get(name, (0, 0))
+            x, _y = self.field_pos.get(name, (0, 0))
             conf = self.field_conf.get(name, {})
             w = conf.get("width", 50)
             h = conf.get("height", 25)
-            cols.setdefault(x, []).append((y, w, h, name))
-        for x, items in cols.items():
+            cols.setdefault(x, []).append((self.field_pos.get(name, (0, 0))[1], w, h, name))
+
+        placed = []  # keep already positioned rectangles to detect collisions
+        for x in sorted(cols):
+            items = cols[x]
             items.sort(key=lambda t: t[0])
             cur_y = 0
             for _, w, h, name in items:
-                if cur_y + h > self.height:
+                y = cur_y
+                # push down while colliding with any previously placed item
+                while True:
+                    overlap = False
+                    for px, py, pw, ph in placed:
+                        if x < px + pw and x + w > px and y < py + ph:
+                            y = py + ph
+                            overlap = True
+                            break
+                    if not overlap:
+                        break
+                if y + h > self.height:
                     continue
                 x1 = self.x + x
-                y1 = self.y + cur_y
+                y1 = self.y + y
                 r = self.canvas.create_rectangle(x1, y1, x1 + w, y1 + h, outline="blue")
                 t = self.canvas.create_text(x1 + 2, y1 + h / 2, anchor="w", text=name)
                 self.preview_items.extend([r, t])
-                cur_y += h
+                placed.append((x, y, w, h))
+                cur_y = y + h
         self.send_to_back()
 
 
@@ -582,8 +596,8 @@ class GroupEditor(tk.Toplevel):
         self.canvas = tk.Canvas(
             left,
             bg="white",
-            width=max(400, group.width),
-            height=max(300, group.height),
+            width=group.width,
+            height=group.height,
             scrollregion=(0, 0, group.width, group.height),
         )
         self.canvas.pack(fill="both", expand=True)
@@ -989,7 +1003,7 @@ class PDSGeneratorGUI(tk.Tk):
         ttk.Label(zoom_frame, textvariable=self.zoom_var).pack(side="right", padx=5)
 
         right_container = ttk.Frame(self)
-        right_container.pack(side="left", fill="y", padx=5, pady=5)
+        right_container.pack(side="right", fill="y", padx=5, pady=5)
         self.right_canvas = tk.Canvas(right_container, width=300)
         right_scroll = ttk.Scrollbar(right_container, orient="vertical", command=self.right_canvas.yview)
         self.right_canvas.configure(yscrollcommand=right_scroll.set)
@@ -1588,9 +1602,8 @@ class PDSGeneratorGUI(tk.Tk):
 
                 hidden = set()
                 for src, tgt in self.conditions:
-                    # Do not hide fields that belong to any group, but allow
-                    # group fields to act as sources for main-page conditions.
-                    if tgt in group_field_names:
+                    # Global conditions should not refer to group fields at all
+                    if src in group_field_names or tgt in group_field_names:
                         continue
                     if pd.isna(values.get(src)) or values.get(src) == "":
                         hidden.add(tgt)
@@ -1618,11 +1631,23 @@ class PDSGeneratorGUI(tk.Tk):
                         x0, y0 = positions.get(fname, (0, 0))
                         columns.setdefault(x0, []).append((y0, fname, width, height, conf, el, val))
 
-                    for x0, col_items in columns.items():
+                    placed = []
+                    for x0 in sorted(columns):
+                        col_items = columns[x0]
                         col_items.sort(key=lambda t: t[0])
                         cur_y = 0
                         for _, fname, width, height, conf, el, val in col_items:
-                            if cur_y + height > group.height:
+                            y = cur_y
+                            while True:
+                                overlap = False
+                                for px, py, pw, ph in placed:
+                                    if x0 < px + pw and x0 + width > px and y < py + ph:
+                                        y = py + ph
+                                        overlap = True
+                                        break
+                                if not overlap:
+                                    break
+                            if y + height > group.height:
                                 continue
                             dummy = SimpleNamespace(
                                 width=width,
@@ -1636,9 +1661,10 @@ class PDSGeneratorGUI(tk.Tk):
                                 auto_font=conf.get("auto_font", el.auto_font if el else True),
                             )
                             x_pdf = (group.x + x0) / self.scale
-                            y_pdf = page_height - (group.y + cur_y + height) / self.scale
+                            y_pdf = page_height - (group.y + y + height) / self.scale
                             self.draw_pdf_element(c, dummy, val, x_pdf, y_pdf)
-                            cur_y += height
+                            placed.append((x0, y, width, height))
+                            cur_y = y + height
                 for name, element in self.elements.items():
                     if name in hidden:
                         continue
