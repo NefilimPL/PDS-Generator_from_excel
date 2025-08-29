@@ -158,8 +158,10 @@ class DraggableElement:
     def stop_move(self, event):
         step = self.parent.snap_step
         for el in self.parent.selected_elements:
-            el.x = round(el.x / step) * step
-            el.y = round(el.y / step) * step
+            # snap top-left corner to the grid with integer multiples to
+            # avoid sub-pixel artefacts when adjacent blocks touch
+            el.x = int(round(el.x / step)) * step
+            el.y = int(round(el.y / step)) * step
             el.sync_canvas()
         self.parent.push_history()
 
@@ -183,8 +185,9 @@ class DraggableElement:
 
     def stop_resize(self, event):
         step = self.parent.snap_step
-        self.width = max(step, round(self.width / step) * step)
-        self.height = max(step, round(self.height / step) * step)
+        # normalise width/height so edges line up exactly on the grid
+        self.width = max(step, int(round(self.width / step)) * step)
+        self.height = max(step, int(round(self.height / step)) * step)
         self.sync_canvas()
         self.parent.push_history()
 
@@ -419,8 +422,8 @@ class GroupArea:
 
     def stop_move(self, event):
         step = self.parent.snap_step
-        new_x = round(self.x / step) * step
-        new_y = round(self.y / step) * step
+        new_x = int(round(self.x / step)) * step
+        new_y = int(round(self.y / step)) * step
         dx = new_x - self.x
         dy = new_y - self.y
         self.x = new_x
@@ -451,8 +454,8 @@ class GroupArea:
 
     def stop_resize(self, event):
         step = self.parent.snap_step
-        self.width = max(step, round(self.width / step) * step)
-        self.height = max(step, round(self.height / step) * step)
+        self.width = max(step, int(round(self.width / step)) * step)
+        self.height = max(step, int(round(self.height / step)) * step)
         self.sync_canvas()
 
     def sync_canvas(self):
@@ -534,7 +537,17 @@ class GroupArea:
                 while True:
                     overlap = False
                     for px, py, pw, ph in placed:
-                        if x < px + pw and x + w > px and y < py + ph:
+                        # Only treat as a collision when the candidate
+                        # rectangle overlaps horizontally and vertically with
+                        # a previously placed one. Ignoring blocks entirely
+                        # below prevents reordering when a tall block exists
+                        # underneath a smaller one.
+                        if (
+                            x < px + pw
+                            and x + w > px
+                            and y < py + ph
+                            and y + h > py
+                        ):
                             y = py + ph
                             overlap = True
                             break
@@ -1641,7 +1654,12 @@ class PDSGeneratorGUI(tk.Tk):
                             while True:
                                 overlap = False
                                 for px, py, pw, ph in placed:
-                                    if x0 < px + pw and x0 + width > px and y < py + ph:
+                                    if (
+                                        x0 < px + pw
+                                        and x0 + width > px
+                                        and y < py + ph
+                                        and y + height > py
+                                    ):
                                         y = py + ph
                                         overlap = True
                                         break
