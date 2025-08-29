@@ -514,38 +514,27 @@ class GroupArea:
         self.preview_items = []
         if not self.fields:
             return
-        # Sort fields by their intended Y position and push them downward
-        # whenever they overlap an earlier item. This mimics the stacking
-        # logic used during PDF generation so the preview reflects the final
-        # layout inside the group.
-        items = []
+        # Stack fields within each column from the top, skipping empty space
+        # so that the preview mirrors the final PDF layout.
+        cols = {}
         for name in self.fields:
             x, y = self.field_pos.get(name, (0, 0))
             conf = self.field_conf.get(name, {})
             w = conf.get("width", 50)
             h = conf.get("height", 25)
-            items.append((x, y, w, h, name))
-        items.sort(key=lambda t: t[1])
-        placed = []
-        for x, y, w, h, name in items:
-            new_y = y
-            while True:
-                overlap = False
-                for px, py, pw, ph, _ in placed:
-                    if not (x + w <= px or x >= px + pw):
-                        if new_y < py + ph and py < new_y + h:
-                            new_y = py + ph
-                            overlap = True
-                if not overlap:
-                    break
-            if new_y + h > self.height:
-                continue
-            x1 = self.x + x
-            y1 = self.y + new_y
-            r = self.canvas.create_rectangle(x1, y1, x1 + w, y1 + h, outline="blue")
-            t = self.canvas.create_text(x1 + 2, y1 + h / 2, anchor="w", text=name)
-            self.preview_items.extend([r, t])
-            placed.append((x, new_y, w, h, name))
+            cols.setdefault(x, []).append((y, w, h, name))
+        for x, items in cols.items():
+            items.sort(key=lambda t: t[0])
+            cur_y = 0
+            for _, w, h, name in items:
+                if cur_y + h > self.height:
+                    continue
+                x1 = self.x + x
+                y1 = self.y + cur_y
+                r = self.canvas.create_rectangle(x1, y1, x1 + w, y1 + h, outline="blue")
+                t = self.canvas.create_text(x1 + 2, y1 + h / 2, anchor="w", text=name)
+                self.preview_items.extend([r, t])
+                cur_y += h
         self.send_to_back()
 
 
@@ -1599,7 +1588,9 @@ class PDSGeneratorGUI(tk.Tk):
 
                 hidden = set()
                 for src, tgt in self.conditions:
-                    if src in group_field_names or tgt in group_field_names:
+                    # Do not hide fields that belong to any group, but allow
+                    # group fields to act as sources for main-page conditions.
+                    if tgt in group_field_names:
                         continue
                     if pd.isna(values.get(src)) or values.get(src) == "":
                         hidden.add(tgt)
@@ -1611,7 +1602,7 @@ class PDSGeneratorGUI(tk.Tk):
                         if pd.isna(values.get(src)) or values.get(src) == "":
                             g_hidden.add(tgt)
                     positions = group.field_pos
-                    items = []
+                    columns = {}
                     for fname in group.fields:
                         if fname in hidden or fname in g_hidden:
                             continue
@@ -1625,41 +1616,29 @@ class PDSGeneratorGUI(tk.Tk):
                         width = conf.get("width", el.width if el else 0)
                         height = conf.get("height", el.height if el else 0)
                         x0, y0 = positions.get(fname, (0, 0))
-                        items.append((x0, y0, fname, width, height, conf, el, val))
+                        columns.setdefault(x0, []).append((y0, fname, width, height, conf, el, val))
 
-                    # Push each item downward until it no longer overlaps a previously
-                    # placed item. This ensures elements inside the group do not collide
-                    # regardless of their column assignments.
-                    items.sort(key=lambda t: t[1])
-                    placed = []
-                    for x0, y0, fname, width, height, conf, el, val in items:
-                        new_y = y0
-                        while True:
-                            overlap = False
-                            for px, py, pw, ph in placed:
-                                if not (x0 + width <= px or x0 >= px + pw):
-                                    if new_y < py + ph and py < new_y + height:
-                                        new_y = py + ph
-                                        overlap = True
-                            if not overlap:
-                                break
-                        if new_y + height > group.height:
-                            continue
-                        dummy = SimpleNamespace(
-                            width=width,
-                            height=height,
-                            font_size=conf.get("font_size", el.font_size if el else 12),
-                            bold=conf.get("bold", el.bold if el else False),
-                            text_color=conf.get("text_color", el.text_color if el else "black"),
-                            bg_color=conf.get("bg_color", el.bg_color if el else "white"),
-                            bg_visible=conf.get("bg_visible", el.bg_visible if el else True),
-                            align=conf.get("align", el.align if el else "left"),
-                            auto_font=conf.get("auto_font", el.auto_font if el else True),
-                        )
-                        x_pdf = (group.x + x0) / self.scale
-                        y_pdf = page_height - (group.y + new_y + height) / self.scale
-                        self.draw_pdf_element(c, dummy, val, x_pdf, y_pdf)
-                        placed.append((x0, new_y, width, height))
+                    for x0, col_items in columns.items():
+                        col_items.sort(key=lambda t: t[0])
+                        cur_y = 0
+                        for _, fname, width, height, conf, el, val in col_items:
+                            if cur_y + height > group.height:
+                                continue
+                            dummy = SimpleNamespace(
+                                width=width,
+                                height=height,
+                                font_size=conf.get("font_size", el.font_size if el else 12),
+                                bold=conf.get("bold", el.bold if el else False),
+                                text_color=conf.get("text_color", el.text_color if el else "black"),
+                                bg_color=conf.get("bg_color", el.bg_color if el else "white"),
+                                bg_visible=conf.get("bg_visible", el.bg_visible if el else True),
+                                align=conf.get("align", el.align if el else "left"),
+                                auto_font=conf.get("auto_font", el.auto_font if el else True),
+                            )
+                            x_pdf = (group.x + x0) / self.scale
+                            y_pdf = page_height - (group.y + cur_y + height) / self.scale
+                            self.draw_pdf_element(c, dummy, val, x_pdf, y_pdf)
+                            cur_y += height
                 for name, element in self.elements.items():
                     if name in hidden:
                         continue
