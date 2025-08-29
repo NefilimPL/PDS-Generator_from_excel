@@ -368,7 +368,7 @@ class GroupArea:
             self.y + self.height - self.HANDLE_SIZE,
             self.x + self.width,
             self.y + self.height,
-            fill="blue",
+            fill="black",
         )
         for tag in (self.rect,):
             canvas.tag_bind(tag, "<ButtonPress-1>", self.start_move)
@@ -385,9 +385,10 @@ class GroupArea:
     def send_to_back(self):
         self.canvas.tag_lower(self.rect)
         self.canvas.tag_lower(self.handle)
-        # keep the group visible above the page/grid but behind elements
+        # keep the group rectangle behind elements but ensure the handle is
+        # always accessible above them
         self.canvas.tag_raise(self.rect, "grid")
-        self.canvas.tag_raise(self.handle, "grid")
+        self.canvas.tag_raise(self.handle)
 
     def start_move(self, event):
         self.last_x = event.x
@@ -473,7 +474,11 @@ class GroupArea:
         self.draw_preview()
 
     def open_editor(self, event=None):
-        GroupEditor(self.parent, self)
+        if getattr(self, "editor", None) and self.editor.winfo_exists():
+            self.editor.lift()
+            self.editor.focus_force()
+        else:
+            self.editor = GroupEditor(self.parent, self)
 
     def to_dict(self):
         scale = self.parent.scale
@@ -601,17 +606,20 @@ class GroupEditor(tk.Toplevel):
         avail_scroll = ttk.Scrollbar(avail_container, orient="vertical", command=avail_canvas.yview)
         avail_scroll.pack(side="right", fill="y")
         avail_canvas.configure(yscrollcommand=avail_scroll.set)
+        avail_canvas.bind("<MouseWheel>", lambda e: avail_canvas.yview_scroll(int(-e.delta / 120), "units"))
         self.avail_frame = ttk.Frame(avail_canvas)
         avail_canvas.create_window((0, 0), window=self.avail_frame, anchor="nw")
         self.avail_frame.bind("<Configure>", lambda e: avail_canvas.configure(scrollregion=avail_canvas.bbox("all")))
+        self.avail_frame.bind("<MouseWheel>", lambda e: avail_canvas.yview_scroll(int(-e.delta / 120), "units"))
 
         self.vars = {}
         available = list(parent.columns_vars.keys()) + list(parent.static_vars.keys())
         for name in available:
             var = tk.BooleanVar(value=name in group.field_pos)
+            label = parent.display_name(name)
             cb = ttk.Checkbutton(
                 self.avail_frame,
-                text=name,
+                text=label,
                 variable=var,
                 command=lambda n=name, v=var: self.toggle_field(n, v),
             )
@@ -741,11 +749,6 @@ class GroupEditor(tk.Toplevel):
             return
         el.bold = not el.bold
         el.apply_font()
-        self.push_history()
-        src = self.parent.elements.get(el.name)
-        if src:
-            src.bold = el.bold
-            src.apply_font()
 
     def increase_font(self):
         el = self.selected_element
@@ -755,11 +758,6 @@ class GroupEditor(tk.Toplevel):
         el.auto_font = False
         el.apply_font()
         self.font_size_var.set(str(int(el.font_size)))
-        src = self.parent.elements.get(el.name)
-        if src:
-            src.font_size = el.font_size
-            src.auto_font = False
-            src.apply_font()
 
     def decrease_font(self):
         el = self.selected_element
@@ -769,11 +767,6 @@ class GroupEditor(tk.Toplevel):
         el.auto_font = False
         el.apply_font()
         self.font_size_var.set(str(int(el.font_size)))
-        src = self.parent.elements.get(el.name)
-        if src:
-            src.font_size = el.font_size
-            src.auto_font = False
-            src.apply_font()
 
     def set_font_size(self):
         el = self.selected_element
@@ -788,11 +781,6 @@ class GroupEditor(tk.Toplevel):
         el.font_size = size
         el.auto_font = False
         el.apply_font()
-        src = self.parent.elements.get(el.name)
-        if src:
-            src.font_size = size
-            src.auto_font = False
-            src.apply_font()
 
     def choose_text_color(self):
         el = self.selected_element
@@ -802,10 +790,6 @@ class GroupEditor(tk.Toplevel):
         if color:
             el.text_color = color
             el.update_colors()
-            src = self.parent.elements.get(el.name)
-            if src:
-                src.text_color = color
-                src.update_colors()
 
     def choose_bg_color(self):
         el = self.selected_element
@@ -817,11 +801,6 @@ class GroupEditor(tk.Toplevel):
             el.bg_visible = True
             self.transparent_var.set(False)
             el.update_colors()
-            src = self.parent.elements.get(el.name)
-            if src:
-                src.bg_color = color
-                src.bg_visible = True
-                src.update_colors()
 
     def toggle_bg_visible(self):
         el = self.selected_element
@@ -829,10 +808,6 @@ class GroupEditor(tk.Toplevel):
             return
         el.bg_visible = not self.transparent_var.get()
         el.update_colors()
-        src = self.parent.elements.get(el.name)
-        if src:
-            src.bg_visible = el.bg_visible
-            src.update_colors()
 
     def set_alignment(self, align):
         if not self.selected_elements:
@@ -840,10 +815,6 @@ class GroupEditor(tk.Toplevel):
         for el in self.selected_elements:
             el.align = align
             el.sync_canvas()
-            src = self.parent.elements.get(el.name)
-            if src:
-                src.align = align
-                src.sync_canvas()
 
     def open_conditions(self):
         win = tk.Toplevel(self)
@@ -895,6 +866,7 @@ class GroupEditor(tk.Toplevel):
         self.group.sync_canvas()
         self.group.draw_preview()
         self.parent.push_history()
+        self.group.editor = None
         self.destroy()
 # ---------------------------------------------------------------------------
 # GUI Application
@@ -1183,6 +1155,17 @@ class PDSGeneratorGUI(tk.Tk):
         if name in self.elements:
             self.elements[name].update_value(self.static_entries[name].get())
             self.push_history()
+
+    def display_name(self, name):
+        """Return field name including its current text value for lists."""
+        if name in self.static_entries:
+            text = self.static_entries[name].get()
+            if text:
+                return f"{name}: {text}"
+        el = self.elements.get(name)
+        if el and getattr(el, "text", ""):
+            return f"{name}: {el.text}"
+        return name
 
     def create_static_row(self, name, value=None):
         row = ttk.Frame(self.static_frame)
