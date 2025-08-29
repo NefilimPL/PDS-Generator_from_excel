@@ -7,6 +7,7 @@ import subprocess
 import importlib
 import math
 from io import BytesIO
+from types import SimpleNamespace
 
 # Automatically ensure required third-party modules are available
 REQUIRED_PACKAGES = {
@@ -338,10 +339,13 @@ class GroupArea:
         self.parent = parent
         self.canvas = canvas
         self.name = name
-        self.x = canvas.winfo_width() // 2 - 50
-        self.y = canvas.winfo_height() // 2 - 50
+        # Place the group roughly at the centre of the page rather than
+        # relative to the widget size which could refer to a different canvas
+        self.x = parent.page_width * parent.scale / 2 - 50
+        self.y = parent.page_height * parent.scale / 2 - 50
         self.width = 100
         self.height = 100
+        self.fields = []  # names of elements contained in this group
         self.rect = canvas.create_rectangle(
             self.x,
             self.y,
@@ -364,9 +368,11 @@ class GroupArea:
             canvas.tag_bind(tag, "<ButtonPress-1>", self.start_move)
             canvas.tag_bind(tag, "<B1-Motion>", self.moving)
             canvas.tag_bind(tag, "<ButtonRelease-1>", self.stop_move)
+            canvas.tag_bind(tag, "<Double-1>", self.open_editor)
         canvas.tag_bind(self.handle, "<ButtonPress-1>", self.start_resize)
         canvas.tag_bind(self.handle, "<B1-Motion>", self.resizing)
         canvas.tag_bind(self.handle, "<ButtonRelease-1>", self.stop_resize)
+        canvas.tag_bind(self.handle, "<Double-1>", self.open_editor)
         self.send_to_back()
 
     def send_to_back(self):
@@ -455,6 +461,9 @@ class GroupArea:
         )
         self.send_to_back()
 
+    def open_editor(self, event=None):
+        GroupEditor(self.parent, self)
+
     def to_dict(self):
         scale = self.parent.scale
         return {
@@ -463,7 +472,60 @@ class GroupArea:
             "y": self.y / scale,
             "width": self.width / scale,
             "height": self.height / scale,
+            "fields": list(self.fields),
         }
+
+
+class GroupEditor(tk.Toplevel):
+    """Editor window for configuring fields inside a group."""
+
+    def __init__(self, parent, group: GroupArea):
+        super().__init__(parent)
+        self.parent = parent
+        self.group = group
+        self.title(group.name)
+        self.fields = list(group.fields)
+
+        self.canvas = tk.Canvas(self, bg="white", width=group.width, height=group.height)
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        right = ttk.Frame(self)
+        right.pack(side="right", fill="y", padx=5, pady=5)
+        ttk.Label(right, text="Pola:").pack(anchor="w")
+
+        self.vars = {}
+        available = list(parent.columns_vars.keys()) + list(parent.static_vars.keys())
+        for name in available:
+            var = tk.BooleanVar(value=name in self.fields)
+            cb = ttk.Checkbutton(
+                right, text=name, variable=var,
+                command=lambda n=name, v=var: self.toggle_field(n, v)
+            )
+            cb.pack(anchor="w")
+            self.vars[name] = var
+
+        self.draw_items()
+        self.protocol("WM_DELETE_WINDOW", self.close)
+
+    def draw_items(self):
+        self.canvas.delete("all")
+        for idx, name in enumerate(self.fields):
+            y = idx * 25
+            self.canvas.create_rectangle(0, y, self.group.width, y + 25, outline="black")
+            self.canvas.create_text(2, y + 12, anchor="w", text=name)
+
+    def toggle_field(self, name, var):
+        if var.get():
+            if name not in self.fields:
+                self.fields.append(name)
+        else:
+            if name in self.fields:
+                self.fields.remove(name)
+        self.draw_items()
+
+    def close(self):
+        self.group.fields = list(self.fields)
+        self.destroy()
 
 
 # ---------------------------------------------------------------------------
@@ -961,6 +1023,7 @@ class PDSGeneratorGUI(tk.Tk):
             group.width = gconf.get("width", group.width) * self.scale
             group.height = gconf.get("height", group.height) * self.scale
             group.sync_canvas()
+            group.fields = gconf.get("fields", [])
             self.groups[group.name] = group
 
     # ------------------------------------------------------------------
@@ -1003,20 +1066,50 @@ class PDSGeneratorGUI(tk.Tk):
                         hidden.add(tgt)
                 processed = set()
                 for group in self.groups.values():
-                    inside = [el for el in self.elements.values() if self.element_in_group(el, group)]
-                    inside.sort(key=lambda e: e.y)
                     current_y = group.y
-                    for el in inside:
-                        if el.name in hidden:
+                    for fname in group.fields:
+                        if fname in hidden:
                             continue
-                        val = values.get(el.name, "")
+                        val = values.get(fname, "")
                         if val == "":
                             continue
-                        x = el.x / self.scale
-                        y = page_height - (current_y / self.scale) - (el.height / self.scale)
-                        self.draw_pdf_element(c, el, val, x, y)
-                        current_y += el.height
-                        processed.add(el.name)
+                        el = self.elements.get(fname)
+                        if el:
+                            width = el.width
+                            height = el.height
+                            font_size = el.font_size
+                            bold = el.bold
+                            text_color = el.text_color
+                            bg_color = el.bg_color
+                            bg_visible = el.bg_visible
+                            align = el.align
+                            auto_font = el.auto_font
+                        else:
+                            width = group.width
+                            height = 20
+                            font_size = 12
+                            bold = False
+                            text_color = "black"
+                            bg_color = "white"
+                            bg_visible = False
+                            align = "left"
+                            auto_font = True
+                        dummy = SimpleNamespace(
+                            width=width,
+                            height=height,
+                            font_size=font_size,
+                            bold=bold,
+                            text_color=text_color,
+                            bg_color=bg_color,
+                            bg_visible=bg_visible,
+                            align=align,
+                            auto_font=auto_font,
+                        )
+                        x = group.x / self.scale
+                        y = page_height - (current_y / self.scale) - (height / self.scale)
+                        self.draw_pdf_element(c, dummy, val, x, y)
+                        current_y += height
+                        processed.add(fname)
                 for name, element in self.elements.items():
                     if name in hidden or name in processed:
                         continue
