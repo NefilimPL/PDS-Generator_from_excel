@@ -688,7 +688,7 @@ class GroupEditor(tk.Toplevel):
                 el.bg_visible = src.bg_visible
                 el.align = src.align
                 el.auto_font = src.auto_font
-        if pos:
+        if pos is not None:
             el.x, el.y = pos
         el.sync_canvas()
         self.elements[name] = el
@@ -737,6 +737,7 @@ class GroupEditor(tk.Toplevel):
         y = self.canvas.canvasy(event.y)
         self.sel_start = (x, y)
         self.sel_rect = self.canvas.create_rectangle(x, y, x, y, outline="blue", dash=(2, 2))
+        self.canvas.tag_raise(self.sel_rect)
 
     def canvas_drag_select(self, event):
         if not getattr(self, "sel_start", None):
@@ -1600,8 +1601,12 @@ class PDSGeneratorGUI(tk.Tk):
                 pdf_path = os.path.join(output_dir, f"pds_{idx+1}.pdf")
                 tmp_path = pdf_path + ".tmp"
                 c = pdf_canvas.Canvas(tmp_path, pagesize=(page_width, page_height))
+                needed = set(self.elements.keys())
+                for g in self.groups.values():
+                    needed.update(g.fields)
+                needed.update(self.static_entries.keys())
                 values = {}
-                for name, element in self.elements.items():
+                for name in needed:
                     if ":" in name:
                         sheet, col = name.split(":", 1)
                         df = self.dataframes.get(sheet)
@@ -1742,9 +1747,11 @@ class PDSGeneratorGUI(tk.Tk):
         h = self.page_height * self.scale
         # keep a constant margin based on the window size so zooming
         # does not shrink the available panning area
+        self.canvas_container.update_idletasks()
         base = max(
             self.canvas_container.winfo_width(),
             self.canvas_container.winfo_height(),
+            1,
         )
         self.margin = base * 2
         self.canvas.configure(
@@ -1790,8 +1797,10 @@ class PDSGeneratorGUI(tk.Tk):
             return
         total_w = w + 2 * (self.margin + 20)
         total_h = h + 2 * (self.margin + 20)
-        left = (w - container_w) / 2 + self.margin + 20
-        top = (h - container_h) / 2 + self.margin + 20
+        left = self.margin + 20 + w / 2 - container_w / 2
+        top = self.margin + 20 + h / 2 - container_h / 2
+        left = max(0, min(left, total_w - container_w))
+        top = max(0, min(top, total_h - container_h))
         self.canvas.xview_moveto(left / total_w)
         self.canvas.yview_moveto(top / total_h)
     def ctrl_zoom(self, event, delta=None):
@@ -1914,6 +1923,7 @@ class PDSGeneratorGUI(tk.Tk):
             outline="blue",
             dash=(2, 2),
         )
+        self.canvas.tag_raise(self.sel_rect)
 
     def canvas_drag_select(self, event):
         if not self.sel_start:
