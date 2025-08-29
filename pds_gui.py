@@ -1745,15 +1745,10 @@ class PDSGeneratorGUI(tk.Tk):
         self.snap_step = step
         w = self.page_width * self.scale
         h = self.page_height * self.scale
-        # keep a constant margin based on the window size so zooming
-        # does not shrink the available panning area
+        # keep only a small constant margin so the page can be panned
+        # slightly without introducing large grey areas around it
         self.canvas_container.update_idletasks()
-        base = max(
-            self.canvas_container.winfo_width(),
-            self.canvas_container.winfo_height(),
-            1,
-        )
-        self.margin = base * 2
+        self.margin = 20
         self.canvas.configure(
             scrollregion=(
                 -self.margin - 20,
@@ -1850,7 +1845,8 @@ class PDSGeneratorGUI(tk.Tk):
         container_h = self.canvas_container.winfo_height()
         if container_w <= 0 or container_h <= 0:
             return
-        new_scale = min(1.0, container_w / self.page_width, container_h / self.page_height)
+        new_scale = min(container_w / self.page_width, container_h / self.page_height)
+        new_scale = max(self.min_scale, min(self.max_scale, new_scale))
         for el in self.elements.values():
             rel_x = el.x / self.scale
             rel_y = el.y / self.scale
@@ -1909,8 +1905,15 @@ class PDSGeneratorGUI(tk.Tk):
             self.bg_check.state(["disabled"])
 
     def canvas_button_press(self, event):
-        if self.canvas.find_withtag("current"):
-            return
+        current = self.canvas.find_withtag("current")
+        if current:
+            item = current[0]
+            for el in self.elements.values():
+                if item in (el.rect, el.label, el.handle, getattr(el, "image_id", None)):
+                    return
+            for group in self.groups.values():
+                if item in (group.rect, group.handle):
+                    return
         self.select_element(None)
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
