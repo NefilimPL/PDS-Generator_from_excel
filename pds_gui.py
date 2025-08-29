@@ -7,6 +7,7 @@ import subprocess
 import importlib
 import math
 from io import BytesIO
+from types import SimpleNamespace
 
 # Automatically ensure required third-party modules are available
 REQUIRED_PACKAGES = {
@@ -157,9 +158,12 @@ class DraggableElement:
     def stop_move(self, event):
         step = self.parent.snap_step
         for el in self.parent.selected_elements:
-            el.x = round(el.x / step) * step
-            el.y = round(el.y / step) * step
+            # snap top-left corner to the grid with integer multiples to
+            # avoid sub-pixel artefacts when adjacent blocks touch
+            el.x = int(round(el.x / step)) * step
+            el.y = int(round(el.y / step)) * step
             el.sync_canvas()
+        self.parent.push_history()
 
     # ------------------------------------------------------------------
     def start_resize(self, event):
@@ -181,9 +185,11 @@ class DraggableElement:
 
     def stop_resize(self, event):
         step = self.parent.snap_step
-        self.width = max(step, round(self.width / step) * step)
-        self.height = max(step, round(self.height / step) * step)
+        # normalise width/height so edges line up exactly on the grid
+        self.width = max(step, int(round(self.width / step)) * step)
+        self.height = max(step, int(round(self.height / step)) * step)
         self.sync_canvas()
+        self.parent.push_history()
 
     # ------------------------------------------------------------------
     def to_dict(self):
@@ -197,6 +203,7 @@ class DraggableElement:
             "height": self.height / scale,
             "font_size": self.font_size / scale,
             "bold": self.bold,
+            "auto_font": self.auto_font,
             "text_color": self.text_color,
             "bg_color": self.bg_color,
             "bg_visible": self.bg_visible,
@@ -239,8 +246,12 @@ class DraggableElement:
                 del self.image_obj
             if hasattr(self, "raw_image"):
                 del self.raw_image
-        if value is None:
-            value = ""
+        try:
+            if value is None or pd.isna(value):
+                value = ""
+        except Exception:
+            if value is None:
+                value = ""
         if isinstance(value, str) and value.lower().startswith("http"):
             try:
                 resp = requests.get(value, timeout=5)
@@ -320,6 +331,576 @@ class DraggableElement:
 
 
 # ---------------------------------------------------------------------------
+# Group areas for automatic stacking
+# ---------------------------------------------------------------------------
+
+
+class GroupArea:
+    """Semi-transparent rectangle grouping elements."""
+
+    HANDLE_SIZE = 12
+
+    def __init__(self, parent, canvas: tk.Canvas, name: str):
+        self.parent = parent
+        self.canvas = canvas
+        self.name = name
+        # Place the group roughly at the centre of the page rather than
+        # relative to the widget size which could refer to a different canvas
+        self.x = parent.page_width * parent.scale / 2 - 50
+        self.y = parent.page_height * parent.scale / 2 - 50
+        self.width = 100
+        self.height = 100
+        self.fields = []  # names of elements contained in this group
+        self.field_pos = {}  # mapping name -> (x,y) inside the group
+        self.field_conf = {}  # individual field styling inside the group
+        self.conditions = []
+        self.preview_items = []
+        self.rect = canvas.create_rectangle(
+            self.x,
+            self.y,
+            self.x + self.width,
+            self.y + self.height,
+            outline="blue",
+            dash=(4, 2),
+            # Tkinter doesn't support 8-digit hex colors; use stipple for translucency
+            fill="#88aaff",
+            stipple="gray50",
+        )
+        self.handle = canvas.create_rectangle(
+            self.x + self.width - self.HANDLE_SIZE,
+            self.y + self.height - self.HANDLE_SIZE,
+            self.x + self.width,
+            self.y + self.height,
+            fill="black",
+        )
+        for tag in (self.rect,):
+            canvas.tag_bind(tag, "<ButtonPress-1>", self.start_move)
+            canvas.tag_bind(tag, "<B1-Motion>", self.moving)
+            canvas.tag_bind(tag, "<ButtonRelease-1>", self.stop_move)
+            canvas.tag_bind(tag, "<Double-1>", self.open_editor)
+        canvas.tag_bind(self.handle, "<ButtonPress-1>", self.start_resize)
+        canvas.tag_bind(self.handle, "<B1-Motion>", self.resizing)
+        canvas.tag_bind(self.handle, "<ButtonRelease-1>", self.stop_resize)
+        canvas.tag_bind(self.handle, "<Double-1>", self.open_editor)
+        self.send_to_back()
+        self.draw_preview()
+
+    def send_to_back(self):
+        self.canvas.tag_lower(self.rect)
+        self.canvas.tag_lower(self.handle)
+        # keep the group rectangle behind elements but ensure the handle is
+        # always accessible above them
+        self.canvas.tag_raise(self.rect, "grid")
+        self.canvas.tag_raise(self.handle)
+
+    def start_move(self, event):
+        self.last_x = event.x
+        self.last_y = event.y
+        # capture elements currently inside so they move with the group
+        self.children = [
+            el
+            for el in self.parent.elements.values()
+            if self.parent.element_in_group(el, self)
+        ]
+
+    def moving(self, event):
+        dx = event.x - self.last_x
+        dy = event.y - self.last_y
+        for item in (self.rect, self.handle):
+            self.canvas.move(item, dx, dy)
+        # move contained elements together with the group
+        for el in self.children:
+            for item in (el.rect, el.label, el.handle, getattr(el, "image_id", None)):
+                if item:
+                    self.canvas.move(item, dx, dy)
+            el.x += dx
+            el.y += dy
+        self.x += dx
+        self.y += dy
+        self.last_x = event.x
+        self.last_y = event.y
+
+    def stop_move(self, event):
+        step = self.parent.snap_step
+        new_x = int(round(self.x / step)) * step
+        new_y = int(round(self.y / step)) * step
+        dx = new_x - self.x
+        dy = new_y - self.y
+        self.x = new_x
+        self.y = new_y
+        self.sync_canvas()
+        # snap children by the same offset
+        if dx or dy:
+            for el in self.children:
+                for item in (el.rect, el.label, el.handle, getattr(el, "image_id", None)):
+                    if item:
+                        self.canvas.move(item, dx, dy)
+                el.x += dx
+                el.y += dy
+
+    def start_resize(self, event):
+        self.start_x = event.x
+        self.start_y = event.y
+        self.start_w = self.width
+        self.start_h = self.height
+
+    def resizing(self, event):
+        step = self.parent.snap_step
+        dx = event.x - self.start_x
+        dy = event.y - self.start_y
+        self.width = max(step, self.start_w + dx)
+        self.height = max(step, self.start_h + dy)
+        self.sync_canvas()
+
+    def stop_resize(self, event):
+        step = self.parent.snap_step
+        self.width = max(step, int(round(self.width / step)) * step)
+        self.height = max(step, int(round(self.height / step)) * step)
+        self.sync_canvas()
+
+    def sync_canvas(self):
+        self.canvas.coords(
+            self.rect,
+            self.x,
+            self.y,
+            self.x + self.width,
+            self.y + self.height,
+        )
+        self.canvas.coords(
+            self.handle,
+            self.x + self.width - self.HANDLE_SIZE,
+            self.y + self.height - self.HANDLE_SIZE,
+            self.x + self.width,
+            self.y + self.height,
+        )
+        self.send_to_back()
+        self.draw_preview()
+
+    def open_editor(self, event=None):
+        if getattr(self, "editor", None) and self.editor.winfo_exists():
+            self.editor.lift()
+            self.editor.focus_force()
+        else:
+            self.editor = GroupEditor(self.parent, self)
+
+    def to_dict(self):
+        scale = self.parent.scale
+        return {
+            "name": self.name,
+            "x": self.x / scale,
+            "y": self.y / scale,
+            "width": self.width / scale,
+            "height": self.height / scale,
+            "field_pos": {
+                k: (v[0] / scale, v[1] / scale) for k, v in self.field_pos.items()
+            },
+            "field_conf": {
+                k: {
+                    "width": conf["width"] / scale,
+                    "height": conf["height"] / scale,
+                    "font_size": conf["font_size"] / scale,
+                    "bold": conf.get("bold", False),
+                    "text_color": conf.get("text_color", "black"),
+                    "bg_color": conf.get("bg_color", "white"),
+                    "bg_visible": conf.get("bg_visible", True),
+                    "align": conf.get("align", "left"),
+                    "auto_font": conf.get("auto_font", True),
+                }
+                for k, conf in self.field_conf.items()
+            },
+            "conditions": list(self.conditions),
+        }
+
+    def draw_preview(self):
+        for item in getattr(self, "preview_items", []):
+            self.canvas.delete(item)
+        self.preview_items = []
+        if not self.fields:
+            return
+        # Build columns keyed by their x position
+        cols = {}
+        for name in self.fields:
+            x, _y = self.field_pos.get(name, (0, 0))
+            conf = self.field_conf.get(name, {})
+            w = conf.get("width", 50)
+            h = conf.get("height", 25)
+            cols.setdefault(x, []).append((self.field_pos.get(name, (0, 0))[1], w, h, name))
+
+        placed = []  # keep already positioned rectangles to detect collisions
+        for x in sorted(cols):
+            items = cols[x]
+            items.sort(key=lambda t: t[0])
+            cur_y = 0
+            for _, w, h, name in items:
+                y = cur_y
+                # push down while colliding with any previously placed item
+                while True:
+                    overlap = False
+                    for px, py, pw, ph in placed:
+                        # Only treat as a collision when the candidate
+                        # rectangle overlaps horizontally and vertically with
+                        # a previously placed one. Ignoring blocks entirely
+                        # below prevents reordering when a tall block exists
+                        # underneath a smaller one.
+                        if (
+                            x < px + pw
+                            and x + w > px
+                            and y < py + ph
+                            and y + h > py
+                        ):
+                            y = py + ph
+                            overlap = True
+                            break
+                    if not overlap:
+                        break
+                if y + h > self.height:
+                    continue
+                x1 = self.x + x
+                y1 = self.y + y
+                r = self.canvas.create_rectangle(x1, y1, x1 + w, y1 + h, outline="blue")
+                t = self.canvas.create_text(x1 + 2, y1 + h / 2, anchor="w", text=name)
+                self.preview_items.extend([r, t])
+                placed.append((x, y, w, h))
+                cur_y = y + h
+        self.send_to_back()
+
+
+
+class GroupEditor(tk.Toplevel):
+    """Editor window for configuring fields inside a group."""
+
+    def __init__(self, parent, group: GroupArea):
+        super().__init__(parent)
+        self.parent = parent
+        self.group = group
+        self.title(group.name)
+        self.scale = 1.0
+        self.snap_step = parent.snap_step
+        self.elements = {}
+        self.selected_elements = []
+        self.selected_element = None
+        self.conditions = list(group.conditions)
+
+        toolbar = ttk.Frame(self)
+        toolbar.pack(fill="x", padx=5, pady=5)
+        ttk.Button(toolbar, text="B", command=self.toggle_bold).pack(side="left")
+        ttk.Button(toolbar, text="A+", command=self.increase_font).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="A-", command=self.decrease_font).pack(side="left")
+        self.font_size_var = tk.StringVar()
+        self.font_entry = ttk.Entry(toolbar, textvariable=self.font_size_var, width=4, state="disabled")
+        self.font_entry.pack(side="left", padx=5)
+        self.font_entry.bind("<Return>", lambda e: self.set_font_size())
+        ttk.Button(toolbar, text="Kolor", command=self.choose_text_color).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="Tło", command=self.choose_bg_color).pack(side="left", padx=2)
+        self.transparent_var = tk.BooleanVar(value=False)
+        self.bg_check = ttk.Checkbutton(toolbar, text="Przezroczyste", variable=self.transparent_var, command=self.toggle_bg_visible)
+        self.bg_check.pack(side="left", padx=2)
+        self.bg_check.state(["disabled"])
+        ttk.Button(toolbar, text="L", command=lambda: self.set_alignment("left")).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="C", command=lambda: self.set_alignment("center")).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="R", command=lambda: self.set_alignment("right")).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="Warunki", command=self.open_conditions).pack(side="left", padx=5)
+
+        main = ttk.Frame(self)
+        main.pack(fill="both", expand=True)
+
+        left = ttk.Frame(main)
+        left.pack(side="left", fill="both", expand=True)
+        self.canvas = tk.Canvas(
+            left,
+            bg="white",
+            width=group.width,
+            height=group.height,
+            scrollregion=(0, 0, group.width, group.height),
+        )
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<ButtonPress-1>", self.canvas_button_press)
+        self.canvas.bind("<B1-Motion>", self.canvas_drag_select)
+        self.canvas.bind("<ButtonRelease-1>", self.canvas_button_release)
+        self.draw_grid()
+
+        right = ttk.Frame(main)
+        right.pack(side="right", fill="y", padx=5, pady=5)
+
+        ttk.Label(right, text="Pola:").pack(anchor="w")
+        avail_container = ttk.Frame(right)
+        avail_container.pack(fill="both", expand=True)
+        avail_canvas = tk.Canvas(avail_container, height=150)
+        avail_canvas.pack(side="left", fill="both", expand=True)
+        avail_scroll = ttk.Scrollbar(avail_container, orient="vertical", command=avail_canvas.yview)
+        avail_scroll.pack(side="right", fill="y")
+        avail_canvas.configure(yscrollcommand=avail_scroll.set)
+        avail_canvas.bind("<MouseWheel>", lambda e: avail_canvas.yview_scroll(int(-e.delta / 120), "units"))
+        self.avail_frame = ttk.Frame(avail_canvas)
+        avail_canvas.create_window((0, 0), window=self.avail_frame, anchor="nw")
+        self.avail_frame.bind("<Configure>", lambda e: avail_canvas.configure(scrollregion=avail_canvas.bbox("all")))
+        self.avail_frame.bind("<MouseWheel>", lambda e: avail_canvas.yview_scroll(int(-e.delta / 120), "units"))
+
+        self.vars = {}
+        available = list(parent.columns_vars.keys()) + list(parent.static_vars.keys())
+        for name in available:
+            var = tk.BooleanVar(value=name in group.field_pos)
+            label = parent.display_name(name)
+            cb = ttk.Checkbutton(
+                self.avail_frame,
+                text=label,
+                variable=var,
+                command=lambda n=name, v=var: self.toggle_field(n, v),
+            )
+            cb.pack(anchor="w")
+            self.vars[name] = var
+
+        for name, pos in group.field_pos.items():
+            self.add_element(name, pos)
+
+        self.protocol("WM_DELETE_WINDOW", self.close)
+
+    def draw_grid(self):
+        self.canvas.delete("grid")
+        step = self.snap_step
+        for x in range(0, int(self.group.width) + 1, int(step)):
+            self.canvas.create_line(x, 0, x, self.group.height, fill="#ddd", tags="grid")
+        for y in range(0, int(self.group.height) + 1, int(step)):
+            self.canvas.create_line(0, y, self.group.width, y, fill="#ddd", tags="grid")
+
+    def add_element(self, name, pos=None):
+        el = DraggableElement(self, self.canvas, name, name)
+        conf = self.group.field_conf.get(name)
+        if conf:
+            el.width = conf.get("width", el.width)
+            el.height = conf.get("height", el.height)
+            el.font_size = conf.get("font_size", el.font_size)
+            el.bold = conf.get("bold", el.bold)
+            el.text_color = conf.get("text_color", el.text_color)
+            el.bg_color = conf.get("bg_color", el.bg_color)
+            el.bg_visible = conf.get("bg_visible", el.bg_visible)
+            el.align = conf.get("align", el.align)
+            el.auto_font = conf.get("auto_font", el.auto_font)
+        else:
+            src = self.parent.elements.get(name)
+            if src:
+                el.width = src.width
+                el.height = src.height
+                el.font_size = src.font_size
+                el.bold = src.bold
+                el.text_color = src.text_color
+                el.bg_color = src.bg_color
+                el.bg_visible = src.bg_visible
+                el.align = src.align
+                el.auto_font = src.auto_font
+        if pos is not None:
+            el.x, el.y = pos
+        el.sync_canvas()
+        self.elements[name] = el
+        if name not in self.group.fields:
+            self.group.fields.append(name)
+
+    def toggle_field(self, name, var):
+        if var.get():
+            if name not in self.elements:
+                self.add_element(name, (10, 10))
+        else:
+            el = self.elements.pop(name, None)
+            if el:
+                for item in (el.rect, el.label, el.handle, getattr(el, "image_id", None)):
+                    if item:
+                        self.canvas.delete(item)
+            if name in self.group.fields:
+                self.group.fields.remove(name)
+
+    def select_element(self, element, additive=False):
+        if not additive:
+            for el in self.selected_elements:
+                self.canvas.itemconfig(el.rect, outline="black")
+            self.selected_elements = []
+        if element and element not in self.selected_elements:
+            self.selected_elements.append(element)
+        for el in self.selected_elements:
+            self.canvas.itemconfig(el.rect, outline="red")
+        self.selected_element = self.selected_elements[-1] if self.selected_elements else None
+        if self.selected_element:
+            self.font_entry.configure(state="normal")
+            self.font_size_var.set(str(int(self.selected_element.font_size)))
+            self.transparent_var.set(not self.selected_element.bg_visible)
+            self.bg_check.state(["!disabled"])
+        else:
+            self.font_entry.configure(state="disabled")
+            self.font_size_var.set("")
+            self.transparent_var.set(False)
+            self.bg_check.state(["disabled"])
+
+    def canvas_button_press(self, event):
+        if self.canvas.find_withtag("current"):
+            return
+        self.select_element(None)
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        self.sel_start = (x, y)
+        self.sel_rect = self.canvas.create_rectangle(x, y, x, y, outline="blue", dash=(2, 2))
+        self.canvas.tag_raise(self.sel_rect)
+
+    def canvas_drag_select(self, event):
+        if not getattr(self, "sel_start", None):
+            return
+        x0, y0 = self.sel_start
+        x1 = self.canvas.canvasx(event.x)
+        y1 = self.canvas.canvasy(event.y)
+        self.canvas.coords(self.sel_rect, x0, y0, x1, y1)
+
+    def canvas_button_release(self, event):
+        if not getattr(self, "sel_start", None):
+            if not self.canvas.find_withtag("current"):
+                self.select_element(None)
+            return
+        x0, y0 = self.sel_start
+        x1 = self.canvas.canvasx(event.x)
+        y1 = self.canvas.canvasy(event.y)
+        self.canvas.delete(self.sel_rect)
+        self.sel_start = None
+        self.sel_rect = None
+        if x0 > x1:
+            x0, x1 = x1, x0
+        if y0 > y1:
+            y0, y1 = y1, y0
+        self.select_element(None)
+        for el in self.elements.values():
+            ex0, ey0, ex1, ey1 = self.canvas.coords(el.rect)
+            if ex0 >= x0 and ex1 <= x1 and ey0 >= y0 and ey1 <= y1:
+                self.select_element(el, additive=True)
+
+    def toggle_bold(self):
+        el = self.selected_element
+        if not el:
+            return
+        el.bold = not el.bold
+        el.apply_font()
+
+    def increase_font(self):
+        el = self.selected_element
+        if not el:
+            return
+        el.font_size += 1
+        el.auto_font = False
+        el.apply_font()
+        self.font_size_var.set(str(int(el.font_size)))
+
+    def decrease_font(self):
+        el = self.selected_element
+        if not el or el.font_size <= 1:
+            return
+        el.font_size -= 1
+        el.auto_font = False
+        el.apply_font()
+        self.font_size_var.set(str(int(el.font_size)))
+
+    def set_font_size(self):
+        el = self.selected_element
+        if not el:
+            return
+        try:
+            size = float(self.font_size_var.get())
+        except ValueError:
+            return
+        if size <= 0:
+            return
+        el.font_size = size
+        el.auto_font = False
+        el.apply_font()
+
+    def choose_text_color(self):
+        el = self.selected_element
+        if not el:
+            return
+        color = colorchooser.askcolor(color=el.text_color, parent=self)[1]
+        if color:
+            el.text_color = color
+            el.update_colors()
+        self.focus_force()
+
+    def choose_bg_color(self):
+        el = self.selected_element
+        if not el:
+            return
+        color = colorchooser.askcolor(color=el.bg_color, parent=self)[1]
+        if color:
+            el.bg_color = color
+            el.bg_visible = True
+            self.transparent_var.set(False)
+            el.update_colors()
+        self.focus_force()
+
+    def toggle_bg_visible(self):
+        el = self.selected_element
+        if not el:
+            return
+        el.bg_visible = not self.transparent_var.get()
+        el.update_colors()
+
+    def set_alignment(self, align):
+        if not self.selected_elements:
+            return
+        for el in self.selected_elements:
+            el.align = align
+            el.sync_canvas()
+
+    def open_conditions(self):
+        win = tk.Toplevel(self)
+        win.title("Warunki")
+        src_var = tk.StringVar()
+        tgt_var = tk.StringVar()
+        options = list(self.elements.keys())
+        ttk.Label(win, text="Jeśli puste:").grid(row=0, column=0)
+        ttk.Combobox(win, values=options, textvariable=src_var, width=20).grid(row=0, column=1)
+        ttk.Label(win, text="Ukryj:").grid(row=1, column=0)
+        ttk.Combobox(win, values=options, textvariable=tgt_var, width=20).grid(row=1, column=1)
+        box = tk.Listbox(win, height=6)
+        box.grid(row=2, column=0, columnspan=2, sticky="nsew")
+        for s, t in self.conditions:
+            box.insert("end", f"{s} -> {t}")
+        def add():
+            s = src_var.get()
+            t = tgt_var.get()
+            if s and t:
+                self.conditions.append((s, t))
+                box.insert("end", f"{s} -> {t}")
+        def remove():
+            sel = box.curselection()
+            if sel:
+                idx = sel[0]
+                self.conditions.pop(idx)
+                box.delete(idx)
+        ttk.Button(win, text="Dodaj", command=add).grid(row=3, column=0, sticky="ew")
+        ttk.Button(win, text="Usuń", command=remove).grid(row=3, column=1, sticky="ew")
+
+    def push_history(self):
+        """Delegate history recording to the main window."""
+        if hasattr(self.parent, "push_history"):
+            self.parent.push_history()
+
+    def close(self):
+        self.group.field_pos = {name: (el.x, el.y) for name, el in self.elements.items()}
+        self.group.fields = list(self.group.field_pos.keys())
+        self.group.conditions = list(self.conditions)
+        self.group.field_conf = {
+            name: {
+                "width": el.width,
+                "height": el.height,
+                "font_size": el.font_size,
+                "bold": el.bold,
+                "text_color": el.text_color,
+                "bg_color": el.bg_color,
+                "bg_visible": el.bg_visible,
+                "align": el.align,
+                "auto_font": el.auto_font,
+            }
+            for name, el in self.elements.items()
+        }
+        self.group.sync_canvas()
+        self.group.draw_preview()
+        self.parent.push_history()
+        self.group.editor = None
+        self.destroy()
+# ---------------------------------------------------------------------------
 # GUI Application
 # ---------------------------------------------------------------------------
 
@@ -341,6 +922,8 @@ class PDSGeneratorGUI(tk.Tk):
         self.excel_path = ""
         self.dataframes = {}
         self.elements = {}
+        self.groups = {}
+        self.conditions = []
         self.selected_elements = []
         self.selected_element = None
         self.sel_rect = None
@@ -351,10 +934,16 @@ class PDSGeneratorGUI(tk.Tk):
         self.min_scale = 1.0
         self.margin = 100  # extra space around the page for panning
         self.snap_step = self.grid_size * self.scale
+        self.history = []
+        self.future = []
         self.setup_ui()
+        self.bind_all("<Control-z>", self.undo)
+        self.bind_all("<Control-x>", self.redo)
         self.update_idletasks()
         self.resize_canvas()
         self.load_config(startup=True)
+        if not self.history:
+            self.push_history()
 
     # ------------------------------------------------------------------
     def setup_ui(self):
@@ -428,7 +1017,7 @@ class PDSGeneratorGUI(tk.Tk):
         ttk.Label(zoom_frame, textvariable=self.zoom_var).pack(side="right", padx=5)
 
         right_container = ttk.Frame(self)
-        right_container.pack(side="left", fill="y", padx=5, pady=5)
+        right_container.pack(side="right", fill="y", padx=5, pady=5)
         self.right_canvas = tk.Canvas(right_container, width=300)
         right_scroll = ttk.Scrollbar(right_container, orient="vertical", command=self.right_canvas.yview)
         self.right_canvas.configure(yscrollcommand=right_scroll.set)
@@ -468,10 +1057,24 @@ class PDSGeneratorGUI(tk.Tk):
         ttk.Entry(preview_frame, textvariable=self.row_var, width=6).pack(side="left")
         ttk.Button(preview_frame, text="Podgląd", command=self.preview_row).pack(side="left", padx=5)
 
+        # Group list
+        ttk.Label(right_frame, text="Grupy:").pack(anchor="w", pady=(10, 0))
+        grp_container = ttk.Frame(right_frame)
+        grp_container.pack(fill="x")
+        self.groups_list = tk.Listbox(grp_container, height=5)
+        self.groups_list.pack(side="left", fill="both", expand=True)
+        grp_scroll = ttk.Scrollbar(grp_container, orient="vertical", command=self.groups_list.yview)
+        grp_scroll.pack(side="right", fill="y")
+        self.groups_list.configure(yscrollcommand=grp_scroll.set)
+        self.groups_list.bind("<Double-1>", lambda e: self.edit_selected_group())
+        ttk.Button(right_frame, text="Usuń grupę", command=self.remove_group).pack(fill="x", pady=(5, 0))
+
         # Buttons
         button_frame = ttk.Frame(right_frame)
         button_frame.pack(fill="x", pady=(20, 0))
         ttk.Button(button_frame, text="Zapisz konfigurację", command=self.save_config).pack(fill="x")
+        ttk.Button(button_frame, text="Warunki", command=self.open_conditions).pack(fill="x", pady=5)
+        ttk.Button(button_frame, text="Dodaj grupę", command=self.add_group).pack(fill="x", pady=5)
         ttk.Button(button_frame, text="Generuj PDS", command=self.generate_pds).pack(fill="x", pady=5)
 
         # Progress bar
@@ -545,6 +1148,17 @@ class PDSGeneratorGUI(tk.Tk):
             el.height = max(step, round(el.height / step) * step)
             el.sync_canvas()
             el.apply_font()
+        for group in self.groups.values():
+            group.x *= factor_w
+            group.y *= factor_h
+            group.width *= factor_w
+            group.height *= factor_h
+            step = self.snap_step
+            group.x = round(group.x / step) * step
+            group.y = round(group.y / step) * step
+            group.width = max(step, round(group.width / step) * step)
+            group.height = max(step, round(group.height / step) * step)
+            group.sync_canvas()
         self.resize_canvas()
 
     # ------------------------------------------------------------------
@@ -555,6 +1169,7 @@ class PDSGeneratorGUI(tk.Tk):
                 self.elements[name] = element
         else:
             self.remove_element(name)
+        self.push_history()
 
     def toggle_static(self, name, state):
         if state:
@@ -566,10 +1181,23 @@ class PDSGeneratorGUI(tk.Tk):
                 self.elements[name].update_value(value)
         else:
             self.remove_element(name)
+        self.push_history()
 
     def update_static_value(self, name):
         if name in self.elements:
             self.elements[name].update_value(self.static_entries[name].get())
+            self.push_history()
+
+    def display_name(self, name):
+        """Return field name including its current text value for lists."""
+        if name in self.static_entries:
+            text = self.static_entries[name].get()
+            if text:
+                return f"{name}: {text}"
+        el = self.elements.get(name)
+        if el and getattr(el, "text", ""):
+            return f"{name}: {el.text}"
+        return name
 
     def create_static_row(self, name, value=None):
         row = ttk.Frame(self.static_frame)
@@ -605,6 +1233,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.static_vars.pop(name, None)
         self.static_entries.pop(name, None)
         self.static_rows.pop(name, None)
+        self.push_history()
 
     def remove_element(self, name):
         element = self.elements.pop(name, None)
@@ -619,6 +1248,210 @@ class PDSGeneratorGUI(tk.Tk):
                 self.selected_element = None
                 self.font_entry.configure(state="disabled")
                 self.font_size_var.set("")
+        
+    def push_history(self):
+        state = {
+            "elements": [el.to_dict() for el in self.elements.values()],
+            "groups": [g.to_dict() for g in self.groups.values()],
+        }
+        self.history.append(state)
+        if len(self.history) > 50:
+            self.history.pop(0)
+        self.future.clear()
+
+    def restore_state(self, state):
+        target = {conf["name"]: conf for conf in state.get("elements", [])}
+        # remove elements not in target
+        for name in list(self.elements.keys()):
+            if name not in target:
+                self.remove_element(name)
+        for name, conf in target.items():
+            if name not in self.elements:
+                element = DraggableElement(self, self.canvas, name, conf.get("text", name))
+                self.elements[name] = element
+            el = self.elements[name]
+            el.x = conf.get("x", 0) * self.scale
+            el.y = conf.get("y", 0) * self.scale
+            el.width = conf.get("width", 100) * self.scale
+            el.height = conf.get("height", 40) * self.scale
+            el.font_size = conf.get("font_size", 12) * self.scale
+            el.bold = conf.get("bold", False)
+            el.text_color = conf.get("text_color", "black")
+            el.bg_color = conf.get("bg_color", "white")
+            el.bg_visible = conf.get("bg_visible", True)
+            el.align = conf.get("align", "left")
+            el.auto_font = conf.get("auto_font", True)
+            el.sync_canvas()
+
+        # restore groups
+        current_groups = list(self.groups.keys())
+        for name in current_groups:
+            grp = self.groups.pop(name)
+            for item in (grp.rect, grp.handle) + tuple(grp.preview_items):
+                self.canvas.delete(item)
+        self.groups = {}
+        for gconf in state.get("groups", []):
+            group = GroupArea(self, self.canvas, gconf.get("name", "Group"))
+            group.x = gconf.get("x", 0) * self.scale
+            group.y = gconf.get("y", 0) * self.scale
+            group.width = gconf.get("width", 100) * self.scale
+            group.height = gconf.get("height", 100) * self.scale
+            group.sync_canvas()
+            group.field_pos = {
+                k: (v[0] * self.scale, v[1] * self.scale)
+                for k, v in gconf.get("field_pos", {}).items()
+            }
+            group.field_conf = {
+                k: {
+                    "width": fc.get("width", 100) * self.scale,
+                    "height": fc.get("height", 40) * self.scale,
+                    "font_size": fc.get("font_size", 12) * self.scale,
+                    "bold": fc.get("bold", False),
+                    "text_color": fc.get("text_color", "black"),
+                    "bg_color": fc.get("bg_color", "white"),
+                    "bg_visible": fc.get("bg_visible", True),
+                    "align": fc.get("align", "left"),
+                    "auto_font": fc.get("auto_font", True),
+                }
+                for k, fc in gconf.get("field_conf", {}).items()
+            }
+            group.fields = list(group.field_pos.keys())
+            group.conditions = gconf.get("conditions", [])
+            group.draw_preview()
+            self.groups[group.name] = group
+        if hasattr(self, "groups_list"):
+            self.groups_list.delete(0, "end")
+            for name in self.groups:
+                self.groups_list.insert("end", name)
+
+    def undo(self, event=None):
+        if len(self.history) < 2:
+            return
+        state = self.history.pop()
+        self.future.append(state)
+        self.restore_state(self.history[-1])
+
+    def redo(self, event=None):
+        if not self.future:
+            return
+        state = self.future.pop()
+        self.history.append(state)
+        self.restore_state(state)
+
+    def add_group(self):
+        idx = 1
+        while f"Group{idx}" in self.groups:
+            idx += 1
+        name = f"Group{idx}"
+        group = GroupArea(self, self.canvas, name)
+        self.groups[name] = group
+        if hasattr(self, "groups_list"):
+            self.groups_list.insert("end", name)
+        self.push_history()
+
+    def edit_selected_group(self):
+        sel = self.groups_list.curselection()
+        if sel:
+            name = self.groups_list.get(sel[0])
+            group = self.groups.get(name)
+            if group:
+                GroupEditor(self, group)
+
+    def remove_group(self):
+        sel = self.groups_list.curselection()
+        if not sel:
+            return
+        name = self.groups_list.get(sel[0])
+        group = self.groups.pop(name, None)
+        if group:
+            self.canvas.delete(group.rect)
+            self.canvas.delete(group.handle)
+            for item in getattr(group, "preview_items", []):
+                self.canvas.delete(item)
+        self.groups_list.delete(sel[0])
+        self.push_history()
+
+    def open_conditions(self):
+        win = tk.Toplevel(self)
+        win.title("Warunki")
+        src_var = tk.StringVar()
+        tgt_var = tk.StringVar()
+        options = list(self.elements.keys())
+        ttk.Label(win, text="Jeśli puste:").grid(row=0, column=0)
+        ttk.Combobox(win, values=options, textvariable=src_var, width=20).grid(row=0, column=1)
+        ttk.Label(win, text="ukryj:").grid(row=1, column=0)
+        ttk.Combobox(win, values=options, textvariable=tgt_var, width=20).grid(row=1, column=1)
+        listbox = tk.Listbox(win, width=40)
+        listbox.grid(row=3, column=0, columnspan=2, pady=5)
+        for s, t in self.conditions:
+            listbox.insert("end", f"{t} jeśli {s} puste")
+        def add():
+            s = src_var.get()
+            t = tgt_var.get()
+            if s and t and (s, t) not in self.conditions:
+                self.conditions.append((s, t))
+                listbox.insert("end", f"{t} jeśli {s} puste")
+        ttk.Button(win, text="Dodaj", command=add).grid(row=2, column=0, columnspan=2, pady=5)
+        def remove():
+            sel = listbox.curselection()
+            if sel:
+                idx = sel[0]
+                listbox.delete(idx)
+                self.conditions.pop(idx)
+        ttk.Button(win, text="Usuń zaznaczone", command=remove).grid(row=4, column=0, columnspan=2, pady=5)
+
+    def element_in_group(self, el, group):
+        return (
+            el.x >= group.x
+            and el.y >= group.y
+            and el.x + el.width <= group.x + group.width
+            and el.y + el.height <= group.y + group.height
+        )
+
+    def draw_pdf_element(self, c, element, value, x, y):
+        if isinstance(value, str) and value.lower().startswith("http"):
+            try:
+                resp = requests.get(value, timeout=5)
+                img = Image.open(BytesIO(resp.content))
+                c.drawImage(
+                    ImageReader(img),
+                    x,
+                    y,
+                    width=element.width / self.scale,
+                    height=element.height / self.scale,
+                )
+                return
+            except Exception:
+                pass
+        if element.bg_visible:
+            c.setFillColor(to_reportlab_color(element.bg_color))
+            c.rect(
+                x,
+                y,
+                element.width / self.scale,
+                element.height / self.scale,
+                fill=1,
+                stroke=0,
+            )
+        c.setFillColor(to_reportlab_color(element.text_color))
+        c.setFont(
+            "Helvetica-Bold" if element.bold else "Helvetica",
+            element.font_size / self.scale,
+        )
+        if element.align == "center":
+            c.drawCentredString(
+                x + (element.width / self.scale) / 2,
+                y + (element.height / self.scale) / 2,
+                str(value),
+            )
+        elif element.align == "right":
+            c.drawRightString(
+                x + (element.width / self.scale),
+                y + (element.height / self.scale) / 2,
+                str(value),
+            )
+        else:
+            c.drawString(x, y + (element.height / self.scale) / 2, str(value))
 
     # ------------------------------------------------------------------
     def preview_row(self):
@@ -651,6 +1484,8 @@ class PDSGeneratorGUI(tk.Tk):
             "page_height": self.page_height,
             "elements": [el.to_dict() for el in self.elements.values()],
             "static_fields": {name: var.get() for name, var in self.static_entries.items()},
+            "conditions": self.conditions,
+            "groups": [g.to_dict() for g in self.groups.values()],
         }
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
@@ -688,6 +1523,7 @@ class PDSGeneratorGUI(tk.Tk):
                 self.create_static_row(name, val)
             else:
                 self.static_entries[name].set(val)
+        self.conditions = config.get("conditions", [])
         for elconf in config.get("elements", []):
             name = elconf["name"]
             if name not in self.elements:
@@ -702,6 +1538,7 @@ class PDSGeneratorGUI(tk.Tk):
                 element.bg_color = elconf.get("bg_color", element.bg_color)
                 element.bg_visible = elconf.get("bg_visible", element.bg_visible)
                 element.align = elconf.get("align", element.align)
+                element.auto_font = elconf.get("auto_font", element.auto_font)
                 element.sync_canvas()
                 self.elements[name] = element
                 if name in self.columns_vars:
@@ -709,7 +1546,38 @@ class PDSGeneratorGUI(tk.Tk):
                 if name in self.static_vars:
                     self.static_vars[name].set(True)
                     self.static_entries[name].set(elconf.get("text", ""))
-
+        for gconf in config.get("groups", []):
+            group = GroupArea(self, self.canvas, gconf.get("name", f"Group{len(self.groups)+1}"))
+            group.x = gconf.get("x", group.x) * self.scale
+            group.y = gconf.get("y", group.y) * self.scale
+            group.width = gconf.get("width", group.width) * self.scale
+            group.height = gconf.get("height", group.height) * self.scale
+            group.sync_canvas()
+            group.field_pos = {
+                k: (v[0] * self.scale, v[1] * self.scale)
+                for k, v in gconf.get("field_pos", {}).items()
+            }
+            group.field_conf = {
+                k: {
+                    "width": fc.get("width", 100) * self.scale,
+                    "height": fc.get("height", 40) * self.scale,
+                    "font_size": fc.get("font_size", 12) * self.scale,
+                    "bold": fc.get("bold", False),
+                    "text_color": fc.get("text_color", "black"),
+                    "bg_color": fc.get("bg_color", "white"),
+                    "bg_visible": fc.get("bg_visible", True),
+                    "align": fc.get("align", "left"),
+                    "auto_font": fc.get("auto_font", True),
+                }
+                for k, fc in gconf.get("field_conf", {}).items()
+            }
+            group.fields = list(group.field_pos.keys())
+            group.conditions = gconf.get("conditions", [])
+            group.draw_preview()
+            self.groups[group.name] = group
+            if hasattr(self, "groups_list"):
+                self.groups_list.insert("end", group.name)
+        self.push_history()
     # ------------------------------------------------------------------
     def generate_pds(self):
         if not self.excel_path or not self.dataframes:
@@ -733,62 +1601,100 @@ class PDSGeneratorGUI(tk.Tk):
                 pdf_path = os.path.join(output_dir, f"pds_{idx+1}.pdf")
                 tmp_path = pdf_path + ".tmp"
                 c = pdf_canvas.Canvas(tmp_path, pagesize=(page_width, page_height))
-                for name, element in self.elements.items():
+                needed = set(self.elements.keys())
+                for g in self.groups.values():
+                    needed.update(g.fields)
+                needed.update(self.static_entries.keys())
+                values = {}
+                for name in needed:
                     if ":" in name:
                         sheet, col = name.split(":", 1)
                         df = self.dataframes.get(sheet)
                         value = df.iloc[idx].get(col, "") if df is not None else ""
                     else:
                         value = self.static_entries.get(name, tk.StringVar()).get()
+                    if pd.isna(value):
+                        value = ""
+                    values[name] = value
+                group_field_names = {fname for g in self.groups.values() for fname in g.fields}
+
+                hidden = set()
+                for src, tgt in self.conditions:
+                    # Global conditions should not refer to group fields at all
+                    if src in group_field_names or tgt in group_field_names:
+                        continue
+                    if pd.isna(values.get(src)) or values.get(src) == "":
+                        hidden.add(tgt)
+                for group in self.groups.values():
+                    g_hidden = set()
+                    for src, tgt in group.conditions:
+                        if src not in group.fields or tgt not in group.fields:
+                            continue
+                        if pd.isna(values.get(src)) or values.get(src) == "":
+                            g_hidden.add(tgt)
+                    positions = group.field_pos
+                    columns = {}
+                    for fname in group.fields:
+                        if fname in hidden or fname in g_hidden:
+                            continue
+                        val = values.get(fname, "")
+                        if val == "":
+                            continue
+                        conf = group.field_conf.get(fname, {})
+                        el = self.elements.get(fname)
+                        if not conf and not el:
+                            continue
+                        width = conf.get("width", el.width if el else 0)
+                        height = conf.get("height", el.height if el else 0)
+                        x0, y0 = positions.get(fname, (0, 0))
+                        columns.setdefault(x0, []).append((y0, fname, width, height, conf, el, val))
+
+                    placed = []
+                    for x0 in sorted(columns):
+                        col_items = columns[x0]
+                        col_items.sort(key=lambda t: t[0])
+                        cur_y = 0
+                        for _, fname, width, height, conf, el, val in col_items:
+                            y = cur_y
+                            while True:
+                                overlap = False
+                                for px, py, pw, ph in placed:
+                                    if (
+                                        x0 < px + pw
+                                        and x0 + width > px
+                                        and y < py + ph
+                                        and y + height > py
+                                    ):
+                                        y = py + ph
+                                        overlap = True
+                                        break
+                                if not overlap:
+                                    break
+                            if y + height > group.height:
+                                continue
+                            dummy = SimpleNamespace(
+                                width=width,
+                                height=height,
+                                font_size=conf.get("font_size", el.font_size if el else 12),
+                                bold=conf.get("bold", el.bold if el else False),
+                                text_color=conf.get("text_color", el.text_color if el else "black"),
+                                bg_color=conf.get("bg_color", el.bg_color if el else "white"),
+                                bg_visible=conf.get("bg_visible", el.bg_visible if el else True),
+                                align=conf.get("align", el.align if el else "left"),
+                                auto_font=conf.get("auto_font", el.auto_font if el else True),
+                            )
+                            x_pdf = (group.x + x0) / self.scale
+                            y_pdf = page_height - (group.y + y + height) / self.scale
+                            self.draw_pdf_element(c, dummy, val, x_pdf, y_pdf)
+                            placed.append((x0, y, width, height))
+                            cur_y = y + height
+                for name, element in self.elements.items():
+                    if name in hidden:
+                        continue
+                    val = values.get(name, "")
                     x = element.x / self.scale
                     y = page_height - (element.y / self.scale) - (element.height / self.scale)
-                    if isinstance(value, str) and value.lower().startswith("http"):
-                        try:
-                            resp = requests.get(value, timeout=5)
-                            img = Image.open(BytesIO(resp.content))
-                            c.drawImage(
-                                ImageReader(img),
-                                x,
-                                y,
-                                width=element.width / self.scale,
-                                height=element.height / self.scale,
-                            )
-                        except Exception:
-                            c.setFillColor(to_reportlab_color(element.text_color))
-                            c.setFont("Helvetica-Bold" if element.bold else "Helvetica", element.font_size / self.scale)
-                            if element.align == "center":
-                                c.drawCentredString(x + (element.width / self.scale) / 2, y + (element.height / self.scale) / 2, str(value))
-                            elif element.align == "right":
-                                c.drawRightString(x + (element.width / self.scale), y + (element.height / self.scale) / 2, str(value))
-                            else:
-                                c.drawString(x, y + (element.height / self.scale) / 2, str(value))
-                    else:
-                        if element.bg_visible:
-                            c.setFillColor(to_reportlab_color(element.bg_color))
-                            c.rect(
-                                x,
-                                y,
-                                element.width / self.scale,
-                                element.height / self.scale,
-                                fill=1,
-                                stroke=0,
-                            )
-                        c.setFillColor(to_reportlab_color(element.text_color))
-                        c.setFont("Helvetica-Bold" if element.bold else "Helvetica", element.font_size / self.scale)
-                        if element.align == "center":
-                            c.drawCentredString(
-                                x + (element.width / self.scale) / 2,
-                                y + (element.height / self.scale) / 2,
-                                str(value),
-                            )
-                        elif element.align == "right":
-                            c.drawRightString(
-                                x + (element.width / self.scale),
-                                y + (element.height / self.scale) / 2,
-                                str(value),
-                            )
-                        else:
-                            c.drawString(x, y + (element.height / self.scale) / 2, str(value))
+                    self.draw_pdf_element(c, element, val, x, y)
                 c.showPage()
                 c.save()
                 try:
@@ -841,9 +1747,11 @@ class PDSGeneratorGUI(tk.Tk):
         h = self.page_height * self.scale
         # keep a constant margin based on the window size so zooming
         # does not shrink the available panning area
+        self.canvas_container.update_idletasks()
         base = max(
             self.canvas_container.winfo_width(),
             self.canvas_container.winfo_height(),
+            1,
         )
         self.margin = base * 2
         self.canvas.configure(
@@ -889,8 +1797,10 @@ class PDSGeneratorGUI(tk.Tk):
             return
         total_w = w + 2 * (self.margin + 20)
         total_h = h + 2 * (self.margin + 20)
-        left = (w - container_w) / 2 + self.margin + 20
-        top = (h - container_h) / 2 + self.margin + 20
+        left = self.margin + 20 + w / 2 - container_w / 2
+        top = self.margin + 20 + h / 2 - container_h / 2
+        left = max(0, min(left, total_w - container_w))
+        top = max(0, min(top, total_h - container_h))
         self.canvas.xview_moveto(left / total_w)
         self.canvas.yview_moveto(top / total_h)
     def ctrl_zoom(self, event, delta=None):
@@ -915,6 +1825,16 @@ class PDSGeneratorGUI(tk.Tk):
             el.font_size = rel_f * new_scale
             el.sync_canvas()
             el.apply_font()
+        for group in self.groups.values():
+            rel_x = group.x / self.scale
+            rel_y = group.y / self.scale
+            rel_w = group.width / self.scale
+            rel_h = group.height / self.scale
+            group.x = rel_x * new_scale
+            group.y = rel_y * new_scale
+            group.width = rel_w * new_scale
+            group.height = rel_h * new_scale
+            group.sync_canvas()
         self.scale = new_scale
         self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
         self.draw_grid()
@@ -944,6 +1864,16 @@ class PDSGeneratorGUI(tk.Tk):
             el.font_size = rel_f * new_scale
             el.sync_canvas()
             el.apply_font()
+        for group in self.groups.values():
+            rel_x = group.x / self.scale
+            rel_y = group.y / self.scale
+            rel_w = group.width / self.scale
+            rel_h = group.height / self.scale
+            group.x = rel_x * new_scale
+            group.y = rel_y * new_scale
+            group.width = rel_w * new_scale
+            group.height = rel_h * new_scale
+            group.sync_canvas()
         self.scale = new_scale
         self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
         self.draw_grid()
@@ -993,6 +1923,7 @@ class PDSGeneratorGUI(tk.Tk):
             outline="blue",
             dash=(2, 2),
         )
+        self.canvas.tag_raise(self.sel_rect)
 
     def canvas_drag_select(self, event):
         if not self.sel_start:
@@ -1038,6 +1969,7 @@ class PDSGeneratorGUI(tk.Tk):
         el.auto_font = False
         el.apply_font()
         self.font_size_var.set(str(int(el.font_size / self.scale)))
+        self.push_history()
 
     def decrease_font(self):
         el = self.selected_element
@@ -1048,6 +1980,7 @@ class PDSGeneratorGUI(tk.Tk):
             el.auto_font = False
             el.apply_font()
             self.font_size_var.set(str(int(el.font_size / self.scale)))
+            self.push_history()
 
     def set_font_size(self):
         el = self.selected_element
@@ -1062,26 +1995,31 @@ class PDSGeneratorGUI(tk.Tk):
         el.font_size = size
         el.auto_font = False
         el.apply_font()
+        self.push_history()
 
     def choose_text_color(self):
         el = self.selected_element
         if not el:
             return
-        color = colorchooser.askcolor(color=el.text_color)[1]
+        color = colorchooser.askcolor(color=el.text_color, parent=self)[1]
         if color:
             el.text_color = color
             el.update_colors()
+            self.push_history()
+        self.focus_force()
 
     def choose_bg_color(self):
         el = self.selected_element
         if not el:
             return
-        color = colorchooser.askcolor(color=el.bg_color)[1]
+        color = colorchooser.askcolor(color=el.bg_color, parent=self)[1]
         if color:
             el.bg_color = color
             el.bg_visible = True
             self.transparent_var.set(False)
             el.update_colors()
+            self.push_history()
+        self.focus_force()
 
     def toggle_bg_visible(self):
         el = self.selected_element
@@ -1089,6 +2027,7 @@ class PDSGeneratorGUI(tk.Tk):
             return
         el.bg_visible = not self.transparent_var.get()
         el.update_colors()
+        self.push_history()
 
     def set_alignment(self, align):
         if not self.selected_elements:
@@ -1096,6 +2035,7 @@ class PDSGeneratorGUI(tk.Tk):
         for el in self.selected_elements:
             el.align = align
             el.sync_canvas()
+        self.push_history()
 
     def center_selected_horizontal(self):
         if not self.selected_elements:
@@ -1103,6 +2043,7 @@ class PDSGeneratorGUI(tk.Tk):
         for el in self.selected_elements:
             el.x = (self.page_width * self.scale - el.width) / 2
             el.sync_canvas()
+        self.push_history()
 
     def center_selected_vertical(self):
         if not self.selected_elements:
@@ -1110,6 +2051,7 @@ class PDSGeneratorGUI(tk.Tk):
         for el in self.selected_elements:
             el.y = (self.page_height * self.scale - el.height) / 2
             el.sync_canvas()
+        self.push_history()
 
     def delete_selected(self, event=None):
         if not self.selected_elements:
@@ -1125,6 +2067,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.selected_element = None
         self.font_entry.configure(state="disabled")
         self.font_size_var.set("")
+        self.push_history()
 
     def _on_mousewheel(self, event):
         self.right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
