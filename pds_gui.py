@@ -197,11 +197,11 @@ class DraggableElement:
         return {
             "name": self.name,
             "text": self.text,
-            "x": self.x / scale,
-            "y": self.y / scale,
-            "width": self.width / scale,
-            "height": self.height / scale,
-            "font_size": self.font_size / scale,
+            "x": int(round(self.x / scale)),
+            "y": int(round(self.y / scale)),
+            "width": int(round(self.width / scale)),
+            "height": int(round(self.height / scale)),
+            "font_size": int(round(self.font_size / scale)),
             "bold": self.bold,
             "auto_font": self.auto_font,
             "text_color": self.text_color,
@@ -487,18 +487,19 @@ class GroupArea:
         scale = self.parent.scale
         return {
             "name": self.name,
-            "x": self.x / scale,
-            "y": self.y / scale,
-            "width": self.width / scale,
-            "height": self.height / scale,
+            "x": int(round(self.x / scale)),
+            "y": int(round(self.y / scale)),
+            "width": int(round(self.width / scale)),
+            "height": int(round(self.height / scale)),
             "field_pos": {
-                k: (v[0] / scale, v[1] / scale) for k, v in self.field_pos.items()
+                k: (int(round(v[0] / scale)), int(round(v[1] / scale)))
+                for k, v in self.field_pos.items()
             },
             "field_conf": {
                 k: {
-                    "width": conf["width"] / scale,
-                    "height": conf["height"] / scale,
-                    "font_size": conf["font_size"] / scale,
+                    "width": int(round(conf["width"] / scale)),
+                    "height": int(round(conf["height"] / scale)),
+                    "font_size": int(round(conf["font_size"] / scale)),
                     "bold": conf.get("bold", False),
                     "text_color": conf.get("text_color", "black"),
                     "bg_color": conf.get("bg_color", "white"),
@@ -658,9 +659,13 @@ class GroupEditor(tk.Toplevel):
     def draw_grid(self):
         self.canvas.delete("grid")
         step = self.snap_step
-        for x in range(0, int(self.group.width) + 1, int(step)):
+        cols = int(self.group.width / step) + 1
+        rows = int(self.group.height / step) + 1
+        for i in range(cols):
+            x = i * step
             self.canvas.create_line(x, 0, x, self.group.height, fill="#ddd", tags="grid")
-        for y in range(0, int(self.group.height) + 1, int(step)):
+        for i in range(rows):
+            y = i * step
             self.canvas.create_line(0, y, self.group.width, y, fill="#ddd", tags="grid")
 
     def add_element(self, name, pos=None):
@@ -911,7 +916,7 @@ class PDSGeneratorGUI(tk.Tk):
         "B5": (516, 729),  # 176 x 250 mm
     }
 
-    grid_size = 10
+    grid_size = 5
 
     DEFAULT_STATIC_FIELDS = ["Data", "Naglowek", "Stopka"]
 
@@ -1738,22 +1743,13 @@ class PDSGeneratorGUI(tk.Tk):
         self.canvas.delete("page")
         self.canvas.delete("ruler")
         step = self.grid_size * self.scale
-        while step < 10:
-            step *= 2
-        while step > 40:
-            step /= 2
         self.snap_step = step
         w = self.page_width * self.scale
         h = self.page_height * self.scale
-        # keep a constant margin based on the window size so zooming
-        # does not shrink the available panning area
+        # keep only a small constant margin so the page can be panned
+        # slightly without introducing large grey areas around it
         self.canvas_container.update_idletasks()
-        base = max(
-            self.canvas_container.winfo_width(),
-            self.canvas_container.winfo_height(),
-            1,
-        )
-        self.margin = base * 2
+        self.margin = 20
         self.canvas.configure(
             scrollregion=(
                 -self.margin - 20,
@@ -1769,14 +1765,14 @@ class PDSGeneratorGUI(tk.Tk):
         cols = int(w / step) + 1
         rows = int(h / step) + 1
         for i in range(cols):
-            x = int(round(i * step))
-            self.canvas.create_line(x, 0, x, int(h), fill="#9b9b9b", tags="grid")
+            x = i * step
+            self.canvas.create_line(x, 0, x, h, fill="#9b9b9b", tags="grid")
             self.canvas.create_line(x, -20, x, 0, fill="black", tags="ruler")
             if i % 5 == 0:
                 self.canvas.create_text(x + 2, -18, text=str(int(x / self.scale)), anchor="nw", tags="ruler")
         for i in range(rows):
-            y = int(round(i * step))
-            self.canvas.create_line(0, y, int(w), y, fill="#9b9b9b", tags="grid")
+            y = i * step
+            self.canvas.create_line(0, y, w, y, fill="#9b9b9b", tags="grid")
             self.canvas.create_line(-20, y, 0, y, fill="black", tags="ruler")
             if i % 5 == 0:
                 self.canvas.create_text(-18, y + 2, text=str(int(y / self.scale)), anchor="nw", tags="ruler")
@@ -1850,7 +1846,8 @@ class PDSGeneratorGUI(tk.Tk):
         container_h = self.canvas_container.winfo_height()
         if container_w <= 0 or container_h <= 0:
             return
-        new_scale = min(1.0, container_w / self.page_width, container_h / self.page_height)
+        new_scale = min(container_w / self.page_width, container_h / self.page_height)
+        new_scale = max(self.min_scale, min(self.max_scale, new_scale))
         for el in self.elements.values():
             rel_x = el.x / self.scale
             rel_y = el.y / self.scale
@@ -1909,8 +1906,15 @@ class PDSGeneratorGUI(tk.Tk):
             self.bg_check.state(["disabled"])
 
     def canvas_button_press(self, event):
-        if self.canvas.find_withtag("current"):
-            return
+        current = self.canvas.find_withtag("current")
+        if current:
+            item = current[0]
+            for el in self.elements.values():
+                if item in (el.rect, el.label, el.handle, getattr(el, "image_id", None)):
+                    return
+            for group in self.groups.values():
+                if item in (group.rect, group.handle):
+                    return
         self.select_element(None)
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
