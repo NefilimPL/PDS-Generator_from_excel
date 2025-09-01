@@ -135,6 +135,9 @@ class DraggableElement:
             # avoid sub-pixel artefacts when adjacent blocks touch
             el.x = int(round(el.x / step)) * step
             el.y = int(round(el.y / step)) * step
+            # also normalise width/height so the entire block aligns to the grid
+            el.width = max(step, int(round(el.width / step)) * step)
+            el.height = max(step, int(round(el.height / step)) * step)
             el.sync_canvas()
         self.parent.clear_alignment_guides()
         self.parent.push_history()

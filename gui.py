@@ -1156,12 +1156,12 @@ class PDSGeneratorGUI(tk.Tk):
         self.clear_alignment_guides()
         if not additive:
             for el in self.selected_elements:
-                self.canvas.itemconfig(el.rect, outline="black")
+                self.canvas.itemconfig(el.rect, outline="black", width=1)
             self.selected_elements = []
         if element and element not in self.selected_elements:
             self.selected_elements.append(element)
         for el in self.selected_elements:
-            self.canvas.itemconfig(el.rect, outline="red")
+            self.canvas.itemconfig(el.rect, outline="red", width=2)
         self.selected_element = self.selected_elements[-1] if self.selected_elements else None
         if self.selected_element:
             self.font_entry.configure(state="normal")
@@ -1199,6 +1199,7 @@ class PDSGeneratorGUI(tk.Tk):
             y,
             outline="blue",
             dash=(2, 2),
+            width=2,
         )
         self.canvas.tag_raise(self.sel_rect)
 

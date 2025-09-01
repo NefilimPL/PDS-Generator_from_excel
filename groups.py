@@ -115,6 +115,9 @@ class GroupArea:
         dy = new_y - self.y
         self.x = new_x
         self.y = new_y
+        # ensure the group's dimensions also align with the grid
+        self.width = max(step, int(round(self.width / step)) * step)
+        self.height = max(step, int(round(self.height / step)) * step)
         self.sync_canvas()
         # snap children by the same offset
         if dx or dy:
@@ -256,7 +259,9 @@ class GroupArea:
                     continue
                 x1 = self.x + x
                 y1 = self.y + y
-                r = self.canvas.create_rectangle(x1, y1, x1 + w, y1 + h, outline="blue")
+                r = self.canvas.create_rectangle(
+                    x1, y1, x1 + w, y1 + h, outline="blue", fill="white"
+                )
                 t = self.canvas.create_text(x1 + 2, y1 + h / 2, anchor="w", text=name)
                 self.preview_items.extend([r, t])
                 placed.append((x, y, w, h))
@@ -469,12 +474,12 @@ class GroupEditor(tk.Toplevel):
         self.clear_alignment_guides()
         if not additive:
             for el in self.selected_elements:
-                self.canvas.itemconfig(el.rect, outline="black")
+                self.canvas.itemconfig(el.rect, outline="black", width=1)
             self.selected_elements = []
         if element and element not in self.selected_elements:
             self.selected_elements.append(element)
         for el in self.selected_elements:
-            self.canvas.itemconfig(el.rect, outline="red")
+            self.canvas.itemconfig(el.rect, outline="red", width=2)
         self.selected_element = self.selected_elements[-1] if self.selected_elements else None
         if self.selected_element:
             self.font_entry.configure(state="normal")
@@ -498,7 +503,9 @@ class GroupEditor(tk.Toplevel):
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
         self.sel_start = (x, y)
-        self.sel_rect = self.canvas.create_rectangle(x, y, x, y, outline="blue", dash=(2, 2))
+        self.sel_rect = self.canvas.create_rectangle(
+            x, y, x, y, outline="blue", dash=(2, 2), width=2
+        )
         self.canvas.tag_raise(self.sel_rect)
 
     def canvas_drag_select(self, event):
