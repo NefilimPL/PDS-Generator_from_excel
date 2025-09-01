@@ -192,14 +192,14 @@ class GroupArea:
             "width": int(round(self.width / scale)),
             "height": int(round(self.height / scale)),
             "field_pos": {
-                k: (int(round(v[0] / scale)), int(round(v[1] / scale)))
+                k: (int(round(v[0])), int(round(v[1])))
                 for k, v in self.field_pos.items()
             },
             "field_conf": {
                 k: {
-                    "width": int(round(conf["width"] / scale)),
-                    "height": int(round(conf["height"] / scale)),
-                    "font_size": int(round(conf["font_size"] / scale)),
+                    "width": int(round(conf["width"])),
+                    "height": int(round(conf["height"])),
+                    "font_size": int(round(conf["font_size"])),
                     "bold": conf.get("bold", False),
                     "text_color": conf.get("text_color", "black"),
                     "bg_color": conf.get("bg_color", "white"),
@@ -219,8 +219,9 @@ class GroupArea:
         self.preview_items = []
         if not self.fields:
             return
-        # Build columns keyed by their x position
+        # Build columns keyed by their x position (unscaled values)
         cols = {}
+        scale = self.parent.scale
         for name in self.fields:
             x, _y = self.field_pos.get(name, (0, 0))
             conf = self.field_conf.get(name, {})
@@ -257,12 +258,22 @@ class GroupArea:
                         break
                 if y + h > self.height:
                     continue
-                x1 = self.x + x
-                y1 = self.y + y
+                # scale positions and sizes for canvas display
+                sx = x * scale
+                sy = y * scale
+                sw = w * scale
+                sh = h * scale
+                x1 = self.x + sx
+                y1 = self.y + sy
                 r = self.canvas.create_rectangle(
-                    x1, y1, x1 + w, y1 + h, outline="blue", fill="white"
+                    x1, y1, x1 + sw, y1 + sh, outline="blue", fill="white"
                 )
-                t = self.canvas.create_text(x1 + 2, y1 + h / 2, anchor="w", text=name)
+                t = self.canvas.create_text(x1 + 2, y1 + sh / 2, anchor="w", text=name)
+                for item in (r, t):
+                    self.canvas.tag_bind(item, "<ButtonPress-1>", self.start_move)
+                    self.canvas.tag_bind(item, "<B1-Motion>", self.moving)
+                    self.canvas.tag_bind(item, "<ButtonRelease-1>", self.stop_move)
+                    self.canvas.tag_bind(item, "<Double-1>", self.open_editor)
                 self.preview_items.extend([r, t])
                 placed.append((x, y, w, h))
                 cur_y = y + h
@@ -279,7 +290,7 @@ class GroupEditor(tk.Toplevel):
         self.group = group
         self.title(group.name)
         self.scale = 1.0
-        self.snap_step = parent.snap_step
+        self.snap_step = parent.grid_size
         self.elements = {}
         self.selected_elements = []
         self.selected_element = None
@@ -317,12 +328,14 @@ class GroupEditor(tk.Toplevel):
 
         left = ttk.Frame(main)
         left.pack(side="left", fill="both", expand=True)
+        self.width = int(round(group.width / parent.scale))
+        self.height = int(round(group.height / parent.scale))
         self.canvas = tk.Canvas(
             left,
             bg="white",
-            width=group.width,
-            height=group.height,
-            scrollregion=(0, 0, group.width, group.height),
+            width=self.width,
+            height=self.height,
+            scrollregion=(0, 0, self.width, self.height),
         )
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<ButtonPress-1>", self.canvas_button_press)
@@ -369,14 +382,14 @@ class GroupEditor(tk.Toplevel):
     def draw_grid(self):
         self.canvas.delete("grid")
         step = self.snap_step
-        cols = int(self.group.width / step) + 1
-        rows = int(self.group.height / step) + 1
+        cols = int(self.width / step) + 1
+        rows = int(self.height / step) + 1
         for i in range(cols):
             x = i * step
-            self.canvas.create_line(x, 0, x, self.group.height, fill="#ddd", tags="grid")
+            self.canvas.create_line(x, 0, x, self.height, fill="#ddd", tags="grid")
         for i in range(rows):
             y = i * step
-            self.canvas.create_line(0, y, self.group.width, y, fill="#ddd", tags="grid")
+            self.canvas.create_line(0, y, self.width, y, fill="#ddd", tags="grid")
 
     def clear_alignment_guides(self):
         for line in (self.align_line_h, self.align_line_v):

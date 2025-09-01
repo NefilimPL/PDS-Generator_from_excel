@@ -499,14 +499,13 @@ class PDSGeneratorGUI(tk.Tk):
             group.height = gconf.get("height", 100) * self.scale
             group.sync_canvas()
             group.field_pos = {
-                k: (v[0] * self.scale, v[1] * self.scale)
-                for k, v in gconf.get("field_pos", {}).items()
+                k: (v[0], v[1]) for k, v in gconf.get("field_pos", {}).items()
             }
             group.field_conf = {
                 k: {
-                    "width": fc.get("width", 100) * self.scale,
-                    "height": fc.get("height", 40) * self.scale,
-                    "font_size": fc.get("font_size", 12) * self.scale,
+                    "width": fc.get("width", 100),
+                    "height": fc.get("height", 40),
+                    "font_size": fc.get("font_size", 12),
                     "bold": fc.get("bold", False),
                     "text_color": fc.get("text_color", "black"),
                     "bg_color": fc.get("bg_color", "white"),
@@ -774,14 +773,13 @@ class PDSGeneratorGUI(tk.Tk):
             group.height = gconf.get("height", group.height) * self.scale
             group.sync_canvas()
             group.field_pos = {
-                k: (v[0] * self.scale, v[1] * self.scale)
-                for k, v in gconf.get("field_pos", {}).items()
+                k: (v[0], v[1]) for k, v in gconf.get("field_pos", {}).items()
             }
             group.field_conf = {
                 k: {
-                    "width": fc.get("width", 100) * self.scale,
-                    "height": fc.get("height", 40) * self.scale,
-                    "font_size": fc.get("font_size", 12) * self.scale,
+                    "width": fc.get("width", 100),
+                    "height": fc.get("height", 40),
+                    "font_size": fc.get("font_size", 12),
                     "bold": fc.get("bold", False),
                     "text_color": fc.get("text_color", "black"),
                     "bg_color": fc.get("bg_color", "white"),
