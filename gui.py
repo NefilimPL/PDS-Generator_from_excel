@@ -73,6 +73,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.snap_step = self.grid_size * self.scale
         self.history = []
         self.future = []
+        self.zoom_frame = None
         self.setup_ui()
         self.bind_all("<Control-z>", self.undo)
         self.bind_all("<Control-x>", self.redo)
@@ -152,11 +153,11 @@ class PDSGeneratorGUI(tk.Tk):
         self.canvas.bind("<B2-Motion>", self.pan_canvas)
         self.canvas.configure(scrollregion=(-self.margin, -self.margin, self.page_width + self.margin, self.page_height + self.margin))
 
-        zoom_frame = ttk.Frame(self.canvas_container)
-        zoom_frame.place(relx=1.0, rely=1.0, anchor="se", x=-5, y=-5)
-        ttk.Button(zoom_frame, text="Dopasuj", command=self.fit_to_window).pack(side="right")
+        self.zoom_frame = ttk.Frame(self.canvas_container)
+        self.zoom_frame.place(relx=1.0, rely=1.0, anchor="se", x=-5, y=-5)
+        ttk.Button(self.zoom_frame, text="Dopasuj", command=self.fit_to_window).pack(side="right")
         self.zoom_var = tk.StringVar(value="100%")
-        ttk.Label(zoom_frame, textvariable=self.zoom_var).pack(side="right", padx=5)
+        ttk.Label(self.zoom_frame, textvariable=self.zoom_var).pack(side="right", padx=5)
 
         right_container = ttk.Frame(self)
         right_container.pack(side="right", fill="y", padx=5, pady=5)
@@ -946,6 +947,9 @@ class PDSGeneratorGUI(tk.Tk):
     def resize_canvas(self, event=None):
         container_w = self.canvas_container.winfo_width()
         container_h = self.canvas_container.winfo_height()
+        if self.zoom_frame:
+            container_w -= self.zoom_frame.winfo_width()
+            container_h -= self.zoom_frame.winfo_height()
         if container_w <= 0 or container_h <= 0:
             return
         self.min_scale = min(1.0, container_w / self.page_width, container_h / self.page_height)
@@ -1055,6 +1059,9 @@ class PDSGeneratorGUI(tk.Tk):
         h = self.page_height * self.scale
         container_w = self.canvas_container.winfo_width()
         container_h = self.canvas_container.winfo_height()
+        if self.zoom_frame:
+            container_w -= self.zoom_frame.winfo_width()
+            container_h -= self.zoom_frame.winfo_height()
         if container_w <= 0 or container_h <= 0:
             return
         total_w = w + 2 * (self.margin + 20)
@@ -1110,6 +1117,9 @@ class PDSGeneratorGUI(tk.Tk):
     def fit_to_window(self):
         container_w = self.canvas_container.winfo_width()
         container_h = self.canvas_container.winfo_height()
+        if self.zoom_frame:
+            container_w -= self.zoom_frame.winfo_width()
+            container_h -= self.zoom_frame.winfo_height()
         if container_w <= 0 or container_h <= 0:
             return
         new_scale = min(container_w / self.page_width, container_h / self.page_height)
