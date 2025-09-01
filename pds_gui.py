@@ -121,8 +121,8 @@ class DraggableElement:
         self.canvas.tag_bind(self.handle, "<ButtonRelease-1>", self.stop_resize)
         # Context menu for layering
         self.menu = tk.Menu(self.canvas, tearoff=0)
-        self.menu.add_command(label="Przenieś na wierzch", command=self.bring_to_front)
-        self.menu.add_command(label="Przenieś na spód", command=self.send_to_back)
+        self.menu.add_command(label="Przenieś warstwę +1", command=self.raise_layer)
+        self.menu.add_command(label="Przenieś warstwę -1", command=self.lower_layer)
         self.canvas.tag_bind(self.rect, "<Button-3>", self.show_menu)
         self.canvas.tag_bind(self.label, "<Button-3>", self.show_menu)
         self.canvas.tag_bind(self.handle, "<Button-3>", self.show_menu)
@@ -134,21 +134,22 @@ class DraggableElement:
     def show_menu(self, event):
         self.menu.tk_popup(event.x_root, event.y_root)
 
-    def bring_to_front(self):
-        self.layer = max((el.layer for el in self.parent.elements.values()), default=0) + 1
+    def raise_layer(self):
+        self.layer += 1
         self.parent.restack_elements()
         if getattr(self.parent, "selected_element", None) is self and hasattr(self.parent, "layer_var"):
             self.parent.layer_var.set(str(int(self.layer)))
         if hasattr(self.parent, "push_history"):
             self.parent.push_history()
 
-    def send_to_back(self):
-        self.layer = min((el.layer for el in self.parent.elements.values()), default=1) - 1
-        self.parent.restack_elements()
-        if getattr(self.parent, "selected_element", None) is self and hasattr(self.parent, "layer_var"):
-            self.parent.layer_var.set(str(int(self.layer)))
-        if hasattr(self.parent, "push_history"):
-            self.parent.push_history()
+    def lower_layer(self):
+        if self.layer > 1:
+            self.layer -= 1
+            self.parent.restack_elements()
+            if getattr(self.parent, "selected_element", None) is self and hasattr(self.parent, "layer_var"):
+                self.parent.layer_var.set(str(int(self.layer)))
+            if hasattr(self.parent, "push_history"):
+                self.parent.push_history()
 
     # ------------------------------------------------------------------
     def start_move(self, event):
@@ -694,9 +695,10 @@ class GroupEditor(tk.Toplevel):
         self.font_entry = ttk.Entry(toolbar, textvariable=self.font_size_var, width=4, state="disabled")
         self.font_entry.pack(side="left", padx=5)
         self.font_entry.bind("<Return>", lambda e: self.set_font_size())
+        ttk.Label(toolbar, text="Warstwa:").pack(side="left", padx=(5, 0))
         self.layer_var = tk.StringVar()
         self.layer_entry = ttk.Entry(toolbar, textvariable=self.layer_var, width=4, state="disabled")
-        self.layer_entry.pack(side="left", padx=5)
+        self.layer_entry.pack(side="left", padx=2)
         self.layer_entry.bind("<Return>", lambda e: self.set_layer())
         ttk.Button(toolbar, text="Kolor", command=self.choose_text_color).pack(side="left", padx=2)
         ttk.Button(toolbar, text="Tło", command=self.choose_bg_color).pack(side="left", padx=2)
@@ -1168,10 +1170,6 @@ class PDSGeneratorGUI(tk.Tk):
         self.font_entry = ttk.Entry(format_frame, textvariable=self.font_size_var, width=4, state="disabled")
         self.font_entry.pack(side="left", padx=5)
         self.font_entry.bind("<Return>", lambda e: self.set_font_size())
-        self.layer_var = tk.StringVar()
-        self.layer_entry = ttk.Entry(format_frame, textvariable=self.layer_var, width=4, state="disabled")
-        self.layer_entry.pack(side="left", padx=5)
-        self.layer_entry.bind("<Return>", lambda e: self.set_layer())
         ttk.Button(format_frame, text="Kolor", command=self.choose_text_color).pack(side="left", padx=2)
         ttk.Button(format_frame, text="Tło", command=self.choose_bg_color).pack(side="left", padx=2)
         self.transparent_var = tk.BooleanVar(value=False)
@@ -1188,6 +1186,11 @@ class PDSGeneratorGUI(tk.Tk):
         ttk.Button(format_frame, text="R", command=lambda: self.set_alignment("right")).pack(side="left", padx=2)
         ttk.Button(format_frame, text="Środek H", command=self.center_selected_horizontal).pack(side="left", padx=2)
         ttk.Button(format_frame, text="Środek V", command=self.center_selected_vertical).pack(side="left", padx=2)
+        ttk.Label(format_frame, text="Warstwa:").pack(side="left", padx=(5, 0))
+        self.layer_var = tk.StringVar()
+        self.layer_entry = ttk.Entry(format_frame, textvariable=self.layer_var, width=4, state="disabled")
+        self.layer_entry.pack(side="left", padx=2)
+        self.layer_entry.bind("<Return>", lambda e: self.set_layer())
         self.canvas_container = tk.Frame(self, bg="#b0b0b0")
         self.canvas_container.pack(side="left", fill="both", expand=True, padx=5, pady=5)
         self.canvas_container.pack_propagate(False)
