@@ -19,6 +19,7 @@ Po uruchomieniu aplikacji:
 7. Suwak Zoom pozwala powiększać pole konfiguracji, a klawisz `Del` usuwa zaznaczony element i odznacza jego checkbox.
 8. Układ dopasowuje się do rozmiaru okna, zachowując proporcje strony. Ostatnio zapisany rozmiar strony jest wczytywany przy kolejnym uruchomieniu.
 9. Zapisz konfigurację (zapamiętuje ostatni plik Excel i ustawienia pól) lub wygeneruj pliki PDF dla wszystkich wierszy Excela.
+10. W komórkach Excela możesz podać nazwę pliku obrazu (np. `czarny.jpg`); program wyszuka go w folderze pliku Excel oraz jego podfolderach.
 
 Wymagane biblioteki są instalowane automatycznie przy pierwszym uruchomieniu skryptu.
 

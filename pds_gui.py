@@ -277,6 +277,32 @@ class DraggableElement:
                 return
             except Exception:
                 pass
+        if isinstance(value, str):
+            local_path = self.parent.find_local_image(value)
+            if local_path:
+                try:
+                    self.raw_image = Image.open(local_path)
+                    img = self.raw_image.resize((int(self.width), int(self.height)), Image.LANCZOS)
+                    self.image_obj = ImageTk.PhotoImage(img)
+                    self.image_id = self.canvas.create_image(
+                        self.x,
+                        self.y,
+                        anchor="nw",
+                        image=self.image_obj,
+                    )
+                    for tag in (self.image_id,):
+                        self.canvas.tag_bind(tag, "<ButtonPress-1>", self.start_move)
+                        self.canvas.tag_bind(tag, "<B1-Motion>", self.moving)
+                        self.canvas.tag_bind(tag, "<ButtonRelease-1>", self.stop_move)
+                        self.canvas.tag_bind(tag, "<Button-3>", self.show_menu)
+                    self.canvas.tag_raise(self.rect)
+                    self.canvas.tag_raise(self.handle)
+                    self.canvas.itemconfig(self.rect, fill="")
+                    self.canvas.itemconfig(self.label, text="", state="hidden")
+                    self.text = str(value)
+                    return
+                except Exception:
+                    pass
         # default: text
         self.canvas.itemconfig(self.rect, fill=self.bg_color if self.bg_visible else "")
         self.canvas.itemconfig(
@@ -929,6 +955,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.elements = {}
         self.groups = {}
         self.conditions = []
+        self.image_cache = {}
         self.selected_elements = []
         self.selected_element = None
         self.sel_rect = None
@@ -1096,6 +1123,7 @@ class PDSGeneratorGUI(tk.Tk):
         if path:
             self.path_var.set(path)
             self.excel_path = path
+            self.image_cache = {}
             self.load_excel(path)
             self.load_config(path=path)
             self.save_config()
@@ -1124,6 +1152,33 @@ class PDSGeneratorGUI(tk.Tk):
                 )
                 chk.pack(anchor="w")
                 self.columns_vars[f"{sheet}:{col}"] = var
+
+    # ------------------------------------------------------------------
+    def find_local_image(self, filename):
+        """Search for an image file relative to the Excel file directory."""
+        if not filename or not getattr(self, "excel_path", ""):
+            return None
+        key = filename.lower()
+        if key in self.image_cache:
+            return self.image_cache[key]
+        base_dir = os.path.dirname(self.excel_path)
+        if os.path.isabs(filename):
+            path = filename if os.path.exists(filename) else None
+        else:
+            candidate = os.path.join(base_dir, filename)
+            if os.path.exists(candidate):
+                path = candidate
+            else:
+                path = None
+                for root, _, files in os.walk(base_dir):
+                    for f in files:
+                        if f.lower() == key:
+                            path = os.path.join(root, f)
+                            break
+                    if path:
+                        break
+        self.image_cache[key] = path
+        return path
 
     # ------------------------------------------------------------------
     def update_canvas_size(self):
@@ -1428,6 +1483,21 @@ class PDSGeneratorGUI(tk.Tk):
                 return
             except Exception:
                 pass
+        if isinstance(value, str):
+            local_path = self.find_local_image(value)
+            if local_path:
+                try:
+                    img = Image.open(local_path)
+                    c.drawImage(
+                        ImageReader(img),
+                        x,
+                        y,
+                        width=element.width / self.scale,
+                        height=element.height / self.scale,
+                    )
+                    return
+                except Exception:
+                    pass
         if element.bg_visible:
             c.setFillColor(to_reportlab_color(element.bg_color))
             c.rect(
@@ -1507,6 +1577,7 @@ class PDSGeneratorGUI(tk.Tk):
         excel_cfg = config.get("excel_path")
         if startup and excel_cfg and os.path.exists(excel_cfg):
             self.excel_path = excel_cfg
+            self.image_cache = {}
             self.path_var.set(excel_cfg)
             self.load_excel(excel_cfg)
         if path and excel_cfg != path:
