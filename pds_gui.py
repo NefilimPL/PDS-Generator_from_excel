@@ -773,6 +773,10 @@ class GroupEditor(tk.Toplevel):
                 el.bg_visible = src.bg_visible
                 el.align = src.align
                 el.auto_font = src.auto_font
+            else:
+                el.width *= self.scale
+                el.height *= self.scale
+                el.font_size *= self.scale
         if pos is not None:
             el.x, el.y = pos[0] * self.scale, pos[1] * self.scale
         el.sync_canvas()
