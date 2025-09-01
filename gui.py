@@ -972,14 +972,15 @@ class PDSGeneratorGUI(tk.Tk):
         # slightly without introducing large grey areas around it
         self.canvas_container.update_idletasks()
         self.margin = 20
-        self.canvas.configure(
-            scrollregion=(
-                -self.margin - 20,
-                -self.margin - 20,
-                w + self.margin + 20,
-                h + self.margin + 20,
-            )
-        )
+        extra_w = self.zoom_frame.winfo_width() if self.zoom_frame else 0
+        extra_h = self.zoom_frame.winfo_height() if self.zoom_frame else 0
+        visible_w = self.canvas_container.winfo_width() - extra_w
+        visible_h = self.canvas_container.winfo_height() - extra_h
+        scroll_w = max(w + 2 * (self.margin + 20), visible_w) + extra_w
+        scroll_h = max(h + 2 * (self.margin + 20), visible_h) + extra_h
+        left = -self.margin - 20
+        top = -self.margin - 20
+        self.canvas.configure(scrollregion=(left, top, left + scroll_w, top + scroll_h))
         self.canvas.create_rectangle(0, 0, w, h, fill="white", outline="", tags="page")
         # draw rulers background
         self.canvas.create_rectangle(0, -20, w, 0, fill="#e0e0e0", outline="black", tags="ruler")
