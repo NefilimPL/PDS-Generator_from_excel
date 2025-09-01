@@ -1,0 +1,5 @@
+pandas
+Pillow
+reportlab
+requests
+openpyxl
