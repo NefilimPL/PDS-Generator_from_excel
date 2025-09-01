@@ -576,6 +576,8 @@ class GroupEditor(tk.Toplevel):
         self.group = group
         self.title(group.name)
         self.scale = 1.0
+        self.min_scale = 0.2
+        self.max_scale = 4.0
         self.snap_step = parent.snap_step
         self.elements = {}
         self.selected_elements = []
@@ -618,6 +620,9 @@ class GroupEditor(tk.Toplevel):
         self.canvas.bind("<ButtonPress-1>", self.canvas_button_press)
         self.canvas.bind("<B1-Motion>", self.canvas_drag_select)
         self.canvas.bind("<ButtonRelease-1>", self.canvas_button_release)
+        self.canvas.bind("<Control-MouseWheel>", self.ctrl_zoom)
+        self.canvas.bind("<Control-Button-4>", lambda e: self.ctrl_zoom(e, 120))
+        self.canvas.bind("<Control-Button-5>", lambda e: self.ctrl_zoom(e, -120))
         self.draw_grid()
 
         right = ttk.Frame(main)
@@ -659,14 +664,48 @@ class GroupEditor(tk.Toplevel):
     def draw_grid(self):
         self.canvas.delete("grid")
         step = self.snap_step
-        cols = int(self.group.width / step) + 1
-        rows = int(self.group.height / step) + 1
+        w = self.group.width * self.scale
+        h = self.group.height * self.scale
+        self.canvas.config(scrollregion=(0, 0, w, h))
+        cols = int(w / step) + 1
+        rows = int(h / step) + 1
         for i in range(cols):
             x = i * step
-            self.canvas.create_line(x, 0, x, self.group.height, fill="#ddd", tags="grid")
+            self.canvas.create_line(x, 0, x, h, fill="#ddd", tags="grid")
         for i in range(rows):
             y = i * step
-            self.canvas.create_line(0, y, self.group.width, y, fill="#ddd", tags="grid")
+            self.canvas.create_line(0, y, w, y, fill="#ddd", tags="grid")
+
+    def ctrl_zoom(self, event, delta=None):
+        if delta is None:
+            delta = event.delta
+        factor = 1.1 if delta > 0 else 0.9
+        new_scale = self.scale * factor
+        new_scale = max(self.min_scale, min(self.max_scale, new_scale))
+        factor = new_scale / self.scale
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        for el in self.elements.values():
+            rel_x = el.x / self.scale
+            rel_y = el.y / self.scale
+            rel_w = el.width / self.scale
+            rel_h = el.height / self.scale
+            rel_f = el.font_size / self.scale
+            el.x = rel_x * new_scale
+            el.y = rel_y * new_scale
+            el.width = rel_w * new_scale
+            el.height = rel_h * new_scale
+            el.font_size = rel_f * new_scale
+            el.sync_canvas()
+            el.apply_font()
+        self.scale = new_scale
+        self.snap_step *= factor
+        self.draw_grid()
+        w = self.group.width * self.scale
+        h = self.group.height * self.scale
+        self.canvas.config(width=w, height=h)
+        self.canvas.xview_moveto((x * factor - event.x) / w)
+        self.canvas.yview_moveto((y * factor - event.y) / h)
 
     def add_element(self, name, pos=None):
         el = DraggableElement(self, self.canvas, name, name)
@@ -725,7 +764,7 @@ class GroupEditor(tk.Toplevel):
         self.selected_element = self.selected_elements[-1] if self.selected_elements else None
         if self.selected_element:
             self.font_entry.configure(state="normal")
-            self.font_size_var.set(str(int(self.selected_element.font_size)))
+            self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
             self.transparent_var.set(not self.selected_element.bg_visible)
             self.bg_check.state(["!disabled"])
         else:
@@ -784,26 +823,26 @@ class GroupEditor(tk.Toplevel):
         el = self.selected_element
         if not el:
             return
-        el.font_size += 1
+        el.font_size += self.scale
         el.auto_font = False
         el.apply_font()
-        self.font_size_var.set(str(int(el.font_size)))
+        self.font_size_var.set(str(int(el.font_size / self.scale)))
 
     def decrease_font(self):
         el = self.selected_element
-        if not el or el.font_size <= 1:
+        if not el or el.font_size <= self.scale:
             return
-        el.font_size -= 1
+        el.font_size -= self.scale
         el.auto_font = False
         el.apply_font()
-        self.font_size_var.set(str(int(el.font_size)))
+        self.font_size_var.set(str(int(el.font_size / self.scale)))
 
     def set_font_size(self):
         el = self.selected_element
         if not el:
             return
         try:
-            size = float(self.font_size_var.get())
+            size = float(self.font_size_var.get()) * self.scale
         except ValueError:
             return
         if size <= 0:
@@ -811,6 +850,7 @@ class GroupEditor(tk.Toplevel):
         el.font_size = size
         el.auto_font = False
         el.apply_font()
+        self.font_size_var.set(str(int(el.font_size / self.scale)))
 
     def choose_text_color(self):
         el = self.selected_element
@@ -883,14 +923,15 @@ class GroupEditor(tk.Toplevel):
             self.parent.push_history()
 
     def close(self):
-        self.group.field_pos = {name: (el.x, el.y) for name, el in self.elements.items()}
+        scale = self.scale
+        self.group.field_pos = {name: (el.x / scale, el.y / scale) for name, el in self.elements.items()}
         self.group.fields = list(self.group.field_pos.keys())
         self.group.conditions = list(self.conditions)
         self.group.field_conf = {
             name: {
-                "width": el.width,
-                "height": el.height,
-                "font_size": el.font_size,
+                "width": el.width / scale,
+                "height": el.height / scale,
+                "font_size": el.font_size / scale,
                 "bold": el.bold,
                 "text_color": el.text_color,
                 "bg_color": el.bg_color,
