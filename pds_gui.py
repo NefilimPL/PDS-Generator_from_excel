@@ -1025,7 +1025,12 @@ class GroupEditor(tk.Toplevel):
             for el in self.elements.values():
                 el.layer += shift
         for el in sorted(self.elements.values(), key=lambda e: e.layer):
-            for item in filter(None, [el.rect, el.label, el.handle, getattr(el, "image_id", None)]):
+            for item in filter(None, [
+                el.rect,
+                el.label,
+                getattr(el, "image_id", None),
+                el.handle,
+            ]):
                 self.canvas.tag_raise(item)
         if self.selected_element:
             self.layer_var.set(str(int(self.selected_element.layer)))
@@ -1494,7 +1499,12 @@ class PDSGeneratorGUI(tk.Tk):
             for el in self.elements.values():
                 el.layer += shift
         for el in sorted(self.elements.values(), key=lambda e: e.layer):
-            for item in filter(None, [el.rect, el.label, el.handle, getattr(el, "image_id", None)]):
+            for item in filter(None, [
+                el.rect,
+                el.label,
+                getattr(el, "image_id", None),
+                el.handle,
+            ]):
                 self.canvas.tag_raise(item)
         self.canvas.tag_lower("page")
         self.canvas.tag_lower("grid")
