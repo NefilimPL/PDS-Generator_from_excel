@@ -154,6 +154,7 @@ class DraggableElement:
             el.y += dy
         self.last_x = event.x
         self.last_y = event.y
+        self.parent.update_alignment_guides(self)
 
     def stop_move(self, event):
         step = self.parent.snap_step
@@ -163,6 +164,7 @@ class DraggableElement:
             el.x = int(round(el.x / step)) * step
             el.y = int(round(el.y / step)) * step
             el.sync_canvas()
+        self.parent.clear_alignment_guides()
         self.parent.push_history()
 
     # ------------------------------------------------------------------
@@ -179,9 +181,15 @@ class DraggableElement:
         step = self.parent.snap_step
         dx = event.x - self.start_x
         dy = event.y - self.start_y
-        self.width = max(step, self.start_w + dx)
-        self.height = max(step, self.start_h + dy)
+        if event.state & 0x0004:  # Ctrl pressed
+            delta = dx if abs(dx) > abs(dy) else dy
+            self.width = max(step, self.start_w + delta)
+            self.height = max(step, self.start_h + delta)
+        else:
+            self.width = max(step, self.start_w + dx)
+            self.height = max(step, self.start_h + dy)
         self.sync_canvas()
+        self.parent.update_alignment_guides(self)
 
     def stop_resize(self, event):
         step = self.parent.snap_step
@@ -189,6 +197,7 @@ class DraggableElement:
         self.width = max(step, int(round(self.width / step)) * step)
         self.height = max(step, int(round(self.height / step)) * step)
         self.sync_canvas()
+        self.parent.clear_alignment_guides()
         self.parent.push_history()
 
     # ------------------------------------------------------------------
@@ -419,6 +428,7 @@ class GroupArea:
         self.y += dy
         self.last_x = event.x
         self.last_y = event.y
+        self.parent.update_alignment_guides(self)
 
     def stop_move(self, event):
         step = self.parent.snap_step
@@ -437,6 +447,7 @@ class GroupArea:
                         self.canvas.move(item, dx, dy)
                 el.x += dx
                 el.y += dy
+        self.parent.clear_alignment_guides()
 
     def start_resize(self, event):
         self.start_x = event.x
@@ -451,12 +462,14 @@ class GroupArea:
         self.width = max(step, self.start_w + dx)
         self.height = max(step, self.start_h + dy)
         self.sync_canvas()
+        self.parent.update_alignment_guides(self)
 
     def stop_resize(self, event):
         step = self.parent.snap_step
         self.width = max(step, int(round(self.width / step)) * step)
         self.height = max(step, int(round(self.height / step)) * step)
         self.sync_canvas()
+        self.parent.clear_alignment_guides()
 
     def sync_canvas(self):
         self.canvas.coords(
@@ -581,6 +594,8 @@ class GroupEditor(tk.Toplevel):
         self.selected_elements = []
         self.selected_element = None
         self.conditions = list(group.conditions)
+        self.align_line_h = None
+        self.align_line_v = None
 
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x", padx=5, pady=5)
@@ -668,6 +683,41 @@ class GroupEditor(tk.Toplevel):
             y = i * step
             self.canvas.create_line(0, y, self.group.width, y, fill="#ddd", tags="grid")
 
+    def clear_alignment_guides(self):
+        for line in (self.align_line_h, self.align_line_v):
+            if line:
+                self.canvas.delete(line)
+        self.align_line_h = self.align_line_v = None
+
+    def update_alignment_guides(self, element):
+        self.clear_alignment_guides()
+        others = [el for el in self.elements.values() if el is not element]
+        x1, y1 = element.x, element.y
+        x2, y2 = element.x + element.width, element.y + element.height
+        tol = 1
+        found_h = found_v = False
+        for other in others:
+            ox1, oy1 = other.x, other.y
+            ox2, oy2 = other.x + other.width, other.y + other.height
+            if not found_v:
+                for x in (x1, x2):
+                    if abs(x - ox1) <= tol or abs(x - ox2) <= tol:
+                        self.align_line_v = self.canvas.create_line(
+                            x, min(y1, oy1), x, max(y2, oy2), fill="red"
+                        )
+                        found_v = True
+                        break
+            if not found_h:
+                for y in (y1, y2):
+                    if abs(y - oy1) <= tol or abs(y - oy2) <= tol:
+                        self.align_line_h = self.canvas.create_line(
+                            min(x1, ox1), y, max(x2, ox2), y, fill="red"
+                        )
+                        found_h = True
+                        break
+            if found_h and found_v:
+                break
+
     def add_element(self, name, pos=None):
         el = DraggableElement(self, self.canvas, name, name)
         conf = self.group.field_conf.get(name)
@@ -714,6 +764,7 @@ class GroupEditor(tk.Toplevel):
                 self.group.fields.remove(name)
 
     def select_element(self, element, additive=False):
+        self.clear_alignment_guides()
         if not additive:
             for el in self.selected_elements:
                 self.canvas.itemconfig(el.rect, outline="black")
@@ -933,6 +984,8 @@ class PDSGeneratorGUI(tk.Tk):
         self.selected_element = None
         self.sel_rect = None
         self.sel_start = None
+        self.align_line_h = None
+        self.align_line_v = None
         self.page_width, self.page_height = self.PAGE_SIZES["A4"]
         self.scale = 1.0
         self.max_scale = 4.0
@@ -1781,6 +1834,45 @@ class PDSGeneratorGUI(tk.Tk):
         self.canvas.tag_lower("grid")
         self.canvas.tag_raise("grid", "page")
         self.canvas.tag_raise("ruler", "grid")
+
+    def clear_alignment_guides(self):
+        for line in (self.align_line_h, self.align_line_v):
+            if line:
+                self.canvas.delete(line)
+        self.align_line_h = self.align_line_v = None
+
+    def update_alignment_guides(self, element):
+        self.clear_alignment_guides()
+        others = [
+            el
+            for el in list(self.elements.values()) + list(self.groups.values())
+            if el is not element
+        ]
+        x1, y1 = element.x, element.y
+        x2, y2 = element.x + element.width, element.y + element.height
+        tol = 1
+        found_h = found_v = False
+        for other in others:
+            ox1, oy1 = other.x, other.y
+            ox2, oy2 = other.x + other.width, other.y + other.height
+            if not found_v:
+                for x in (x1, x2):
+                    if abs(x - ox1) <= tol or abs(x - ox2) <= tol:
+                        self.align_line_v = self.canvas.create_line(
+                            x, min(y1, oy1), x, max(y2, oy2), fill="red"
+                        )
+                        found_v = True
+                        break
+            if not found_h:
+                for y in (y1, y2):
+                    if abs(y - oy1) <= tol or abs(y - oy2) <= tol:
+                        self.align_line_h = self.canvas.create_line(
+                            min(x1, ox1), y, max(x2, ox2), y, fill="red"
+                        )
+                        found_h = True
+                        break
+            if found_h and found_v:
+                break
         self.zoom_var.set(f"{int(self.scale*100)}%")
 
     def center_page(self):
@@ -1885,6 +1977,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.canvas.scan_dragto(event.x, event.y, gain=1)
 
     def select_element(self, element, additive=False):
+        self.clear_alignment_guides()
         if not additive:
             for el in self.selected_elements:
                 self.canvas.itemconfig(el.rect, outline="black")
