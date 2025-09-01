@@ -1610,9 +1610,19 @@ class PDSGeneratorGUI(tk.Tk):
 
         def worker():
             start_time = time.time()
+            used_names = set()
             for idx in range(total_rows):
                 first_val = first_df.iloc[idx, 0] if first_df.shape[1] else ""
-                filename = sanitize_filename(first_val) or f"pds_{idx+1}"
+                base_filename = sanitize_filename(first_val) or f"pds_{idx+1}"
+                filename = base_filename
+                suffix = 2
+                while (
+                    filename in used_names
+                    or os.path.exists(os.path.join(output_dir, f"{filename}.pdf"))
+                ):
+                    filename = f"{base_filename}_{suffix}"
+                    suffix += 1
+                used_names.add(filename)
                 pdf_path = os.path.join(output_dir, f"{filename}.pdf")
                 tmp_path = pdf_path + ".tmp"
                 c = pdf_canvas.Canvas(tmp_path, pagesize=(page_width, page_height))
