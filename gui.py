@@ -976,11 +976,13 @@ class PDSGeneratorGUI(tk.Tk):
         extra_h = self.zoom_frame.winfo_height() if self.zoom_frame else 0
         visible_w = self.canvas_container.winfo_width() - extra_w
         visible_h = self.canvas_container.winfo_height() - extra_h
-        scroll_w = max(w + 2 * (self.margin + 20), visible_w) + extra_w
-        scroll_h = max(h + 2 * (self.margin + 20), visible_h) + extra_h
-        left = -self.margin - 20
-        top = -self.margin - 20
-        self.canvas.configure(scrollregion=(left, top, left + scroll_w, top + scroll_h))
+        base_w = max(w + 2 * (self.margin + 20), visible_w)
+        base_h = max(h + 2 * (self.margin + 20), visible_h)
+        total_w = base_w + extra_w
+        total_h = base_h + extra_h
+        left = -(base_w - w) / 2 - extra_w / 2
+        top = -(base_h - h) / 2 - extra_h / 2
+        self.canvas.configure(scrollregion=(left, top, left + total_w, top + total_h))
         self.canvas.create_rectangle(0, 0, w, h, fill="white", outline="", tags="page")
         # draw rulers background
         self.canvas.create_rectangle(0, -20, w, 0, fill="#e0e0e0", outline="black", tags="ruler")
@@ -1060,17 +1062,18 @@ class PDSGeneratorGUI(tk.Tk):
         h = self.page_height * self.scale
         container_w = self.canvas_container.winfo_width()
         container_h = self.canvas_container.winfo_height()
-        if self.zoom_frame:
-            container_w -= self.zoom_frame.winfo_width()
-            container_h -= self.zoom_frame.winfo_height()
-        if container_w <= 0 or container_h <= 0:
+        extra_w = self.zoom_frame.winfo_width() if self.zoom_frame else 0
+        extra_h = self.zoom_frame.winfo_height() if self.zoom_frame else 0
+        visible_w = container_w - extra_w
+        visible_h = container_h - extra_h
+        if visible_w <= 0 or visible_h <= 0:
             return
-        total_w = w + 2 * (self.margin + 20)
-        total_h = h + 2 * (self.margin + 20)
-        left = self.margin + 20 + w / 2 - container_w / 2
-        top = self.margin + 20 + h / 2 - container_h / 2
-        left = max(0, min(left, total_w - container_w))
-        top = max(0, min(top, total_h - container_h))
+        base_w = max(w + 2 * (self.margin + 20), visible_w)
+        base_h = max(h + 2 * (self.margin + 20), visible_h)
+        total_w = base_w + extra_w
+        total_h = base_h + extra_h
+        left = (total_w - visible_w) / 2
+        top = (total_h - visible_h) / 2
         self.canvas.xview_moveto(left / total_w)
         self.canvas.yview_moveto(top / total_h)
     def ctrl_zoom(self, event, delta=None):
