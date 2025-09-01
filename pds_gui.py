@@ -666,6 +666,8 @@ class GroupEditor(tk.Toplevel):
             # convert stored positions from the main editor's scale
             self.add_element(name, (pos[0] / self.parent_scale, pos[1] / self.parent_scale))
 
+        # ensure the group page fills the editor regardless of the main zoom
+        self.after_idle(self.fit_canvas)
         self.protocol("WM_DELETE_WINDOW", self.close)
 
     def draw_grid(self):
@@ -683,6 +685,37 @@ class GroupEditor(tk.Toplevel):
         for i in range(rows):
             y = i * step
             self.canvas.create_line(0, y, w, y, fill="#ddd", tags="grid")
+        # keep the grid behind all elements
+        self.canvas.tag_lower("grid")
+
+    def fit_canvas(self):
+        """Scale contents so the group page fits the available area."""
+        self.canvas.update_idletasks()
+        container_w = self.canvas.winfo_width()
+        container_h = self.canvas.winfo_height()
+        if container_w <= 0 or container_h <= 0:
+            return
+        new_scale = min(container_w / self.base_width, container_h / self.base_height)
+        new_scale = max(self.min_scale, min(self.max_scale, new_scale))
+        for el in self.elements.values():
+            rel_x = el.x / self.scale
+            rel_y = el.y / self.scale
+            rel_w = el.width / self.scale
+            rel_h = el.height / self.scale
+            rel_f = el.font_size / self.scale
+            el.x = rel_x * new_scale
+            el.y = rel_y * new_scale
+            el.width = rel_w * new_scale
+            el.height = rel_h * new_scale
+            el.font_size = rel_f * new_scale
+            el.sync_canvas()
+            el.apply_font()
+        self.scale = new_scale
+        self.snap_step = self.grid_size * self.scale
+        self.draw_grid()
+        w = self.base_width * self.scale
+        h = self.base_height * self.scale
+        self.canvas.config(scrollregion=(0, 0, w, h))
 
     def ctrl_zoom(self, event, delta=None):
         if delta is None:

@@ -17,7 +17,7 @@ Po uruchomieniu aplikacji:
 5. Listy po prawej stronie można przewijać kółkiem myszy. Pola statyczne można dodawać w dowolnej liczbie i dla każdego wpisać własną wartość.
 6. Nad polem konfiguracji znajdziesz przyciski formatowania tekstu oraz wybór kolorów tekstu i tła zaznaczonego elementu.
 7. Suwak Zoom pozwala powiększać pole konfiguracji, a klawisz `Del` usuwa zaznaczony element i odznacza jego checkbox.
-8. W edytorze grup można również powiększać obszar roboczy skrótem `Ctrl` + kółko myszy; siatka zachowuje stały rozmiar niezależnie od przybliżenia w głównym edytorze.
+8. W edytorze grup można również powiększać obszar roboczy skrótem `Ctrl` + kółko myszy; siatka i kartka dopasowują się automatycznie i pozostają niezależne od przybliżenia w głównym edytorze.
 9. Układ dopasowuje się do rozmiaru okna, zachowując proporcje strony. Ostatnio zapisany rozmiar strony jest wczytywany przy kolejnym uruchomieniu.
 10. Zapisz konfigurację (zapamiętuje ostatni plik Excel i ustawienia pól) lub wygeneruj pliki PDF dla wszystkich wierszy Excela.
 
