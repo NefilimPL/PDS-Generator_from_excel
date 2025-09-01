@@ -6,6 +6,7 @@ import threading
 import subprocess
 import importlib
 import math
+import re
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -50,6 +51,13 @@ def to_reportlab_color(value):
         return colors.HexColor(value)
     except Exception:
         return colors.toColor(value)
+
+
+def sanitize_filename(name: str) -> str:
+    """Return a filesystem-safe version of *name*."""
+    cleaned = re.sub(r"[^\w\s-]", "", str(name))
+    cleaned = re.sub(r"\s+", "_", cleaned).strip("_")
+    return cleaned
 
 # ---------------------------------------------------------------------------
 # Model classes
@@ -1603,7 +1611,9 @@ class PDSGeneratorGUI(tk.Tk):
         def worker():
             start_time = time.time()
             for idx in range(total_rows):
-                pdf_path = os.path.join(output_dir, f"pds_{idx+1}.pdf")
+                first_val = first_df.iloc[idx, 0] if first_df.shape[1] else ""
+                filename = sanitize_filename(first_val) or f"pds_{idx+1}"
+                pdf_path = os.path.join(output_dir, f"{filename}.pdf")
                 tmp_path = pdf_path + ".tmp"
                 c = pdf_canvas.Canvas(tmp_path, pagesize=(page_width, page_height))
                 needed = set(self.elements.keys())
