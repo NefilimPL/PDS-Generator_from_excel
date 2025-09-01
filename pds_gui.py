@@ -86,6 +86,8 @@ class DraggableElement:
         self.bg_color = "white"
         self.bg_visible = True
         self.align = "left"
+        # layering (1-based, 0 reserved for page background)
+        self.layer = max((el.layer for el in parent.elements.values()), default=0) + 1
         self._create_items()
 
     # ------------------------------------------------------------------
@@ -133,14 +135,20 @@ class DraggableElement:
         self.menu.tk_popup(event.x_root, event.y_root)
 
     def bring_to_front(self):
-        items = [self.rect, self.label, self.handle, getattr(self, "image_id", None)]
-        for item in filter(None, items):
-            self.canvas.tag_raise(item)
+        self.layer = max((el.layer for el in self.parent.elements.values()), default=0) + 1
+        self.parent.restack_elements()
+        if getattr(self.parent, "selected_element", None) is self and hasattr(self.parent, "layer_var"):
+            self.parent.layer_var.set(str(int(self.layer)))
+        if hasattr(self.parent, "push_history"):
+            self.parent.push_history()
 
     def send_to_back(self):
-        items = [self.rect, self.label, self.handle, getattr(self, "image_id", None)]
-        for item in filter(None, items):
-            self.canvas.tag_lower(item)
+        self.layer = min((el.layer for el in self.parent.elements.values()), default=1) - 1
+        self.parent.restack_elements()
+        if getattr(self.parent, "selected_element", None) is self and hasattr(self.parent, "layer_var"):
+            self.parent.layer_var.set(str(int(self.layer)))
+        if hasattr(self.parent, "push_history"):
+            self.parent.push_history()
 
     # ------------------------------------------------------------------
     def start_move(self, event):
@@ -242,6 +250,7 @@ class DraggableElement:
             "bg_color": self.bg_color,
             "bg_visible": self.bg_visible,
             "align": self.align,
+            "layer": self.layer,
         }
 
     def sync_canvas(self):
@@ -308,6 +317,8 @@ class DraggableElement:
                 self.canvas.itemconfig(self.rect, fill="")
                 self.canvas.itemconfig(self.label, text="", state="hidden")
                 self.text = str(value)
+                if hasattr(self.parent, "restack_elements"):
+                    self.parent.restack_elements()
                 return
             except Exception:
                 pass
@@ -334,6 +345,8 @@ class DraggableElement:
                     self.canvas.itemconfig(self.rect, fill="")
                     self.canvas.itemconfig(self.label, text="", state="hidden")
                     self.text = str(value)
+                    if hasattr(self.parent, "restack_elements"):
+                        self.parent.restack_elements()
                     return
                 except Exception:
                     pass
@@ -350,6 +363,8 @@ class DraggableElement:
         if self.auto_font:
             self.fit_text()
         self._update_label_position()
+        if hasattr(self.parent, "restack_elements"):
+            self.parent.restack_elements()
 
     def apply_font(self):
         weight = "bold" if self.bold else "normal"
@@ -591,6 +606,7 @@ class GroupArea:
                     "bg_visible": conf.get("bg_visible", True),
                     "align": conf.get("align", "left"),
                     "auto_font": conf.get("auto_font", True),
+                    "layer": conf.get("layer", 1),
                 }
                 for k, conf in self.field_conf.items()
             },
@@ -678,6 +694,10 @@ class GroupEditor(tk.Toplevel):
         self.font_entry = ttk.Entry(toolbar, textvariable=self.font_size_var, width=4, state="disabled")
         self.font_entry.pack(side="left", padx=5)
         self.font_entry.bind("<Return>", lambda e: self.set_font_size())
+        self.layer_var = tk.StringVar()
+        self.layer_entry = ttk.Entry(toolbar, textvariable=self.layer_var, width=4, state="disabled")
+        self.layer_entry.pack(side="left", padx=5)
+        self.layer_entry.bind("<Return>", lambda e: self.set_layer())
         ttk.Button(toolbar, text="Kolor", command=self.choose_text_color).pack(side="left", padx=2)
         ttk.Button(toolbar, text="Tło", command=self.choose_bg_color).pack(side="left", padx=2)
         self.transparent_var = tk.BooleanVar(value=False)
@@ -812,6 +832,7 @@ class GroupEditor(tk.Toplevel):
             el.bg_visible = conf.get("bg_visible", el.bg_visible)
             el.align = conf.get("align", el.align)
             el.auto_font = conf.get("auto_font", el.auto_font)
+            el.layer = conf.get("layer", el.layer)
         else:
             src = self.parent.elements.get(name)
             if src:
@@ -824,10 +845,12 @@ class GroupEditor(tk.Toplevel):
                 el.bg_visible = src.bg_visible
                 el.align = src.align
                 el.auto_font = src.auto_font
+                el.layer = src.layer
         if pos is not None:
             el.x, el.y = pos
         el.sync_canvas()
         self.elements[name] = el
+        self.restack_elements()
         if name not in self.group.fields:
             self.group.fields.append(name)
 
@@ -860,11 +883,15 @@ class GroupEditor(tk.Toplevel):
             self.font_size_var.set(str(int(self.selected_element.font_size)))
             self.transparent_var.set(not self.selected_element.bg_visible)
             self.bg_check.state(["!disabled"])
+            self.layer_entry.configure(state="normal")
+            self.layer_var.set(str(int(self.selected_element.layer)))
         else:
             self.font_entry.configure(state="disabled")
             self.font_size_var.set("")
             self.transparent_var.set(False)
             self.bg_check.state(["disabled"])
+            self.layer_entry.configure(state="disabled")
+            self.layer_var.set("")
 
     def canvas_button_press(self, event):
         if self.canvas.find_withtag("current"):
@@ -944,6 +971,20 @@ class GroupEditor(tk.Toplevel):
         el.auto_font = False
         el.apply_font()
 
+    def set_layer(self):
+        el = self.selected_element
+        if not el:
+            return
+        try:
+            layer = int(float(self.layer_var.get()))
+        except ValueError:
+            return
+        if layer < 1:
+            layer = 1
+        el.layer = layer
+        self.restack_elements()
+        self.layer_var.set(str(int(el.layer)))
+
     def choose_text_color(self):
         el = self.selected_element
         if not el:
@@ -972,6 +1013,20 @@ class GroupEditor(tk.Toplevel):
             return
         el.bg_visible = not self.transparent_var.get()
         el.update_colors()
+        
+    def restack_elements(self):
+        if not self.elements:
+            return
+        min_layer = min(el.layer for el in self.elements.values())
+        if min_layer < 1:
+            shift = 1 - min_layer
+            for el in self.elements.values():
+                el.layer += shift
+        for el in sorted(self.elements.values(), key=lambda e: e.layer):
+            for item in filter(None, [el.rect, el.label, el.handle, getattr(el, "image_id", None)]):
+                self.canvas.tag_raise(item)
+        if self.selected_element:
+            self.layer_var.set(str(int(self.selected_element.layer)))
 
     def set_alignment(self, align):
         if not self.selected_elements:
@@ -1029,6 +1084,7 @@ class GroupEditor(tk.Toplevel):
                 "bg_visible": el.bg_visible,
                 "align": el.align,
                 "auto_font": el.auto_font,
+                "layer": el.layer,
             }
             for name, el in self.elements.items()
         }
@@ -1112,6 +1168,10 @@ class PDSGeneratorGUI(tk.Tk):
         self.font_entry = ttk.Entry(format_frame, textvariable=self.font_size_var, width=4, state="disabled")
         self.font_entry.pack(side="left", padx=5)
         self.font_entry.bind("<Return>", lambda e: self.set_font_size())
+        self.layer_var = tk.StringVar()
+        self.layer_entry = ttk.Entry(format_frame, textvariable=self.layer_var, width=4, state="disabled")
+        self.layer_entry.pack(side="left", padx=5)
+        self.layer_entry.bind("<Return>", lambda e: self.set_layer())
         ttk.Button(format_frame, text="Kolor", command=self.choose_text_color).pack(side="left", padx=2)
         ttk.Button(format_frame, text="Tło", command=self.choose_bg_color).pack(side="left", padx=2)
         self.transparent_var = tk.BooleanVar(value=False)
@@ -1335,6 +1395,7 @@ class PDSGeneratorGUI(tk.Tk):
             if name not in self.elements:
                 element = DraggableElement(self, self.canvas, name, name)
                 self.elements[name] = element
+                self.restack_elements()
         else:
             self.remove_element(name)
         self.push_history()
@@ -1345,6 +1406,7 @@ class PDSGeneratorGUI(tk.Tk):
             if name not in self.elements:
                 element = DraggableElement(self, self.canvas, name, value)
                 self.elements[name] = element
+                self.restack_elements()
             else:
                 self.elements[name].update_value(value)
         else:
@@ -1416,6 +1478,26 @@ class PDSGeneratorGUI(tk.Tk):
                 self.selected_element = None
                 self.font_entry.configure(state="disabled")
                 self.font_size_var.set("")
+                self.layer_entry.configure(state="disabled")
+                self.layer_var.set("")
+        self.restack_elements()
+
+    def restack_elements(self):
+        if not self.elements:
+            return
+        min_layer = min(el.layer for el in self.elements.values())
+        if min_layer < 1:
+            shift = 1 - min_layer
+            for el in self.elements.values():
+                el.layer += shift
+        for el in sorted(self.elements.values(), key=lambda e: e.layer):
+            for item in filter(None, [el.rect, el.label, el.handle, getattr(el, "image_id", None)]):
+                self.canvas.tag_raise(item)
+        self.canvas.tag_lower("page")
+        self.canvas.tag_lower("grid")
+        self.canvas.tag_raise("grid", "page")
+        if self.selected_element:
+            self.layer_var.set(str(int(self.selected_element.layer)))
         
     def push_history(self):
         state = {
@@ -1449,7 +1531,10 @@ class PDSGeneratorGUI(tk.Tk):
             el.bg_visible = conf.get("bg_visible", True)
             el.align = conf.get("align", "left")
             el.auto_font = conf.get("auto_font", True)
+            el.layer = conf.get("layer", el.layer)
             el.sync_canvas()
+
+        self.restack_elements()
 
         # restore groups
         current_groups = list(self.groups.keys())
@@ -1480,6 +1565,7 @@ class PDSGeneratorGUI(tk.Tk):
                     "bg_visible": fc.get("bg_visible", True),
                     "align": fc.get("align", "left"),
                     "auto_font": fc.get("auto_font", True),
+                    "layer": fc.get("layer", 1),
                 }
                 for k, fc in gconf.get("field_conf", {}).items()
             }
@@ -1645,7 +1731,7 @@ class PDSGeneratorGUI(tk.Tk):
         except ValueError:
             messagebox.showerror("Błąd", "Nieprawidłowy numer wiersza")
             return
-        for name, element in self.elements.items():
+        for name, element in sorted(self.elements.items(), key=lambda kv: kv[1].layer):
             if ":" in name:
                 sheet, col = name.split(":", 1)
                 df = self.dataframes.get(sheet)
@@ -1723,6 +1809,7 @@ class PDSGeneratorGUI(tk.Tk):
                 element.bg_visible = elconf.get("bg_visible", element.bg_visible)
                 element.align = elconf.get("align", element.align)
                 element.auto_font = elconf.get("auto_font", element.auto_font)
+                element.layer = elconf.get("layer", element.layer)
                 element.sync_canvas()
                 self.elements[name] = element
                 if name in self.columns_vars:
@@ -1752,6 +1839,7 @@ class PDSGeneratorGUI(tk.Tk):
                     "bg_visible": fc.get("bg_visible", True),
                     "align": fc.get("align", "left"),
                     "auto_font": fc.get("auto_font", True),
+                    "layer": fc.get("layer", 1),
                 }
                 for k, fc in gconf.get("field_conf", {}).items()
             }
@@ -1761,6 +1849,7 @@ class PDSGeneratorGUI(tk.Tk):
             self.groups[group.name] = group
             if hasattr(self, "groups_list"):
                 self.groups_list.insert("end", group.name)
+        self.restack_elements()
         self.push_history()
     # ------------------------------------------------------------------
     def generate_pds(self):
@@ -1874,7 +1963,7 @@ class PDSGeneratorGUI(tk.Tk):
                             self.draw_pdf_element(c, dummy, val, x_pdf, y_pdf)
                             placed.append((x0, y, width, height))
                             cur_y = y + height
-                for name, element in self.elements.items():
+                for name, element in sorted(self.elements.items(), key=lambda kv: kv[1].layer):
                     if name in hidden:
                         continue
                     val = values.get(name, "")
@@ -2129,11 +2218,15 @@ class PDSGeneratorGUI(tk.Tk):
             self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
             self.bg_check.state(["!disabled"])
             self.transparent_var.set(not self.selected_element.bg_visible)
+            self.layer_entry.configure(state="normal")
+            self.layer_var.set(str(int(self.selected_element.layer)))
         else:
             self.font_entry.configure(state="disabled")
             self.font_size_var.set("")
             self.transparent_var.set(False)
             self.bg_check.state(["disabled"])
+            self.layer_entry.configure(state="disabled")
+            self.layer_var.set("")
 
     def canvas_button_press(self, event):
         current = self.canvas.find_withtag("current")
@@ -2230,6 +2323,21 @@ class PDSGeneratorGUI(tk.Tk):
         el.auto_font = False
         el.apply_font()
         self.push_history()
+
+    def set_layer(self):
+        el = self.selected_element
+        if not el:
+            return
+        try:
+            layer = int(float(self.layer_var.get()))
+        except ValueError:
+            return
+        if layer < 1:
+            layer = 1
+        el.layer = layer
+        self.restack_elements()
+        self.push_history()
+        self.layer_var.set(str(int(el.layer)))
 
     def choose_text_color(self):
         el = self.selected_element
