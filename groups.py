@@ -115,6 +115,9 @@ class GroupArea:
         dy = new_y - self.y
         self.x = new_x
         self.y = new_y
+        # ensure the group's dimensions also align with the grid
+        self.width = max(step, int(round(self.width / step)) * step)
+        self.height = max(step, int(round(self.height / step)) * step)
         self.sync_canvas()
         # snap children by the same offset
         if dx or dy:
@@ -189,14 +192,14 @@ class GroupArea:
             "width": int(round(self.width / scale)),
             "height": int(round(self.height / scale)),
             "field_pos": {
-                k: (int(round(v[0] / scale)), int(round(v[1] / scale)))
+                k: (int(round(v[0])), int(round(v[1])))
                 for k, v in self.field_pos.items()
             },
             "field_conf": {
                 k: {
-                    "width": int(round(conf["width"] / scale)),
-                    "height": int(round(conf["height"] / scale)),
-                    "font_size": int(round(conf["font_size"] / scale)),
+                    "width": int(round(conf["width"])),
+                    "height": int(round(conf["height"])),
+                    "font_size": int(round(conf["font_size"])),
                     "bold": conf.get("bold", False),
                     "text_color": conf.get("text_color", "black"),
                     "bg_color": conf.get("bg_color", "white"),
@@ -216,8 +219,9 @@ class GroupArea:
         self.preview_items = []
         if not self.fields:
             return
-        # Build columns keyed by their x position
+        # Build columns keyed by their x position (unscaled values)
         cols = {}
+        scale = self.parent.scale
         for name in self.fields:
             x, _y = self.field_pos.get(name, (0, 0))
             conf = self.field_conf.get(name, {})
@@ -254,10 +258,22 @@ class GroupArea:
                         break
                 if y + h > self.height:
                     continue
-                x1 = self.x + x
-                y1 = self.y + y
-                r = self.canvas.create_rectangle(x1, y1, x1 + w, y1 + h, outline="blue")
-                t = self.canvas.create_text(x1 + 2, y1 + h / 2, anchor="w", text=name)
+                # scale positions and sizes for canvas display
+                sx = x * scale
+                sy = y * scale
+                sw = w * scale
+                sh = h * scale
+                x1 = self.x + sx
+                y1 = self.y + sy
+                r = self.canvas.create_rectangle(
+                    x1, y1, x1 + sw, y1 + sh, outline="blue", fill="white"
+                )
+                t = self.canvas.create_text(x1 + 2, y1 + sh / 2, anchor="w", text=name)
+                for item in (r, t):
+                    self.canvas.tag_bind(item, "<ButtonPress-1>", self.start_move)
+                    self.canvas.tag_bind(item, "<B1-Motion>", self.moving)
+                    self.canvas.tag_bind(item, "<ButtonRelease-1>", self.stop_move)
+                    self.canvas.tag_bind(item, "<Double-1>", self.open_editor)
                 self.preview_items.extend([r, t])
                 placed.append((x, y, w, h))
                 cur_y = y + h
@@ -273,8 +289,10 @@ class GroupEditor(tk.Toplevel):
         self.parent = parent
         self.group = group
         self.title(group.name)
-        self.scale = 1.0
-        self.snap_step = parent.snap_step
+        # adopt main editor zoom so items match in size
+        self.scale = parent.scale
+        self.grid_size = parent.grid_size
+        self.snap_step = self.grid_size * self.scale
         self.elements = {}
         self.selected_elements = []
         self.selected_element = None
@@ -291,6 +309,9 @@ class GroupEditor(tk.Toplevel):
         self.font_entry = ttk.Entry(toolbar, textvariable=self.font_size_var, width=4, state="disabled")
         self.font_entry.pack(side="left", padx=5)
         self.font_entry.bind("<Return>", lambda e: self.set_font_size())
+        ttk.Button(toolbar, text="Z+", command=lambda: self.ctrl_zoom(factor=1.1)).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="Z-", command=lambda: self.ctrl_zoom(factor=0.9)).pack(side="left")
+        ttk.Button(toolbar, text="Dopasuj", command=self.fit_to_window).pack(side="left", padx=5)
         ttk.Label(toolbar, text="Warstwa:").pack(side="left", padx=(5, 0))
         self.layer_var = tk.StringVar()
         self.layer_entry = ttk.Entry(toolbar, textvariable=self.layer_var, width=4, state="disabled")
@@ -312,17 +333,24 @@ class GroupEditor(tk.Toplevel):
 
         left = ttk.Frame(main)
         left.pack(side="left", fill="both", expand=True)
+        # store unscaled size for zoom calculations
+        self.base_width = group.width / self.scale
+        self.base_height = group.height / self.scale
+        self.width = int(round(self.base_width * self.scale))
+        self.height = int(round(self.base_height * self.scale))
         self.canvas = tk.Canvas(
             left,
             bg="white",
-            width=group.width,
-            height=group.height,
-            scrollregion=(0, 0, group.width, group.height),
+            width=self.width,
+            height=self.height,
+            scrollregion=(0, 0, self.width, self.height),
         )
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<ButtonPress-1>", self.canvas_button_press)
         self.canvas.bind("<B1-Motion>", self.canvas_drag_select)
         self.canvas.bind("<ButtonRelease-1>", self.canvas_button_release)
+        self.canvas.bind("<Control-MouseWheel>", self.ctrl_zoom)
+        self.canvas_container = left
         self.draw_grid()
 
         right = ttk.Frame(main)
@@ -364,14 +392,14 @@ class GroupEditor(tk.Toplevel):
     def draw_grid(self):
         self.canvas.delete("grid")
         step = self.snap_step
-        cols = int(self.group.width / step) + 1
-        rows = int(self.group.height / step) + 1
+        cols = int(self.width / step) + 1
+        rows = int(self.height / step) + 1
         for i in range(cols):
             x = i * step
-            self.canvas.create_line(x, 0, x, self.group.height, fill="#ddd", tags="grid")
+            self.canvas.create_line(x, 0, x, self.height, fill="#ddd", tags="grid")
         for i in range(rows):
             y = i * step
-            self.canvas.create_line(0, y, self.group.width, y, fill="#ddd", tags="grid")
+            self.canvas.create_line(0, y, self.width, y, fill="#ddd", tags="grid")
 
     def clear_alignment_guides(self):
         for line in (self.align_line_h, self.align_line_v):
@@ -421,9 +449,9 @@ class GroupEditor(tk.Toplevel):
         el = DraggableElement(self, self.canvas, name, name)
         conf = self.group.field_conf.get(name)
         if conf:
-            el.width = conf.get("width", el.width)
-            el.height = conf.get("height", el.height)
-            el.font_size = conf.get("font_size", el.font_size)
+            el.width = conf.get("width", el.width) * self.scale
+            el.height = conf.get("height", el.height) * self.scale
+            el.font_size = conf.get("font_size", el.font_size) * self.scale
             el.bold = conf.get("bold", el.bold)
             el.text_color = conf.get("text_color", el.text_color)
             el.bg_color = conf.get("bg_color", el.bg_color)
@@ -445,7 +473,7 @@ class GroupEditor(tk.Toplevel):
                 el.auto_font = src.auto_font
                 el.layer = src.layer
         if pos is not None:
-            el.x, el.y = pos
+            el.x, el.y = pos[0] * self.scale, pos[1] * self.scale
         el.sync_canvas()
         self.elements[name] = el
         self.restack_elements()
@@ -469,16 +497,16 @@ class GroupEditor(tk.Toplevel):
         self.clear_alignment_guides()
         if not additive:
             for el in self.selected_elements:
-                self.canvas.itemconfig(el.rect, outline="black")
+                self.canvas.itemconfig(el.rect, outline="black", width=1)
             self.selected_elements = []
         if element and element not in self.selected_elements:
             self.selected_elements.append(element)
         for el in self.selected_elements:
-            self.canvas.itemconfig(el.rect, outline="red")
+            self.canvas.itemconfig(el.rect, outline="red", width=2)
         self.selected_element = self.selected_elements[-1] if self.selected_elements else None
         if self.selected_element:
             self.font_entry.configure(state="normal")
-            self.font_size_var.set(str(int(self.selected_element.font_size)))
+            self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
             self.transparent_var.set(not self.selected_element.bg_visible)
             self.bg_check.state(["!disabled"])
             self.layer_entry.configure(state="normal")
@@ -498,7 +526,9 @@ class GroupEditor(tk.Toplevel):
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
         self.sel_start = (x, y)
-        self.sel_rect = self.canvas.create_rectangle(x, y, x, y, outline="blue", dash=(2, 2))
+        self.sel_rect = self.canvas.create_rectangle(
+            x, y, x, y, outline="blue", dash=(2, 2), width=2
+        )
         self.canvas.tag_raise(self.sel_rect)
 
     def canvas_drag_select(self, event):
@@ -541,26 +571,26 @@ class GroupEditor(tk.Toplevel):
         el = self.selected_element
         if not el:
             return
-        el.font_size += 1
+        el.font_size += self.scale
         el.auto_font = False
         el.apply_font()
-        self.font_size_var.set(str(int(el.font_size)))
+        self.font_size_var.set(str(int(el.font_size / self.scale)))
 
     def decrease_font(self):
         el = self.selected_element
-        if not el or el.font_size <= 1:
+        if not el or el.font_size <= self.scale:
             return
-        el.font_size -= 1
+        el.font_size -= self.scale
         el.auto_font = False
         el.apply_font()
-        self.font_size_var.set(str(int(el.font_size)))
+        self.font_size_var.set(str(int(el.font_size / self.scale)))
 
     def set_font_size(self):
         el = self.selected_element
         if not el:
             return
         try:
-            size = float(self.font_size_var.get())
+            size = float(self.font_size_var.get()) * self.scale
         except ValueError:
             return
         if size <= 0:
@@ -673,14 +703,17 @@ class GroupEditor(tk.Toplevel):
             self.parent.push_history()
 
     def close(self):
-        self.group.field_pos = {name: (el.x, el.y) for name, el in self.elements.items()}
+        self.group.field_pos = {
+            name: (int(round(el.x / self.scale)), int(round(el.y / self.scale)))
+            for name, el in self.elements.items()
+        }
         self.group.fields = list(self.group.field_pos.keys())
         self.group.conditions = list(self.conditions)
         self.group.field_conf = {
             name: {
-                "width": el.width,
-                "height": el.height,
-                "font_size": el.font_size,
+                "width": el.width / self.scale,
+                "height": el.height / self.scale,
+                "font_size": el.font_size / self.scale,
                 "bold": el.bold,
                 "text_color": el.text_color,
                 "bg_color": el.bg_color,
@@ -696,6 +729,42 @@ class GroupEditor(tk.Toplevel):
         self.parent.push_history()
         self.group.editor = None
         self.destroy()
+
+    def ctrl_zoom(self, event=None, factor=None):
+        if factor is None:
+            factor = 1.1 if event.delta > 0 else 0.9
+        new_scale = self.scale * factor
+        if new_scale <= 0:
+            return
+        factor = new_scale / self.scale
+        for el in self.elements.values():
+            el.x *= factor
+            el.y *= factor
+            el.width *= factor
+            el.height *= factor
+            el.font_size *= factor
+            el.sync_canvas()
+            el.apply_font()
+        self.scale = new_scale
+        self.snap_step = self.grid_size * self.scale
+        self.width = int(round(self.base_width * self.scale))
+        self.height = int(round(self.base_height * self.scale))
+        self.canvas.config(
+            width=self.width,
+            height=self.height,
+            scrollregion=(0, 0, self.width, self.height),
+        )
+        self.draw_grid()
+        if self.selected_element:
+            self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
+
+    def fit_to_window(self):
+        container_w = self.canvas_container.winfo_width()
+        container_h = self.canvas_container.winfo_height()
+        if container_w <= 0 or container_h <= 0:
+            return
+        new_scale = min(container_w / self.base_width, container_h / self.base_height)
+        self.ctrl_zoom(factor=new_scale / self.scale)
 # ---------------------------------------------------------------------------
 # GUI Application
 # ---------------------------------------------------------------------------

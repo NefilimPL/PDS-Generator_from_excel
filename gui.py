@@ -499,14 +499,13 @@ class PDSGeneratorGUI(tk.Tk):
             group.height = gconf.get("height", 100) * self.scale
             group.sync_canvas()
             group.field_pos = {
-                k: (v[0] * self.scale, v[1] * self.scale)
-                for k, v in gconf.get("field_pos", {}).items()
+                k: (v[0], v[1]) for k, v in gconf.get("field_pos", {}).items()
             }
             group.field_conf = {
                 k: {
-                    "width": fc.get("width", 100) * self.scale,
-                    "height": fc.get("height", 40) * self.scale,
-                    "font_size": fc.get("font_size", 12) * self.scale,
+                    "width": fc.get("width", 100),
+                    "height": fc.get("height", 40),
+                    "font_size": fc.get("font_size", 12),
                     "bold": fc.get("bold", False),
                     "text_color": fc.get("text_color", "black"),
                     "bg_color": fc.get("bg_color", "white"),
@@ -774,14 +773,13 @@ class PDSGeneratorGUI(tk.Tk):
             group.height = gconf.get("height", group.height) * self.scale
             group.sync_canvas()
             group.field_pos = {
-                k: (v[0] * self.scale, v[1] * self.scale)
-                for k, v in gconf.get("field_pos", {}).items()
+                k: (v[0], v[1]) for k, v in gconf.get("field_pos", {}).items()
             }
             group.field_conf = {
                 k: {
-                    "width": fc.get("width", 100) * self.scale,
-                    "height": fc.get("height", 40) * self.scale,
-                    "font_size": fc.get("font_size", 12) * self.scale,
+                    "width": fc.get("width", 100),
+                    "height": fc.get("height", 40),
+                    "font_size": fc.get("font_size", 12),
                     "bold": fc.get("bold", False),
                     "text_color": fc.get("text_color", "black"),
                     "bg_color": fc.get("bg_color", "white"),
@@ -1156,12 +1154,12 @@ class PDSGeneratorGUI(tk.Tk):
         self.clear_alignment_guides()
         if not additive:
             for el in self.selected_elements:
-                self.canvas.itemconfig(el.rect, outline="black")
+                self.canvas.itemconfig(el.rect, outline="black", width=1)
             self.selected_elements = []
         if element and element not in self.selected_elements:
             self.selected_elements.append(element)
         for el in self.selected_elements:
-            self.canvas.itemconfig(el.rect, outline="red")
+            self.canvas.itemconfig(el.rect, outline="red", width=2)
         self.selected_element = self.selected_elements[-1] if self.selected_elements else None
         if self.selected_element:
             self.font_entry.configure(state="normal")
@@ -1199,6 +1197,7 @@ class PDSGeneratorGUI(tk.Tk):
             y,
             outline="blue",
             dash=(2, 2),
+            width=2,
         )
         self.canvas.tag_raise(self.sel_rect)
 
