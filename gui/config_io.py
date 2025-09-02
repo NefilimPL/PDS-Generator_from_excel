@@ -1,15 +1,21 @@
 import json
 import os
 import logging
-import tkinter as tk
+import shutil
 from tkinter import messagebox
 
 from elements import DraggableElement
 from groups import GroupArea
 
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
+CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".pds_generator")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+OLD_CONFIG_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config.json"))
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_config_dir():
+    os.makedirs(CONFIG_DIR, exist_ok=True)
 
 
 def save_config(app):
@@ -25,20 +31,31 @@ def save_config(app):
         "conditions": app.conditions,
         "groups": [g.to_dict() for g in app.groups.values()],
     }
+    _ensure_config_dir()
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
     messagebox.showinfo("Zapisano", f"Zapisano konfigurację do {CONFIG_FILE}")
 
 
 def load_config(app, startup=False, path=None):
-    if not os.path.exists(CONFIG_FILE):
+    cfg_path = CONFIG_FILE
+    if not os.path.exists(cfg_path) and os.path.exists(OLD_CONFIG_FILE):
+        cfg_path = OLD_CONFIG_FILE
+    if not os.path.exists(cfg_path):
         return
     try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        with open(cfg_path, "r", encoding="utf-8") as f:
             config = json.load(f)
     except (OSError, json.JSONDecodeError):
-        logger.exception("Failed to load config from %s", CONFIG_FILE)
+        logger.exception("Failed to load config from %s", cfg_path)
         return
+    if cfg_path == OLD_CONFIG_FILE:
+        try:
+            _ensure_config_dir()
+            shutil.move(OLD_CONFIG_FILE, CONFIG_FILE)
+            cfg_path = CONFIG_FILE
+        except OSError:
+            logger.exception("Failed to migrate config to %s", CONFIG_FILE)
     excel_cfg = config.get("excel_path")
     if startup and excel_cfg and os.path.exists(excel_cfg):
         app.excel_path = excel_cfg
