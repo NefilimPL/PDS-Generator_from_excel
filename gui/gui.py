@@ -21,7 +21,13 @@ from .config_io import (
     load_config as load_config_func,
 )
 
-from github_utils import get_repo_info, get_remote_hash, pull_updates
+from github_utils import (
+    get_repo_info,
+    get_remote_hash,
+    pull_updates,
+    get_last_update_date,
+    get_version,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +45,16 @@ class PDSGeneratorGUI(tk.Tk):
         super().__init__()
         self.title("PDS Generator")
         self.geometry("1200x800")
+        self.repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        self.version = get_version(self.repo_dir)
+        self.last_update = get_last_update_date(self.repo_dir) or ""
+        icon_path = os.path.join(os.path.dirname(__file__), "github_icon.png")
+        self.github_image = None
+        if os.path.exists(icon_path):
+            try:
+                self.github_image = tk.PhotoImage(file=icon_path)
+            except tk.TclError:  # pragma: no cover - depends on Tk installation
+                logger.debug("Failed to load github icon from %s", icon_path)
         self.excel_path = ""
         self.dataframes = {}
         self.elements = {}
@@ -61,6 +77,10 @@ class PDSGeneratorGUI(tk.Tk):
         self.future = []
         self.ignore_updates = False
         self.update_test = False
+        self.update_available = False
+        self.repo_owner = None
+        self.repo_name = None
+        self.blink_state = False
         self.setup_ui()
         self.bind_all("<Control-z>", self.undo)
         self.bind_all("<Control-x>", self.redo)
@@ -77,18 +97,18 @@ class PDSGeneratorGUI(tk.Tk):
 
     # ------------------------------------------------------------------
     def check_for_updates(self):
-        repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        local_hash, owner, repo = get_repo_info(repo_dir)
+        local_hash, owner, repo = get_repo_info(self.repo_dir)
+        self.repo_owner, self.repo_name = owner, repo
         remote_hash = get_remote_hash(owner, repo) if owner and repo else None
+        self.update_available = (
+            remote_hash and local_hash and remote_hash != local_hash
+        )
+        if self.update_available:
+            self.blink_update_button()
         should_prompt = False
         if self.update_test:
             should_prompt = True
-        elif (
-            remote_hash
-            and local_hash
-            and remote_hash != local_hash
-            and not self.ignore_updates
-        ):
+        elif self.update_available and not self.ignore_updates:
             should_prompt = True
         if should_prompt:
             win = tk.Toplevel(self)
@@ -117,7 +137,7 @@ class PDSGeneratorGUI(tk.Tk):
                         "Aktualizacja", "Symulacja pobierania aktualizacji."
                     )
                     return
-                if not pull_updates(repo_dir):
+                if not pull_updates(self.repo_dir):
                     messagebox.showerror(
                         "Błąd", "Aktualizacja nie powiodła się"
                     )
@@ -131,6 +151,33 @@ class PDSGeneratorGUI(tk.Tk):
             ttk.Button(btns, text="Pomiń", command=win.destroy).pack(
                 side="left", padx=5
             )
+
+    def manual_update(self):
+        if self.update_test:
+            messagebox.showinfo(
+                "Aktualizacja", "Symulacja pobierania aktualizacji."
+            )
+            return
+        if not pull_updates(self.repo_dir):
+            messagebox.showerror("Błąd", "Aktualizacja nie powiodła się")
+            return
+        python = sys.executable
+        os.execl(python, python, *sys.argv)
+
+    def open_github(self):
+        if self.repo_owner and self.repo_name:
+            webbrowser.open(
+                f"https://github.com/{self.repo_owner}/{self.repo_name}"
+            )
+
+    def blink_update_button(self):
+        if not self.update_available:
+            self.update_button.configure(background=self.update_button_bg)
+            return
+        color = "red" if not self.blink_state else self.update_button_bg
+        self.update_button.configure(background=color)
+        self.blink_state = not self.blink_state
+        self.after(500, self.blink_update_button)
 
     def browse_file(self):
         path = filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx *.xls")])
