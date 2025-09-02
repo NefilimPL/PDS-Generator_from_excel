@@ -40,7 +40,7 @@ def get_repo_info(repo_dir: str) -> Tuple[Optional[str], Optional[str], Optional
     return local_hash, owner, repo
 
 
-def get_remote_hash(owner: str, repo: str, branch: str = "main") -> Optional[str]:
+def get_remote_hash(owner: str, repo: str, branch: str = "MAIN") -> Optional[str]:
     """Return the latest commit hash for the given GitHub repo/branch."""
     try:
         resp = requests.get(
