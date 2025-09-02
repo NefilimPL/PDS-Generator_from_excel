@@ -3,7 +3,7 @@ import logging
 import tkinter as tk
 from tkinter import ttk, colorchooser
 
-from elements import DraggableElement
+from .elements import DraggableElement
 
 logger = logging.getLogger(__name__)
 

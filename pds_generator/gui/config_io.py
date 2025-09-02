@@ -4,12 +4,14 @@ import logging
 import shutil
 from tkinter import messagebox
 
-from elements import DraggableElement
-from groups import GroupArea
+from ..elements import DraggableElement
+from ..groups import GroupArea
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".pds_generator")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
-OLD_CONFIG_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config.json"))
+OLD_CONFIG_FILE = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "config.json")
+)
 
 logger = logging.getLogger(__name__)
 
