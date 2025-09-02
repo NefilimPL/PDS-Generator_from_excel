@@ -137,11 +137,9 @@ class PDSGeneratorGUI(tk.Tk):
         self.canvas = tk.Canvas(
             self.canvas_container,
             bg="#b0b0b0",
-            width=self.page_width,
-            height=self.page_height,
             highlightthickness=0,
         )
-        self.canvas.pack(expand=True)
+        self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<ButtonPress-1>", self.canvas_button_press)
         self.canvas.bind("<B1-Motion>", self.canvas_drag_select)
         self.canvas.bind("<ButtonRelease-1>", self.canvas_button_release)
@@ -952,7 +950,7 @@ class PDSGeneratorGUI(tk.Tk):
         if self.scale < self.min_scale:
             self.fit_to_window()
         else:
-            self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
+            self.canvas.config(width=container_w, height=container_h)
             self.draw_grid()
             self.center_page()
 
@@ -1098,7 +1096,9 @@ class PDSGeneratorGUI(tk.Tk):
             group.height = rel_h * new_scale
             group.sync_canvas()
         self.scale = new_scale
-        self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
+        container_w = self.canvas_container.winfo_width()
+        container_h = self.canvas_container.winfo_height()
+        self.canvas.config(width=container_w, height=container_h)
         self.draw_grid()
         w = self.page_width * self.scale
         h = self.page_height * self.scale
@@ -1138,7 +1138,9 @@ class PDSGeneratorGUI(tk.Tk):
             group.height = rel_h * new_scale
             group.sync_canvas()
         self.scale = new_scale
-        self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
+        container_w = self.canvas_container.winfo_width()
+        container_h = self.canvas_container.winfo_height()
+        self.canvas.config(width=container_w, height=container_h)
         self.draw_grid()
         self.after_idle(self.center_page)
         if self.selected_element:
