@@ -1,7 +1,11 @@
 import logging
 import os
+import subprocess
+import sys
+import webbrowser
 
 import pandas as pd
+import requests
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser
 from tkinter import font as tkfont
@@ -55,12 +59,14 @@ class PDSGeneratorGUI(tk.Tk):
         self.snap_step = self.grid_size * self.scale
         self.history = []
         self.future = []
+        self.ignore_updates = False
         self.setup_ui()
         self.bind_all("<Control-z>", self.undo)
         self.bind_all("<Control-x>", self.redo)
         self.update_idletasks()
         self.resize_canvas()
         self.load_config(startup=True)
+        self.check_for_updates()
         if not self.history:
             self.push_history()
 
@@ -69,6 +75,79 @@ class PDSGeneratorGUI(tk.Tk):
         build_ui(self)
 
     # ------------------------------------------------------------------
+    def check_for_updates(self):
+        repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        try:
+            local_hash = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repo_dir
+            ).decode().strip()
+        except Exception as e:
+            logger.debug("Failed to get local git hash: %s", e)
+            return
+        try:
+            remote_url = subprocess.check_output(
+                ["git", "config", "--get", "remote.origin.url"], cwd=repo_dir
+            ).decode().strip()
+        except Exception as e:
+            logger.debug("Failed to get remote URL: %s", e)
+            return
+        owner_repo = None
+        if "github.com" in remote_url:
+            if remote_url.startswith("git@"):
+                owner_repo = remote_url.split("github.com:", 1)[1]
+            else:
+                owner_repo = remote_url.split("github.com/", 1)[1]
+            if owner_repo.endswith(".git"):
+                owner_repo = owner_repo[:-4]
+        if not owner_repo or "/" not in owner_repo:
+            return
+        owner, repo = owner_repo.split("/", 1)
+        try:
+            resp = requests.get(
+                f"https://api.github.com/repos/{owner}/{repo}/commits/main",
+                timeout=5,
+            )
+            resp.raise_for_status()
+            remote_hash = resp.json().get("sha")
+        except Exception as e:
+            logger.debug("Failed to fetch remote hash: %s", e)
+            return
+        if remote_hash and remote_hash != local_hash and not self.ignore_updates:
+            win = tk.Toplevel(self)
+            win.title("Aktualizacja")
+            ttk.Label(
+                win, text="Dostępna jest nowa wersja aplikacji."
+            ).pack(padx=10, pady=10)
+            link = ttk.Label(
+                win, text="Repozytorium", foreground="blue", cursor="hand2"
+            )
+            link.pack()
+            link.bind(
+                "<Button-1>",
+                lambda e: webbrowser.open(f"https://github.com/{owner}/{repo}"),
+            )
+            btns = ttk.Frame(win)
+            btns.pack(pady=10)
+
+            def do_update():
+                win.destroy()
+                try:
+                    subprocess.run(["git", "pull"], cwd=repo_dir, check=True)
+                except Exception as err:
+                    messagebox.showerror(
+                        "Błąd", f"Aktualizacja nie powiodła się: {err}"
+                    )
+                    return
+                python = sys.executable
+                os.execl(python, python, *sys.argv)
+
+            ttk.Button(btns, text="Aktualizuj", command=do_update).pack(
+                side="left", padx=5
+            )
+            ttk.Button(btns, text="Pomiń", command=win.destroy).pack(
+                side="left", padx=5
+            )
+
     def browse_file(self):
         path = filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx *.xls")])
         if path:
