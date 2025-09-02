@@ -9,8 +9,8 @@ from tkinter import ttk, filedialog, messagebox, colorchooser
 from tkinter import font as tkfont
 from PIL import Image, ImageTk
 
-from elements import DraggableElement
-from groups import GroupArea, GroupEditor
+from ..elements import DraggableElement
+from ..groups import GroupArea, GroupEditor
 
 from .ui_layout import setup_ui as build_ui
 from .pdf_export import (
@@ -22,7 +22,7 @@ from .config_io import (
     load_config as load_config_func,
 )
 
-from github_utils import (
+from ..github_utils import (
     get_repo_info,
     get_remote_hash,
     get_remote_version,
@@ -47,7 +47,9 @@ class PDSGeneratorGUI(tk.Tk):
         super().__init__()
         self.title("PDS Generator")
         self.geometry("1200x800")
-        self.repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        self.repo_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..")
+        )
         self.version = get_version(self.repo_dir)
         self.last_update = get_last_update_date(self.repo_dir) or ""
         icon_path = os.path.join(os.path.dirname(__file__), "github_icon.png")
