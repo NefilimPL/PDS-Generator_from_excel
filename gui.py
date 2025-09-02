@@ -972,14 +972,15 @@ class PDSGeneratorGUI(tk.Tk):
         h = self.page_height * self.scale
         container_w = self.canvas_container.winfo_width()
         container_h = self.canvas_container.winfo_height()
-        if container_w >= w:
-            margin_x = (container_w - w) // 2
-        else:
-            margin_x = 20
-        if container_h >= h:
-            margin_y = (container_h - h) // 2
-        else:
-            margin_y = 20
+
+        # Ensure the scrollable area is always larger than the visible
+        # container so the page can be panned freely without disappearing
+        # under the gray background. When the window is larger than the
+        # page, use the container dimensions as extra margins so there is
+        # always space to drag the page in any direction.
+        margin_x = max(20, container_w)
+        margin_y = max(20, container_h)
+        codex/fix-canvas-scrolling-issues
         self.margin_x = margin_x
         self.margin_y = margin_y
         self.canvas.configure(scrollregion=(-margin_x, -margin_y, w + margin_x, h + margin_y))
