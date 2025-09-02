@@ -106,8 +106,15 @@ def _download_and_extract(repo_dir: str, owner: str, repo: str, branch: str) -> 
                     continue
                 target = os.path.join(repo_dir, rel_path)
                 if member.endswith("/"):
+                    if os.path.isfile(target) or os.path.islink(target):
+                        os.remove(target)
                     os.makedirs(target, exist_ok=True)
                 else:
+                    if os.path.exists(target):
+                        if os.path.isdir(target) and not os.path.islink(target):
+                            shutil.rmtree(target)
+                        else:
+                            os.remove(target)
                     os.makedirs(os.path.dirname(target), exist_ok=True)
                     with zf.open(member) as src, open(target, "wb") as dst:
                         shutil.copyfileobj(src, dst)
