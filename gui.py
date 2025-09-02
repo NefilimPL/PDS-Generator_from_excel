@@ -69,7 +69,6 @@ class PDSGeneratorGUI(tk.Tk):
         self.scale = 1.0
         self.max_scale = 4.0
         self.min_scale = 1.0
-        self.margin_x = self.margin_y = 20  # extra space around the page for panning
         self.snap_step = self.grid_size * self.scale
         self.history = []
         self.future = []
@@ -151,12 +150,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.canvas.bind("<ButtonPress-2>", self.start_pan)
         self.canvas.bind("<B2-Motion>", self.pan_canvas)
         self.canvas.configure(
-            scrollregion=(
-                -self.margin_x - 20,
-                -self.margin_y - 20,
-                self.page_width + self.margin_x + 20,
-                self.page_height + self.margin_y + 20,
-            )
+            scrollregion=(0, 0, self.page_width, self.page_height)
         )
 
         zoom_frame = ttk.Frame(self.canvas_container)
@@ -959,60 +953,33 @@ class PDSGeneratorGUI(tk.Tk):
         if self.scale < self.min_scale:
             self.fit_to_window()
         else:
-            self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
+            w = self.page_width * self.scale
+            h = self.page_height * self.scale
+            self.canvas.config(width=w, height=h)
+            self.canvas_container.config(width=int(w), height=int(h))
+            self.canvas.configure(scrollregion=(0, 0, w, h))
             self.draw_grid()
-            self.center_page()
-
-    def update_scrollregion(self):
-        w = self.page_width * self.scale
-        h = self.page_height * self.scale
-        container_w = self.canvas_container.winfo_width()
-        container_h = self.canvas_container.winfo_height()
-        margin_x = max(20, (container_w - w) // 2)
-        margin_y = max(20, (container_h - h) // 2)
-        self.margin_x = margin_x
-        self.margin_y = margin_y
-        self.canvas.configure(
-            scrollregion=(
-                -margin_x - 20,
-                -margin_y - 20,
-                w + margin_x + 20,
-                h + margin_y + 20,
-            )
-        )
 
     def draw_grid(self):
         self.canvas.delete("grid")
         self.canvas.delete("page")
-        self.canvas.delete("ruler")
         step = self.grid_size * self.scale
         self.snap_step = step
         w = self.page_width * self.scale
         h = self.page_height * self.scale
         self.canvas.create_rectangle(0, 0, w, h, fill="white", outline="", tags="page")
-        # draw rulers background
-        self.canvas.create_rectangle(0, -20, w, 0, fill="#e0e0e0", outline="black", tags="ruler")
-        self.canvas.create_rectangle(-20, 0, 0, h, fill="#e0e0e0", outline="black", tags="ruler")
         cols = int(w / step) + 1
         rows = int(h / step) + 1
         for i in range(cols):
             x = i * step
             self.canvas.create_line(x, 0, x, h, fill="#9b9b9b", tags="grid")
-            self.canvas.create_line(x, -20, x, 0, fill="black", tags="ruler")
-            if i % 5 == 0:
-                self.canvas.create_text(x + 2, -18, text=str(int(x / self.scale)), anchor="nw", tags="ruler")
         for i in range(rows):
             y = i * step
             self.canvas.create_line(0, y, w, y, fill="#9b9b9b", tags="grid")
-            self.canvas.create_line(-20, y, 0, y, fill="black", tags="ruler")
-            if i % 5 == 0:
-                self.canvas.create_text(-18, y + 2, text=str(int(y / self.scale)), anchor="nw", tags="ruler")
         self.canvas.create_rectangle(0, 0, w, h, outline="black", tags="grid")
         self.canvas.tag_lower("page")
         self.canvas.tag_lower("grid")
-        self.canvas.tag_raise("grid", "page")
-        self.canvas.tag_raise("ruler", "grid")
-        self.update_scrollregion()
+        self.canvas.configure(scrollregion=(0, 0, w, h))
 
     def clear_alignment_guides(self):
         for line in (self.align_line_h, self.align_line_v):
@@ -1063,22 +1030,6 @@ class PDSGeneratorGUI(tk.Tk):
         self.zoom_var.set(f"{int(self.scale*100)}%")
         return snap_dx, snap_dy
 
-    def center_page(self):
-        self.canvas.update_idletasks()
-        w = self.page_width * self.scale
-        h = self.page_height * self.scale
-        container_w = self.canvas_container.winfo_width()
-        container_h = self.canvas_container.winfo_height()
-        if container_w <= 0 or container_h <= 0:
-            return
-        total_w = w + 2 * (self.margin_x + 20)
-        total_h = h + 2 * (self.margin_y + 20)
-        left = self.margin_x + 20 + w / 2 - container_w / 2
-        top = self.margin_y + 20 + h / 2 - container_h / 2
-        left = max(0, min(left, total_w - container_w))
-        top = max(0, min(top, total_h - container_h))
-        self.canvas.xview_moveto(left / total_w)
-        self.canvas.yview_moveto(top / total_h)
     def ctrl_zoom(self, event, delta=None):
         if delta is None:
             delta = event.delta
@@ -1112,14 +1063,14 @@ class PDSGeneratorGUI(tk.Tk):
             group.height = rel_h * new_scale
             group.sync_canvas()
         self.scale = new_scale
-        self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
-        self.draw_grid()
         w = self.page_width * self.scale
         h = self.page_height * self.scale
-        total_w = w + 2 * (self.margin_x + 20)
-        total_h = h + 2 * (self.margin_y + 20)
-        self.canvas.xview_moveto((x * factor - event.x + self.margin_x + 20) / total_w)
-        self.canvas.yview_moveto((y * factor - event.y + self.margin_y + 20) / total_h)
+        self.canvas.config(width=w, height=h)
+        self.canvas_container.config(width=int(w), height=int(h))
+        self.canvas.configure(scrollregion=(0, 0, w, h))
+        self.draw_grid()
+        self.canvas.xview_moveto((x * factor - event.x) / w)
+        self.canvas.yview_moveto((y * factor - event.y) / h)
 
     def fit_to_window(self):
         container_w = self.canvas_container.winfo_width()
@@ -1152,9 +1103,12 @@ class PDSGeneratorGUI(tk.Tk):
             group.height = rel_h * new_scale
             group.sync_canvas()
         self.scale = new_scale
-        self.canvas.config(width=self.page_width * self.scale, height=self.page_height * self.scale)
+        w = self.page_width * self.scale
+        h = self.page_height * self.scale
+        self.canvas.config(width=w, height=h)
+        self.canvas_container.config(width=int(w), height=int(h))
+        self.canvas.configure(scrollregion=(0, 0, w, h))
         self.draw_grid()
-        self.after_idle(self.center_page)
         if self.selected_element:
             self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
 
