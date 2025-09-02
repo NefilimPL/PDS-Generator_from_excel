@@ -38,6 +38,7 @@ def build():
     )
     dist = Path("dist")
     shutil.copy2("pds_gui.py", dist / "pds_gui.py")
+    shutil.copy2("requirements.txt", dist / "requirements.txt")
     src_pkg = Path("pds_generator")
     dst_pkg = dist / "pds_generator"
     if dst_pkg.exists():
