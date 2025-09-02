@@ -25,6 +25,7 @@ from .config_io import (
 from github_utils import (
     get_repo_info,
     get_remote_hash,
+    get_remote_version,
     pull_updates,
     get_last_update_date,
     get_version,
@@ -102,10 +103,14 @@ class PDSGeneratorGUI(tk.Tk):
     def check_for_updates(self):
         local_hash, owner, repo = get_repo_info(self.repo_dir)
         self.repo_owner, self.repo_name = owner, repo
-        remote_hash = get_remote_hash(owner, repo) if owner and repo else None
-        self.update_available = (
-            remote_hash and local_hash and remote_hash != local_hash
-        )
+
+        remote_hash = get_remote_hash(owner, repo) if local_hash else None
+        if local_hash and remote_hash:
+            self.update_available = remote_hash != local_hash
+        else:
+            remote_version = get_remote_version(owner, repo)
+            self.update_available = bool(remote_version and remote_version != self.version)
+
         if self.update_available:
             self.update_button.pack(side="left", padx=5)
             self.blink_update_button()
