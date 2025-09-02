@@ -1,4 +1,3 @@
-import os
 import shutil
 import subprocess
 import urllib.request
@@ -49,6 +48,14 @@ def main() -> None:
     # Install PyInstaller inside the embedded Python
     print("Installing PyInstaller...")
     subprocess.check_call([str(python_exe), "-m", "pip", "install", "--quiet", "pyinstaller"])
+
+    # Install project dependencies so PyInstaller can analyze imports
+    requirements = project_root / "requirements.txt"
+    if requirements.exists():
+        print("Installing project dependencies...")
+        subprocess.check_call(
+            [str(python_exe), "-m", "pip", "install", "--quiet", "-r", str(requirements)]
+        )
 
     # Build the executable
     main_script = project_root / "pds_gui.py"
