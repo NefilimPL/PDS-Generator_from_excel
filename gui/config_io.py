@@ -31,6 +31,7 @@ def save_config(app):
         "conditions": app.conditions,
         "groups": [g.to_dict() for g in app.groups.values()],
         "ignore_updates": getattr(app, "ignore_updates", False),
+        "update_test": getattr(app, "update_test", False),
     }
     _ensure_config_dir()
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -58,6 +59,7 @@ def load_config(app, startup=False, path=None):
         except OSError:
             logger.exception("Failed to migrate config to %s", CONFIG_FILE)
     app.ignore_updates = config.get("ignore_updates", False)
+    app.update_test = config.get("update_test", False)
     excel_cfg = config.get("excel_path")
     if startup and excel_cfg and os.path.exists(excel_cfg):
         app.excel_path = excel_cfg

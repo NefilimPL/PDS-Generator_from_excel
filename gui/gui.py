@@ -60,6 +60,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.history = []
         self.future = []
         self.ignore_updates = False
+        self.update_test = False
         self.setup_ui()
         self.bind_all("<Control-z>", self.undo)
         self.bind_all("<Control-x>", self.redo)
@@ -77,60 +78,76 @@ class PDSGeneratorGUI(tk.Tk):
     # ------------------------------------------------------------------
     def check_for_updates(self):
         repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        local_hash = remote_hash = None
+        owner = repo = None
         try:
             local_hash = subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], cwd=repo_dir
             ).decode().strip()
         except Exception as e:
             logger.debug("Failed to get local git hash: %s", e)
-            return
         try:
             remote_url = subprocess.check_output(
                 ["git", "config", "--get", "remote.origin.url"], cwd=repo_dir
             ).decode().strip()
+            if "github.com" in remote_url:
+                if remote_url.startswith("git@"):
+                    owner_repo = remote_url.split("github.com:", 1)[1]
+                else:
+                    owner_repo = remote_url.split("github.com/", 1)[1]
+                if owner_repo.endswith(".git"):
+                    owner_repo = owner_repo[:-4]
+                if "/" in owner_repo:
+                    owner, repo = owner_repo.split("/", 1)
         except Exception as e:
             logger.debug("Failed to get remote URL: %s", e)
-            return
-        owner_repo = None
-        if "github.com" in remote_url:
-            if remote_url.startswith("git@"):
-                owner_repo = remote_url.split("github.com:", 1)[1]
-            else:
-                owner_repo = remote_url.split("github.com/", 1)[1]
-            if owner_repo.endswith(".git"):
-                owner_repo = owner_repo[:-4]
-        if not owner_repo or "/" not in owner_repo:
-            return
-        owner, repo = owner_repo.split("/", 1)
-        try:
-            resp = requests.get(
-                f"https://api.github.com/repos/{owner}/{repo}/commits/main",
-                timeout=5,
-            )
-            resp.raise_for_status()
-            remote_hash = resp.json().get("sha")
-        except Exception as e:
-            logger.debug("Failed to fetch remote hash: %s", e)
-            return
-        if remote_hash and remote_hash != local_hash and not self.ignore_updates:
+        if owner and repo:
+            try:
+                resp = requests.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/commits/main",
+                    timeout=5,
+                )
+                resp.raise_for_status()
+                remote_hash = resp.json().get("sha")
+            except Exception as e:
+                logger.debug("Failed to fetch remote hash: %s", e)
+        should_prompt = False
+        if self.update_test:
+            should_prompt = True
+        elif (
+            remote_hash
+            and local_hash
+            and remote_hash != local_hash
+            and not self.ignore_updates
+        ):
+            should_prompt = True
+        if should_prompt:
             win = tk.Toplevel(self)
             win.title("Aktualizacja")
             ttk.Label(
                 win, text="Dostępna jest nowa wersja aplikacji."
             ).pack(padx=10, pady=10)
-            link = ttk.Label(
-                win, text="Repozytorium", foreground="blue", cursor="hand2"
-            )
-            link.pack()
-            link.bind(
-                "<Button-1>",
-                lambda e: webbrowser.open(f"https://github.com/{owner}/{repo}"),
-            )
+            if owner and repo:
+                link = ttk.Label(
+                    win, text="Repozytorium", foreground="blue", cursor="hand2"
+                )
+                link.pack()
+                link.bind(
+                    "<Button-1>",
+                    lambda e: webbrowser.open(
+                        f"https://github.com/{owner}/{repo}"
+                    ),
+                )
             btns = ttk.Frame(win)
             btns.pack(pady=10)
 
             def do_update():
                 win.destroy()
+                if self.update_test:
+                    messagebox.showinfo(
+                        "Aktualizacja", "Symulacja pobierania aktualizacji."
+                    )
+                    return
                 try:
                     subprocess.run(["git", "pull"], cwd=repo_dir, check=True)
                 except Exception as err:
