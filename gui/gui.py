@@ -1,19 +1,7 @@
 import logging
 import os
-import json
-import time
-import threading
-import math
-import re
-from io import BytesIO
-from types import SimpleNamespace
 
 import pandas as pd
-from PIL import Image, ImageTk
-from reportlab.pdfgen import canvas as pdf_canvas
-from reportlab.lib.utils import ImageReader
-from reportlab.lib import colors
-import requests
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser
 from tkinter import font as tkfont
@@ -21,23 +9,17 @@ from tkinter import font as tkfont
 from elements import DraggableElement
 from groups import GroupArea, GroupEditor
 
+from .ui_layout import setup_ui as build_ui
+from .pdf_export import (
+    generate_pds as export_pds,
+    draw_pdf_element as render_pdf_element,
+)
+from .config_io import (
+    save_config as save_config_func,
+    load_config as load_config_func,
+)
+
 logger = logging.getLogger(__name__)
-
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
-
-
-def to_reportlab_color(value):
-    try:
-        return colors.HexColor(value)
-    except (ValueError, TypeError):
-        return colors.toColor(value)
-
-
-def sanitize_filename(name: str) -> str:
-    """Return a filesystem-safe version of *name*."""
-    cleaned = re.sub(r"[^\w\s-]", "", str(name))
-    cleaned = re.sub(r"\s+", "_", cleaned).strip("_")
-    return cleaned
 
 class PDSGeneratorGUI(tk.Tk):
     PAGE_SIZES = {
@@ -84,146 +66,7 @@ class PDSGeneratorGUI(tk.Tk):
 
     # ------------------------------------------------------------------
     def setup_ui(self):
-        top_frame = ttk.Frame(self)
-        top_frame.pack(fill="x", padx=5, pady=5)
-
-        ttk.Label(top_frame, text="Plik Excel:").pack(side="left")
-        self.path_var = tk.StringVar()
-        self.path_entry = ttk.Entry(top_frame, textvariable=self.path_var, width=60)
-        self.path_entry.pack(side="left", padx=5)
-        ttk.Button(top_frame, text="Przeglądaj", command=self.browse_file).pack(side="left")
-
-        ttk.Label(top_frame, text="Rozmiar strony:").pack(side="left", padx=(20, 0))
-        self.size_var = tk.StringVar(value="A4")
-        self.size_entry = ttk.Entry(top_frame, textvariable=self.size_var, width=10)
-        self.size_entry.pack(side="left")
-        ttk.Button(top_frame, text="Ustaw", command=self.update_canvas_size).pack(side="left", padx=2)
-        self.size_entry.bind("<Return>", lambda e: self.update_canvas_size())
-
-        format_frame = ttk.Frame(self)
-        format_frame.pack(fill="x", padx=5)
-        ttk.Button(format_frame, text="B", command=self.toggle_bold).pack(side="left")
-        ttk.Button(format_frame, text="A+", command=self.increase_font).pack(side="left", padx=2)
-        ttk.Button(format_frame, text="A-", command=self.decrease_font).pack(side="left")
-        self.font_size_var = tk.StringVar()
-        self.font_entry = ttk.Entry(format_frame, textvariable=self.font_size_var, width=4, state="disabled")
-        self.font_entry.pack(side="left", padx=5)
-        self.font_entry.bind("<Return>", lambda e: self.set_font_size())
-        ttk.Button(format_frame, text="Kolor", command=self.choose_text_color).pack(side="left", padx=2)
-        ttk.Button(format_frame, text="Tło", command=self.choose_bg_color).pack(side="left", padx=2)
-        self.transparent_var = tk.BooleanVar(value=False)
-        self.bg_check = ttk.Checkbutton(
-            format_frame,
-            text="Przezroczyste",
-            variable=self.transparent_var,
-            command=self.toggle_bg_visible,
-        )
-        self.bg_check.pack(side="left", padx=2)
-        self.bg_check.state(["disabled"])
-        ttk.Button(format_frame, text="L", command=lambda: self.set_alignment("left")).pack(side="left", padx=2)
-        ttk.Button(format_frame, text="C", command=lambda: self.set_alignment("center")).pack(side="left", padx=2)
-        ttk.Button(format_frame, text="R", command=lambda: self.set_alignment("right")).pack(side="left", padx=2)
-        ttk.Button(format_frame, text="Środek H", command=self.center_selected_horizontal).pack(side="left", padx=2)
-        ttk.Button(format_frame, text="Środek V", command=self.center_selected_vertical).pack(side="left", padx=2)
-        ttk.Label(format_frame, text="Warstwa:").pack(side="left", padx=(5, 0))
-        self.layer_var = tk.StringVar()
-        self.layer_entry = ttk.Entry(format_frame, textvariable=self.layer_var, width=4, state="disabled")
-        self.layer_entry.pack(side="left", padx=2)
-        self.layer_entry.bind("<Return>", lambda e: self.set_layer())
-        self.canvas_container = tk.Frame(self, bg="#b0b0b0")
-        self.canvas_container.pack(side="left", fill="both", expand=True, padx=5, pady=5)
-        self.canvas_container.pack_propagate(False)
-        self.canvas_container.bind("<Configure>", self.resize_canvas)
-        self.canvas = tk.Canvas(
-            self.canvas_container,
-            bg="#b0b0b0",
-            highlightthickness=0,
-        )
-        self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<ButtonPress-1>", self.canvas_button_press)
-        self.canvas.bind("<B1-Motion>", self.canvas_drag_select)
-        self.canvas.bind("<ButtonRelease-1>", self.canvas_button_release)
-        self.canvas.bind("<Control-MouseWheel>", self.ctrl_zoom)
-        self.canvas.bind("<Control-Button-4>", lambda e: self.ctrl_zoom(e, 120))
-        self.canvas.bind("<Control-Button-5>", lambda e: self.ctrl_zoom(e, -120))
-        self.canvas.bind("<ButtonPress-2>", self.start_pan)
-        self.canvas.bind("<B2-Motion>", self.pan_canvas)
-        self.canvas.configure(scrollregion=(-self.margin, -self.margin, self.page_width + self.margin, self.page_height + self.margin))
-
-        zoom_frame = ttk.Frame(self.canvas_container)
-        zoom_frame.place(relx=1.0, rely=1.0, anchor="se", x=-5, y=-5)
-        ttk.Button(zoom_frame, text="Dopasuj", command=self.fit_to_window).pack(side="right")
-        self.zoom_var = tk.StringVar(value="100%")
-        ttk.Label(zoom_frame, textvariable=self.zoom_var).pack(side="right", padx=5)
-
-        right_container = ttk.Frame(self)
-        right_container.pack(side="right", fill="y", padx=5, pady=5)
-        self.right_canvas = tk.Canvas(right_container, width=300)
-        right_scroll = ttk.Scrollbar(right_container, orient="vertical", command=self.right_canvas.yview)
-        self.right_canvas.configure(yscrollcommand=right_scroll.set)
-        right_scroll.pack(side="right", fill="y")
-        self.right_canvas.pack(side="left", fill="both", expand=True)
-        right_frame = ttk.Frame(self.right_canvas)
-        self.right_canvas.create_window((0,0), window=right_frame, anchor="nw")
-        right_frame.bind("<Configure>", lambda e: self.right_canvas.configure(scrollregion=self.right_canvas.bbox("all")))
-        self.right_canvas.bind("<Enter>", lambda e: self.right_canvas.bind_all("<MouseWheel>", self._on_mousewheel))
-        self.right_canvas.bind("<Leave>", lambda e: self.right_canvas.unbind_all("<MouseWheel>"))
-        self.right_canvas.bind("<Button-4>", lambda e: self.right_canvas.yview_scroll(-1, "units"))
-        self.right_canvas.bind("<Button-5>", lambda e: self.right_canvas.yview_scroll(1, "units"))
-
-        # Dynamic column checkboxes
-        ttk.Label(right_frame, text="Kolumny z Excela:").pack(anchor="w")
-        self.columns_frame = ttk.Frame(right_frame)
-        self.columns_frame.pack(fill="y", expand=True)
-        self.columns_vars = {}
-
-        # Static field checkboxes
-        ttk.Label(right_frame, text="Pola statyczne:").pack(anchor="w", pady=(10, 0))
-        self.static_frame = ttk.Frame(right_frame)
-        self.static_frame.pack(fill="x")
-        self.static_vars = {}
-        self.static_entries = {}
-        self.static_rows = {}
-        for field in self.DEFAULT_STATIC_FIELDS:
-            self.create_static_row(field, "")
-        self.add_static_btn = ttk.Button(self.static_frame, text="Dodaj pole", command=self.add_static_field)
-        self.add_static_btn.pack(fill="x", pady=5)
-
-        # Row preview controls
-        preview_frame = ttk.Frame(right_frame)
-        preview_frame.pack(fill="x", pady=(10, 0))
-        ttk.Label(preview_frame, text="Numer wiersza:").pack(side="left")
-        self.row_var = tk.StringVar(value="1")
-        ttk.Entry(preview_frame, textvariable=self.row_var, width=6).pack(side="left")
-        ttk.Button(preview_frame, text="Podgląd", command=self.preview_row).pack(side="left", padx=5)
-
-        # Group list
-        ttk.Label(right_frame, text="Grupy:").pack(anchor="w", pady=(10, 0))
-        grp_container = ttk.Frame(right_frame)
-        grp_container.pack(fill="x")
-        self.groups_list = tk.Listbox(grp_container, height=5)
-        self.groups_list.pack(side="left", fill="both", expand=True)
-        grp_scroll = ttk.Scrollbar(grp_container, orient="vertical", command=self.groups_list.yview)
-        grp_scroll.pack(side="right", fill="y")
-        self.groups_list.configure(yscrollcommand=grp_scroll.set)
-        self.groups_list.bind("<Double-1>", lambda e: self.edit_selected_group())
-        ttk.Button(right_frame, text="Usuń grupę", command=self.remove_group).pack(fill="x", pady=(5, 0))
-
-        # Buttons
-        button_frame = ttk.Frame(right_frame)
-        button_frame.pack(fill="x", pady=(20, 0))
-        ttk.Button(button_frame, text="Zapisz konfigurację", command=self.save_config).pack(fill="x")
-        ttk.Button(button_frame, text="Warunki", command=self.open_conditions).pack(fill="x", pady=5)
-        ttk.Button(button_frame, text="Dodaj grupę", command=self.add_group).pack(fill="x", pady=5)
-        ttk.Button(button_frame, text="Generuj PDS", command=self.generate_pds).pack(fill="x", pady=5)
-
-        # Progress bar
-        self.progress = ttk.Progressbar(right_frame, orient="horizontal", mode="determinate")
-        self.progress.pack(fill="x", pady=(20, 0))
-        self.time_label = ttk.Label(right_frame, text="")
-        self.time_label.pack()
-        self.draw_grid()
-        self.bind_all("<Delete>", self.delete_selected)
+        build_ui(self)
 
     # ------------------------------------------------------------------
     def browse_file(self):
@@ -608,64 +451,7 @@ class PDSGeneratorGUI(tk.Tk):
         )
 
     def draw_pdf_element(self, c, element, value, x, y):
-        if isinstance(value, str) and value.lower().startswith("http"):
-            try:
-                resp = requests.get(value, timeout=5)
-                img = Image.open(BytesIO(resp.content))
-                c.drawImage(
-                    ImageReader(img),
-                    x,
-                    y,
-                    width=element.width / self.scale,
-                    height=element.height / self.scale,
-                )
-                return
-            except (requests.RequestException, OSError) as exc:
-                logger.exception("Failed to load remote image %s", value)
-        if isinstance(value, str):
-            local_path = self.find_local_image(value)
-            if local_path:
-                try:
-                    img = Image.open(local_path)
-                    c.drawImage(
-                        ImageReader(img),
-                        x,
-                        y,
-                        width=element.width / self.scale,
-                        height=element.height / self.scale,
-                    )
-                    return
-                except OSError as exc:
-                    logger.exception("Failed to load local image %s", local_path)
-        if element.bg_visible:
-            c.setFillColor(to_reportlab_color(element.bg_color))
-            c.rect(
-                x,
-                y,
-                element.width / self.scale,
-                element.height / self.scale,
-                fill=1,
-                stroke=0,
-            )
-        c.setFillColor(to_reportlab_color(element.text_color))
-        c.setFont(
-            "Helvetica-Bold" if element.bold else "Helvetica",
-            element.font_size / self.scale,
-        )
-        if element.align == "center":
-            c.drawCentredString(
-                x + (element.width / self.scale) / 2,
-                y + (element.height / self.scale) / 2,
-                str(value),
-            )
-        elif element.align == "right":
-            c.drawRightString(
-                x + (element.width / self.scale),
-                y + (element.height / self.scale) / 2,
-                str(value),
-            )
-        else:
-            c.drawString(x, y + (element.height / self.scale) / 2, str(value))
+        render_pdf_element(self, c, element, value, x, y)
 
     # ------------------------------------------------------------------
     def preview_row(self):
@@ -689,256 +475,13 @@ class PDSGeneratorGUI(tk.Tk):
 
     # ------------------------------------------------------------------
     def save_config(self):
-        if not self.excel_path:
-            messagebox.showerror("Błąd", "Najpierw wybierz plik Excel")
-            return
-        config = {
-            "excel_path": self.excel_path,
-            "page_width": self.page_width,
-            "page_height": self.page_height,
-            "elements": [el.to_dict() for el in self.elements.values()],
-            "static_fields": {name: var.get() for name, var in self.static_entries.items()},
-            "conditions": self.conditions,
-            "groups": [g.to_dict() for g in self.groups.values()],
-        }
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-        messagebox.showinfo("Zapisano", f"Zapisano konfigurację do {CONFIG_FILE}")
+        save_config_func(self)
 
     def load_config(self, startup=False, path=None):
-        if not os.path.exists(CONFIG_FILE):
-            return
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.exception("Failed to load config from %s", CONFIG_FILE)
-            return
-        excel_cfg = config.get("excel_path")
-        if startup and excel_cfg and os.path.exists(excel_cfg):
-            self.excel_path = excel_cfg
-            self.image_cache = {}
-            self.path_var.set(excel_cfg)
-            self.load_excel(excel_cfg)
-        if path and excel_cfg != path:
-            return
-        self.page_width = config.get("page_width", self.page_width)
-        self.page_height = config.get("page_height", self.page_height)
-        set_name = None
-        for n, sz in self.PAGE_SIZES.items():
-            if abs(sz[0] - self.page_width) < 1 and abs(sz[1] - self.page_height) < 1:
-                set_name = n
-                break
-        if set_name:
-            self.size_var.set(set_name)
-        else:
-            self.size_var.set(f"{int(self.page_width)}x{int(self.page_height)}")
-        self.resize_canvas()
-        for name, val in config.get("static_fields", {}).items():
-            if name not in self.static_vars:
-                self.create_static_row(name, val)
-            else:
-                self.static_entries[name].set(val)
-        self.conditions = config.get("conditions", [])
-        for elconf in config.get("elements", []):
-            name = elconf["name"]
-            if name not in self.elements:
-                element = DraggableElement(self, self.canvas, name, elconf.get("text", name))
-                element.x = elconf.get("x", element.x) * self.scale
-                element.y = elconf.get("y", element.y) * self.scale
-                element.width = elconf.get("width", element.width) * self.scale
-                element.height = elconf.get("height", element.height) * self.scale
-                element.font_size = elconf.get("font_size", element.font_size) * self.scale
-                element.bold = elconf.get("bold", element.bold)
-                element.text_color = elconf.get("text_color", element.text_color)
-                element.bg_color = elconf.get("bg_color", element.bg_color)
-                element.bg_visible = elconf.get("bg_visible", element.bg_visible)
-                element.align = elconf.get("align", element.align)
-                element.auto_font = elconf.get("auto_font", element.auto_font)
-                element.layer = elconf.get("layer", element.layer)
-                element.sync_canvas()
-                self.elements[name] = element
-                if name in self.columns_vars:
-                    self.columns_vars[name].set(True)
-                if name in self.static_vars:
-                    self.static_vars[name].set(True)
-                    self.static_entries[name].set(elconf.get("text", ""))
-        for gconf in config.get("groups", []):
-            group = GroupArea(self, self.canvas, gconf.get("name", f"Group{len(self.groups)+1}"))
-            group.x = gconf.get("x", group.x) * self.scale
-            group.y = gconf.get("y", group.y) * self.scale
-            group.width = gconf.get("width", group.width) * self.scale
-            group.height = gconf.get("height", group.height) * self.scale
-            group.sync_canvas()
-            group.field_pos = {
-                k: (v[0], v[1]) for k, v in gconf.get("field_pos", {}).items()
-            }
-            group.field_conf = {
-                k: {
-                    "width": fc.get("width", 100),
-                    "height": fc.get("height", 40),
-                    "font_size": fc.get("font_size", 12),
-                    "bold": fc.get("bold", False),
-                    "text_color": fc.get("text_color", "black"),
-                    "bg_color": fc.get("bg_color", "white"),
-                    "bg_visible": fc.get("bg_visible", True),
-                    "align": fc.get("align", "left"),
-                    "auto_font": fc.get("auto_font", True),
-                    "layer": fc.get("layer", 1),
-                }
-                for k, fc in gconf.get("field_conf", {}).items()
-            }
-            group.fields = list(group.field_pos.keys())
-            group.conditions = gconf.get("conditions", [])
-            group.draw_preview()
-            self.groups[group.name] = group
-            if hasattr(self, "groups_list"):
-                self.groups_list.insert("end", group.name)
-        self.restack_elements()
-        self.push_history()
+        load_config_func(self, startup=startup, path=path)
     # ------------------------------------------------------------------
     def generate_pds(self):
-        if not self.excel_path or not self.dataframes:
-            messagebox.showerror("Błąd", "Brak danych do generowania")
-            return
-        # Determine number of rows: assume first dataframe
-        first_df = next(iter(self.dataframes.values()))
-        total_rows = len(first_df)
-        if total_rows == 0:
-            messagebox.showinfo("Info", "Brak wierszy w pliku Excel")
-            return
-        output_dir = os.path.join(os.path.dirname(self.excel_path), "PDS")
-        os.makedirs(output_dir, exist_ok=True)
-
-        page_width = self.page_width
-        page_height = self.page_height
-
-        def worker():
-            start_time = time.time()
-            for idx in range(total_rows):
-                first_val = first_df.iloc[idx, 0] if first_df.shape[1] else ""
-                filename = sanitize_filename(first_val) or f"pds_{idx+1}"
-                pdf_path = os.path.join(output_dir, f"{filename}.pdf")
-                tmp_path = pdf_path + ".tmp"
-                c = pdf_canvas.Canvas(tmp_path, pagesize=(page_width, page_height))
-                needed = set(self.elements.keys())
-                for g in self.groups.values():
-                    needed.update(g.fields)
-                needed.update(self.static_entries.keys())
-                values = {}
-                for name in needed:
-                    if ":" in name:
-                        sheet, col = name.split(":", 1)
-                        df = self.dataframes.get(sheet)
-                        value = df.iloc[idx].get(col, "") if df is not None else ""
-                    else:
-                        value = self.static_entries.get(name, tk.StringVar()).get()
-                    if pd.isna(value):
-                        value = ""
-                    values[name] = value
-                group_field_names = {fname for g in self.groups.values() for fname in g.fields}
-
-                hidden = set()
-                for src, tgt in self.conditions:
-                    # Global conditions should not refer to group fields at all
-                    if src in group_field_names or tgt in group_field_names:
-                        continue
-                    if pd.isna(values.get(src)) or values.get(src) == "":
-                        hidden.add(tgt)
-                for group in self.groups.values():
-                    g_hidden = set()
-                    for src, tgt in group.conditions:
-                        if src not in group.fields or tgt not in group.fields:
-                            continue
-                        if pd.isna(values.get(src)) or values.get(src) == "":
-                            g_hidden.add(tgt)
-                    positions = group.field_pos
-                    columns = {}
-                    for fname in group.fields:
-                        if fname in hidden or fname in g_hidden:
-                            continue
-                        val = values.get(fname, "")
-                        if val == "":
-                            continue
-                        conf = group.field_conf.get(fname, {})
-                        el = self.elements.get(fname)
-                        if not conf and not el:
-                            continue
-                        width = conf.get("width", el.width if el else 0)
-                        height = conf.get("height", el.height if el else 0)
-                        x0, y0 = positions.get(fname, (0, 0))
-                        columns.setdefault(x0, []).append((y0, fname, width, height, conf, el, val))
-
-                    placed = []
-                    for x0 in sorted(columns):
-                        col_items = columns[x0]
-                        col_items.sort(key=lambda t: t[0])
-                        cur_y = 0
-                        for _, fname, width, height, conf, el, val in col_items:
-                            y = cur_y
-                            while True:
-                                overlap = False
-                                for px, py, pw, ph in placed:
-                                    if (
-                                        x0 < px + pw
-                                        and x0 + width > px
-                                        and y < py + ph
-                                        and y + height > py
-                                    ):
-                                        y = py + ph
-                                        overlap = True
-                                        break
-                                if not overlap:
-                                    break
-                            if y + height > group.height:
-                                continue
-                            dummy = SimpleNamespace(
-                                width=width,
-                                height=height,
-                                font_size=conf.get("font_size", el.font_size if el else 12),
-                                bold=conf.get("bold", el.bold if el else False),
-                                text_color=conf.get("text_color", el.text_color if el else "black"),
-                                bg_color=conf.get("bg_color", el.bg_color if el else "white"),
-                                bg_visible=conf.get("bg_visible", el.bg_visible if el else True),
-                                align=conf.get("align", el.align if el else "left"),
-                                auto_font=conf.get("auto_font", el.auto_font if el else True),
-                            )
-                            x_pdf = (group.x + x0) / self.scale
-                            y_pdf = page_height - (group.y + y + height) / self.scale
-                            self.draw_pdf_element(c, dummy, val, x_pdf, y_pdf)
-                            placed.append((x0, y, width, height))
-                            cur_y = y + height
-                for name, element in sorted(self.elements.items(), key=lambda kv: kv[1].layer):
-                    if name in hidden:
-                        continue
-                    val = values.get(name, "")
-                    x = element.x / self.scale
-                    y = page_height - (element.y / self.scale) - (element.height / self.scale)
-                    self.draw_pdf_element(c, element, val, x, y)
-                c.showPage()
-                c.save()
-                try:
-                    os.replace(tmp_path, pdf_path)
-                except OSError as exc:
-                    logger.exception("Failed to replace %s, trying alternative name", pdf_path)
-                    alt_path = pdf_path.replace(
-                        ".pdf", f"_{int(time.time())}.pdf"
-                    )
-                    try:
-                        os.replace(tmp_path, alt_path)
-                    except OSError:
-                        logger.exception("Failed to move temp PDF to %s", alt_path)
-                # Update progress
-                progress = (idx + 1) / total_rows * 100
-                elapsed = time.time() - start_time
-                remaining = (elapsed / (idx + 1)) * (total_rows - idx - 1)
-                self.progress.after(0, lambda p=progress: self.progress.config(value=p))
-                self.time_label.after(0, lambda r=remaining: self.time_label.config(text=f"Pozostały czas: {int(r)} s"))
-            self.progress.after(0, lambda: self.progress.config(value=0))
-            self.time_label.after(0, lambda: self.time_label.config(text="Zakończono"))
-            messagebox.showinfo("Zakończono", f"Pliki zapisane w {output_dir}")
-
-        threading.Thread(target=worker, daemon=True).start()
+        export_pds(self)
 
     # ------------------------------------------------------------------
     def resize_canvas(self, event=None):
