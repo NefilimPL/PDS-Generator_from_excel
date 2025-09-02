@@ -1,0 +1,31 @@
+"""Build a Windows launcher executable for PDS Generator."""
+import subprocess
+import sys
+
+
+def ensure_pyinstaller():
+    try:
+        subprocess.run(
+            ["pyinstaller", "--version"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
+
+
+def build():
+    ensure_pyinstaller()
+    subprocess.check_call(
+        [
+            "pyinstaller",
+            "--noconsole",
+            "--onefile",
+            "launcher.py",
+        ]
+    )
+
+
+if __name__ == "__main__":
+    build()

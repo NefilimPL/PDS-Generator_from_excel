@@ -23,3 +23,13 @@ Po uruchomieniu aplikacji:
 
 Wymagane biblioteki są instalowane automatycznie przy pierwszym uruchomieniu skryptu.
 
+## Budowanie launchera
+
+Aby przygotować plik `.exe` uruchamiający aplikację bez konsoli:
+
+```bash
+python build_launcher.py
+```
+
+Polecenie tworzy `dist/launcher.exe`. Uruchomiony plik sprawdza obecność Pythona, w razie potrzeby proponuje jego instalację i następnie uruchamia `pds_gui.py`.
+
