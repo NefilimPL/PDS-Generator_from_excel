@@ -1,5 +1,6 @@
 """Utility helpers for GitHub update checks and repository updates."""
 import logging
+import os
 import subprocess
 from typing import Optional, Tuple
 
@@ -65,3 +66,25 @@ def pull_updates(repo_dir: str) -> bool:
     except Exception as err:  # pragma: no cover - best effort logging
         logger.error("Failed to pull updates: %s", err)
     return False
+
+
+def get_last_update_date(repo_dir: str) -> Optional[str]:
+    """Return the date of the last commit in YYYY-MM-DD format."""
+    try:
+        date_str = subprocess.check_output(
+            ["git", "log", "-1", "--format=%ci"], cwd=repo_dir
+        ).decode().strip()
+        return date_str.split()[0]
+    except Exception as err:  # pragma: no cover - best effort logging
+        logger.debug("Failed to get last update date: %s", err)
+    return None
+
+
+def get_version(repo_dir: str) -> str:
+    """Return application version from VERSION file or default."""
+    try:
+        with open(os.path.join(repo_dir, "VERSION"), "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except Exception as err:  # pragma: no cover - best effort logging
+        logger.debug("Failed to read VERSION file: %s", err)
+    return "v0.0.1"
