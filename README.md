@@ -31,5 +31,5 @@ Aby przygotować plik `.exe` uruchamiający aplikację bez konsoli:
 python build_launcher.py
 ```
 
-Polecenie tworzy `dist/launcher.exe`. Uruchomiony plik sprawdza obecność Pythona, w razie potrzeby proponuje jego instalację i następnie uruchamia `pds_gui.py`.
+Polecenie tworzy katalog `dist` z `launcher.exe` oraz kopiami `pds_gui.py` i modułu `pds_generator`. Uruchomiony plik sprawdza obecność Pythona, w razie potrzeby proponuje jego instalację i następnie uruchamia `pds_gui.py`.
 

@@ -1,6 +1,8 @@
 """Build a Windows launcher executable for PDS Generator."""
 import subprocess
 import sys
+import shutil
+from pathlib import Path
 
 
 def ensure_pyinstaller():
@@ -25,6 +27,13 @@ def build():
             "launcher.py",
         ]
     )
+    dist = Path("dist")
+    shutil.copy2("pds_gui.py", dist / "pds_gui.py")
+    src_pkg = Path("pds_generator")
+    dst_pkg = dist / "pds_generator"
+    if dst_pkg.exists():
+        shutil.rmtree(dst_pkg)
+    shutil.copytree(src_pkg, dst_pkg)
 
 
 if __name__ == "__main__":
