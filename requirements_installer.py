@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-import pkg_resources
+from importlib import metadata
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,11 @@ def install_missing_requirements(requirements_file: str = "requirements.txt") ->
         logger.debug("Requirements file %s not found", requirements_file)
         return
 
-    installed = {pkg.key for pkg in pkg_resources.working_set}
+    installed = {
+        dist.metadata["Name"].lower()
+        for dist in metadata.distributions()
+        if dist.metadata.get("Name")
+    }
     missing = []
     for req in _parse_requirements(path):
         pkg_name = req.split("==")[0].lower()
