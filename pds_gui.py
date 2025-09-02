@@ -1,9 +1,12 @@
 import logging
 
-from gui import PDSGeneratorGUI
+from requirements_installer import install_missing_requirements
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    install_missing_requirements()
+    from gui import PDSGeneratorGUI
+
     app = PDSGeneratorGUI()
     app.mainloop()
