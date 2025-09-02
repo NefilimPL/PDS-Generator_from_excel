@@ -1,3 +1,8 @@
 __pycache__/
 PDS/
 config.json
+*.exe
+exe_builder/build/
+exe_builder/dist/
+exe_builder/python_embed/
+*.spec
