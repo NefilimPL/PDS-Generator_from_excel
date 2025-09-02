@@ -972,8 +972,14 @@ class PDSGeneratorGUI(tk.Tk):
         h = self.page_height * self.scale
         container_w = self.canvas_container.winfo_width()
         container_h = self.canvas_container.winfo_height()
-        margin_x = max(20, (container_w - w) // 2)
-        margin_y = max(20, (container_h - h) // 2)
+        if container_w >= w:
+            margin_x = (container_w - w) // 2
+        else:
+            margin_x = 20
+        if container_h >= h:
+            margin_y = (container_h - h) // 2
+        else:
+            margin_y = 20
         self.margin_x = margin_x
         self.margin_y = margin_y
         self.canvas.configure(scrollregion=(-margin_x, -margin_y, w + margin_x, h + margin_y))
@@ -1005,10 +1011,11 @@ class PDSGeneratorGUI(tk.Tk):
             if i % 5 == 0:
                 self.canvas.create_text(-18, y + 2, text=str(int(y / self.scale)), anchor="nw", tags="ruler")
         self.canvas.create_rectangle(0, 0, w, h, outline="black", tags="grid")
-        self.canvas.tag_lower("page")
+        self.canvas.tag_lower("ruler")
         self.canvas.tag_lower("grid")
+        self.canvas.tag_lower("page")
+        self.canvas.tag_raise("page", "ruler")
         self.canvas.tag_raise("grid", "page")
-        self.canvas.tag_raise("ruler", "grid")
         self.update_scrollregion()
 
     def clear_alignment_guides(self):
