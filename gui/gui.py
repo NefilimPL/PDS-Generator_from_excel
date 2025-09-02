@@ -7,6 +7,7 @@ import pandas as pd
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser
 from tkinter import font as tkfont
+from PIL import Image, ImageTk
 
 from elements import DraggableElement
 from groups import GroupArea, GroupEditor
@@ -52,8 +53,10 @@ class PDSGeneratorGUI(tk.Tk):
         self.github_image = None
         if os.path.exists(icon_path):
             try:
-                self.github_image = tk.PhotoImage(file=icon_path)
-            except tk.TclError:  # pragma: no cover - depends on Tk installation
+                img = Image.open(icon_path)
+                img = img.resize((24, 24), Image.LANCZOS)
+                self.github_image = ImageTk.PhotoImage(img)
+            except Exception:  # pragma: no cover - depends on Pillow/Tk installation
                 logger.debug("Failed to load github icon from %s", icon_path)
         self.excel_path = ""
         self.dataframes = {}
@@ -104,7 +107,10 @@ class PDSGeneratorGUI(tk.Tk):
             remote_hash and local_hash and remote_hash != local_hash
         )
         if self.update_available:
+            self.update_button.pack(side="left", padx=5)
             self.blink_update_button()
+        else:
+            self.update_button.pack_forget()
         should_prompt = False
         if self.update_test:
             should_prompt = True
