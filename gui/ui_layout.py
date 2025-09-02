@@ -28,7 +28,6 @@ def setup_ui(app):
     app.update_button = tk.Button(
         update_frame, text="UPDATE NOW", command=app.manual_update
     )
-    app.update_button.pack(side="left", padx=5)
     app.update_button_bg = app.update_button.cget("background")
     if app.github_image:
         app.github_button = tk.Button(
