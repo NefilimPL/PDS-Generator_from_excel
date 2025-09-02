@@ -1,8 +1,15 @@
 """Build a Windows launcher executable for PDS Generator."""
+import os
 import subprocess
 import sys
 import shutil
 from pathlib import Path
+# Ensure certifi is available so the launcher can verify HTTPS downloads
+try:
+    import certifi
+except ImportError:  # pragma: no cover - fallback install
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "certifi"])
+    import certifi
 
 
 def ensure_pyinstaller():
@@ -19,11 +26,13 @@ def ensure_pyinstaller():
 
 def build():
     ensure_pyinstaller()
+    certifi_path = Path(certifi.where())
     subprocess.check_call(
         [
             "pyinstaller",
             "--noconsole",
             "--onefile",
+            f"--add-data={certifi_path}{os.pathsep}certifi",
             "launcher.py",
         ]
     )
