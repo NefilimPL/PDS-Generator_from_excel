@@ -2,21 +2,19 @@
 setlocal
 
 set WORK_DIR=%~dp0build_env
-set PY_URL=https://www.python.org/ftp/python/3.11.6/python-3.11.6-embed-amd64.zip
+set PY_VERSION=3.11.6
+set PY_URL=https://www.python.org/ftp/python/%PY_VERSION%/python-%PY_VERSION%-amd64.exe
 
 if exist "%WORK_DIR%" rmdir /S /Q "%WORK_DIR%"
 mkdir "%WORK_DIR%"
 
-echo Downloading portable Python...
-powershell -Command "Invoke-WebRequest '%PY_URL%' -OutFile '%WORK_DIR%\python.zip'"
+echo Downloading Python installer...
+powershell -Command "Invoke-WebRequest '%PY_URL%' -OutFile '%WORK_DIR%\python-installer.exe'"
 
-echo Extracting Python...
-powershell -Command "Expand-Archive '%WORK_DIR%\python.zip' '%WORK_DIR%\python'"
+echo Installing temporary Python...
+"%WORK_DIR%\python-installer.exe" /quiet InstallAllUsers=0 Include_pip=1 Include_tcltk=1 PrependPath=0 TargetDir="%WORK_DIR%\python" >nul
 
-powershell -Command "(Get-Content '%WORK_DIR%\python\python311._pth') -replace '#import site','import site' | Set-Content '%WORK_DIR%\python\python311._pth'"
-
-echo Installing pip and PyInstaller...
-"%WORK_DIR%\python\python.exe" -m ensurepip >nul
+echo Installing PyInstaller...
 "%WORK_DIR%\python\python.exe" -m pip install --upgrade pip pyinstaller >nul
 
 echo Building launcher.exe...
