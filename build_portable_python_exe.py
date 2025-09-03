@@ -97,7 +97,20 @@ def run_python(python_dir: Path, *args: str) -> None:
 
 
 def ensure_pip(python_dir: Path) -> None:
-    """Install pip inside the embeddable distribution."""
+    """Ensure ``pip`` is available in the portable interpreter.
+
+    The embeddable distribution normally ships without ``pip``.  First try the
+    standard ``ensurepip`` module, which installs bundled wheels without
+    requiring network access.  If that fails (e.g. the module was stripped),
+    fall back to downloading ``get-pip.py``.
+    """
+
+    try:
+        run_python(python_dir, "-m", "ensurepip", "--default-pip")
+        return
+    except subprocess.CalledProcessError:
+        pass
+
     get_pip_url = "https://bootstrap.pypa.io/get-pip.py"
     resp = requests.get(get_pip_url, timeout=60)
     resp.raise_for_status()
@@ -114,7 +127,6 @@ def build() -> None:
     print("Installing dependencies…")
     if not (python_dir / "Scripts/pip.exe").exists():
         ensure_pip(python_dir)
-    run_python(python_dir, "-m", "pip", "install", "--upgrade", "pip")
     if REQUIREMENTS.exists():
         run_python(python_dir, "-m", "pip", "install", "-r", str(REQUIREMENTS))
 

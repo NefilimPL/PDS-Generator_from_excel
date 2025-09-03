@@ -37,8 +37,10 @@ python build_portable_python_exe.py
 ```
 
 Skrypt pobierze najnowszą „embeddable” dystrybucję Pythona, doinstaluje
-brakujące narzędzia (np. `distlib` i `pip`) oraz pakiety z
-`requirements.txt`, a następnie utworzy w katalogu `dist/` plik
+brakujące narzędzia (np. `distlib`) oraz pakiety z `requirements.txt`.
+Jeżeli w przenośnym interpreterze nie ma jeszcze `pip`, zostanie on
+zainstalowany przy pomocy wbudowanego modułu `ensurepip` (z zapasowym
+pobieraniem `get-pip.py`).  W katalogu `dist/` pojawi się plik
 `pds_generator.exe`. Jest to jedynie launcher korzystający z plików
 źródłowych w katalogu projektu, więc aktualizacje kodu nie wymagają
 ponownego budowania.
