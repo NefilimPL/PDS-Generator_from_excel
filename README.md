@@ -40,10 +40,11 @@ Skrypt pobierze najnowszą „embeddable” dystrybucję Pythona, doinstaluje
 brakujące narzędzia (np. `distlib`) oraz pakiety z `requirements.txt`.
 Jeżeli w przenośnym interpreterze nie ma jeszcze `pip`, zostanie on
 zainstalowany przy pomocy wbudowanego modułu `ensurepip` (z zapasowym
-pobieraniem `get-pip.py`).  W katalogu `dist/` pojawi się plik
-`pds_generator.exe`. Jest to jedynie launcher korzystający z plików
-źródłowych w katalogu projektu, więc aktualizacje kodu nie wymagają
-ponownego budowania.
+pobieraniem `get-pip.py`).  Skrypt włącza także moduł `site` w pliku
+`python*._pth`, dzięki czemu interpreter widzi zainstalowane pakiety.
+W katalogu `dist/` pojawi się plik `pds_generator.exe`. Jest to jedynie
+launcher korzystający z plików źródłowych w katalogu projektu, więc
+aktualizacje kodu nie wymagają ponownego budowania.
 
 Skrypt sprawdza katalogi wersji wstecz, aby upewnić się, że wybrana
 wersja ma dostępne archiwum „embeddable”, dzięki czemu nie kończy pracy

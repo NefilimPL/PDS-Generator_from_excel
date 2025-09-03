@@ -53,9 +53,17 @@ def get_embeddable_python_url() -> str:
     for ver in reversed(versions):
         version = ".".join(map(str, ver))
         url = f"{index_url}{version}/python-{version}-embed-amd64.zip"
-        head = requests.head(url, timeout=60)
-        if head.status_code == 200:
-            return url
+        try:
+            head = requests.head(url, timeout=60)
+            if head.status_code == 200:
+                return url
+            if head.status_code != 404:
+                resp = requests.get(url, stream=True, timeout=60)
+                if resp.status_code == 200:
+                    resp.close()
+                    return url
+        except requests.RequestException:
+            continue
 
     raise RuntimeError("No embeddable Python download found")
 
@@ -80,7 +88,7 @@ def download_python() -> Path:
         print("Python extracted to", PYTHON_DIR)
 
         # ensure site-packages is enabled
-        for pth in PYTHON_DIR.glob("python*.pth"):
+        for pth in PYTHON_DIR.glob("python*._pth"):
             text = pth.read_text(encoding="utf-8")
             if "# import site" in text:
                 pth.write_text(text.replace("# import site", "import site"), encoding="utf-8")
@@ -93,7 +101,7 @@ def download_python() -> Path:
 def run_python(python_dir: Path, *args: str) -> None:
     """Run a command using the downloaded Python interpreter."""
     python_exe = python_dir / "python.exe"
-    subprocess.check_call([str(python_exe), *args])
+    subprocess.check_call([str(python_exe), *args], cwd=str(python_dir))
 
 
 def ensure_pip(python_dir: Path) -> None:
@@ -128,7 +136,10 @@ def build() -> None:
     if not (python_dir / "Scripts/pip.exe").exists():
         ensure_pip(python_dir)
     if REQUIREMENTS.exists():
-        run_python(python_dir, "-m", "pip", "install", "-r", str(REQUIREMENTS))
+        try:
+            run_python(python_dir, "-m", "pip", "install", "-r", str(REQUIREMENTS))
+        except subprocess.CalledProcessError as exc:
+            print("Failed to install requirements:", exc)
 
     # Create launcher script and executable
     print("Creating launcher…")
@@ -148,7 +159,8 @@ def build() -> None:
     )
 
     maker = ScriptMaker(str(dist_dir), str(dist_dir))
-    maker.executable = str(python_dir / "pythonw.exe")
+    pyw = python_dir / "pythonw.exe"
+    maker.executable = str(pyw if pyw.exists() else python_dir / "python.exe")
     maker.make(f"pds_generator = {launcher_module.stem}:main", {"gui": True})
     exe_path = dist_dir / "pds_generator.exe"
     print(f"Launcher created: {exe_path}")
