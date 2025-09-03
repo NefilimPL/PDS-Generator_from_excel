@@ -4,9 +4,44 @@ Prosty generator PDS (PDF) na podstawie danych z Excela z opcją dodawania nowyc
 
 ## Uruchomienie
 
+Jeśli nie masz zainstalowanego środowiska Python, możesz skorzystać ze
+skryptu `launcher.py`, który w razie potrzeby pobierze i zainstaluje
+lokalną kopię Pythona (na systemie Windows) i uruchomi główną aplikację.
+Przy pierwszym uruchomieniu pojawi się niewielkie okno pokazujące postęp
+pobierania i instalacji. Przy kolejnych uruchomieniach wykorzystana
+zostanie już pobrana wersja.
+Na Windowsie launcher uruchamia `pythonw.exe`, dzięki czemu przy starcie
+nie pojawia się dodatkowa konsola:
+
+```bash
+python launcher.py
+```
+
+Gdy Python jest już zainstalowany, program można uruchomić bezpośrednio:
+
 ```bash
 python pds_gui.py
 ```
+
+### Budowanie samodzielnego `launcher.exe`
+
+W repozytorium znajduje się skrypt `build_launcher_exe.bat`, który tworzy
+samodzielny plik wykonywalny `launcher.exe`. Skrypt nie wymaga wcześniej
+zainstalowanego Pythona – w razie potrzeby pobiera oficjalny instalator,
+instaluje Pythona do katalogu `python_runtime` (bez tworzenia skrótów),
+po czym instaluje PyInstaller i pakuje `launcher.py` w pojedynczy plik EXE.
+Jeżeli katalog `python_runtime` już istnieje, skrypt wykorzysta
+zainstalowany tam interpreter, dzięki czemu ponowne budowanie jest
+znacznie szybsze.
+
+```bash
+build_launcher_exe.bat
+```
+
+Po zakończeniu w katalogu projektu pojawi się plik `launcher.exe` oraz
+zainstalowany interpreter w podkatalogu `python_runtime`. Dzięki temu
+`launcher.exe` może uruchomić aplikację bez dodatkowego pobierania
+Pythona.
 
 Po uruchomieniu aplikacji:
 
