@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import re
+import shutil
 import subprocess
 import zipfile
 from pathlib import Path
@@ -160,9 +161,16 @@ def build() -> None:
         "    main()\n"
     )
 
+    # copy the portable interpreter next to the launcher so it can be moved
+    runtime_dir = dist_dir / "python"
+    if runtime_dir.exists():
+        shutil.rmtree(runtime_dir)
+    shutil.copytree(python_dir, runtime_dir)
+
     maker = ScriptMaker(str(dist_dir), str(dist_dir))
-    pyw = python_dir / "pythonw.exe"
-    maker.executable = str(pyw if pyw.exists() else python_dir / "python.exe")
+    maker.version_info = None  # generate only unversioned launcher
+    pyw = Path("python/pythonw.exe")
+    maker.executable = str(pyw if (runtime_dir / "pythonw.exe").exists() else Path("python/python.exe"))
     maker.make(f"pds_generator = {launcher_module.stem}:main", {"gui": True})
     exe_path = dist_dir / "pds_generator.exe"
     print(f"Launcher created: {exe_path}")
