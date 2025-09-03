@@ -26,19 +26,20 @@ Wymagane biblioteki są instalowane automatycznie przy pierwszym uruchomieniu sk
 
 ## Generowanie launchera EXE
 
-Aby przygotować środowisko WinPython i utworzyć niewielki plik
+Aby przygotować przenośną dystrybucję Pythona i utworzyć niewielki plik
 wykonywalny uruchamiający projekt bez instalacji Pythona:
 
 1. Upewnij się, że masz połączenie z internetem.
 2. Uruchom polecenie:
 
 ```bash
-python build_winpython_exe.py
+python build_portable_python_exe.py
 ```
 
-Skrypt pobierze najnowszą dystrybucję WinPython, doinstaluje brakujące
-narzędzia (np. `distlib`) oraz pakiety z `requirements.txt`, a następnie
-utworzy w katalogu `dist/` plik `pds_generator.exe`. Jest to jedynie
-launcher korzystający z plików źródłowych w katalogu projektu, więc
-aktualizacje kodu nie wymagają ponownego budowania.
+Skrypt pobierze najnowszą „embeddable” dystrybucję Pythona, doinstaluje
+brakujące narzędzia (np. `distlib` i `pip`) oraz pakiety z
+`requirements.txt`, a następnie utworzy w katalogu `dist/` plik
+`pds_generator.exe`. Jest to jedynie launcher korzystający z plików
+źródłowych w katalogu projektu, więc aktualizacje kodu nie wymagają
+ponownego budowania.
 
