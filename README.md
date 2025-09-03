@@ -23,3 +23,21 @@ Po uruchomieniu aplikacji:
 
 Wymagane biblioteki są instalowane automatycznie przy pierwszym uruchomieniu skryptu.
 
+
+## Generowanie launchera EXE
+
+Aby przygotować środowisko WinPython i utworzyć niewielki plik
+wykonywalny uruchamiający projekt bez instalacji Pythona:
+
+1. Upewnij się, że masz połączenie z internetem.
+2. Uruchom polecenie:
+
+```bash
+python build_winpython_exe.py
+```
+
+Skrypt pobierze dystrybucję WinPython, zainstaluje wymagane pakiety i
+utworzy w katalogu `dist/` plik `pds_generator.exe`. Jest to jedynie
+launcher korzystający z plików źródłowych w katalogu projektu, więc
+aktualizacje kodu nie wymagają ponownego budowania.
+
