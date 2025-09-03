@@ -168,9 +168,12 @@ def build() -> None:
     shutil.copytree(python_dir, runtime_dir)
 
     maker = ScriptMaker(str(dist_dir), str(dist_dir))
-    pyw = runtime_dir / "pythonw.exe"
-    maker.executable = str(pyw if pyw.exists() else runtime_dir / "python.exe")
-    maker.make(f"pds_generator = {launcher_module.stem}:main", {"gui": True})
+    maker.executable = str(runtime_dir / "python.exe")
+    options = {"gui": True} if (runtime_dir / "pythonw.exe").exists() else {}
+    maker.make(f"pds_generator = {launcher_module.stem}:main", options)
+
+    # launcher source is no longer needed once the EXE is generated
+    launcher_module.unlink(missing_ok=True)
 
     exe_path = dist_dir / "pds_generator.exe"
     if not exe_path.exists():
