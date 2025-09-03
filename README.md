@@ -43,3 +43,8 @@ brakujące narzędzia (np. `distlib` i `pip`) oraz pakiety z
 źródłowych w katalogu projektu, więc aktualizacje kodu nie wymagają
 ponownego budowania.
 
+Skrypt sprawdza katalogi wersji wstecz, aby upewnić się, że wybrana
+wersja ma dostępne archiwum „embeddable”, dzięki czemu nie kończy pracy
+komunikatem 404 w przypadku, gdy najnowsze wydanie nie posiada jeszcze
+takiego pliku.
+

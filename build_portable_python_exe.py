@@ -32,7 +32,12 @@ SCRIPT_TO_RUN = Path("pds_gui.py")
 
 
 def get_embeddable_python_url() -> str:
-    """Fetch download URL for latest 64-bit embeddable Python ZIP."""
+    """Return download URL for the newest available embeddable Python.
+
+    The top-level directory listing on python.org may contain future versions
+    without pre-built embeddable archives.  Check each version in descending
+    order and return the first one that actually hosts the required ZIP.
+    """
     index_url = "https://www.python.org/ftp/python/"
     resp = requests.get(index_url, timeout=60)
     resp.raise_for_status()
@@ -44,8 +49,15 @@ def get_embeddable_python_url() -> str:
     )
     if not versions:
         raise RuntimeError("Unable to determine latest Python version")
-    latest = ".".join(map(str, versions[-1]))
-    return f"{index_url}{latest}/python-{latest}-embed-amd64.zip"
+
+    for ver in reversed(versions):
+        version = ".".join(map(str, ver))
+        url = f"{index_url}{version}/python-{version}-embed-amd64.zip"
+        head = requests.head(url, timeout=60)
+        if head.status_code == 200:
+            return url
+
+    raise RuntimeError("No embeddable Python download found")
 
 
 def download_python() -> Path:
