@@ -22,7 +22,7 @@ def setup_ui(app):
     update_frame = ttk.Frame(top_frame)
     update_frame.pack(side="right")
     app.update_info_var = tk.StringVar(
-        value=f"Ostatnia aktualizacja: {app.last_update} ({app.version})"
+        value=f"Aktualna wersja: {app.version}"
     )
     ttk.Label(update_frame, textvariable=app.update_info_var).pack(side="left", padx=5)
     app.update_button = tk.Button(
