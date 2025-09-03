@@ -22,19 +22,18 @@ python pds_gui.py
 
 W repozytorium znajduje się skrypt `build_launcher_exe.bat`, który tworzy
 samodzielny plik wykonywalny `launcher.exe`. Skrypt nie wymaga wcześniej
-zainstalowanego Pythona – pobiera oficjalny instalator, instaluje
-tymczasową kopię Pythona (bez tworzenia skrótów) wraz z `pip` i `tkinter`,
-po czym instaluje PyInstaller i pakuje `launcher.py` w pojedynczy plik EXE.
+zainstalowanego Pythona – pobiera oficjalny instalator, instaluje Pythona
+do katalogu `python_runtime` (bez tworzenia skrótów), po czym instaluje
+PyInstaller i pakuje `launcher.py` w pojedynczy plik EXE.
 
 ```bash
 build_launcher_exe.bat
 ```
 
-Po zakończeniu w katalogu projektu pojawi się plik `launcher.exe`, który
-można uruchomić zamiast skryptu `launcher.py`. Przy pierwszym uruchomieniu
-`launcher.exe` pobierze on pełny interpreter Pythona do podkatalogu
-`python_runtime` znajdującego się obok pliku wykonywalnego. Tymczasowa
-instalacja Pythona użyta do zbudowania `launcher.exe` zostanie usunięta.
+Po zakończeniu w katalogu projektu pojawi się plik `launcher.exe` oraz
+zainstalowany interpreter w podkatalogu `python_runtime`. Dzięki temu
+`launcher.exe` może uruchomić aplikację bez dodatkowego pobierania
+Pythona.
 
 Po uruchomieniu aplikacji:
 

@@ -11,6 +11,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -45,8 +46,14 @@ def _ensure_windows_python() -> Path:
         ],
         check=True,
     )
-    installer.unlink()
-    subprocess.run([str(python_exe), "-m", "ensurepip", "--upgrade"], check=True)
+    # Wait for python.exe to appear as some installer operations are asynchronous.
+    for _ in range(30):
+        if python_exe.exists():
+            break
+        time.sleep(1)
+    else:
+        raise RuntimeError("Nie można odnaleźć python.exe po instalacji")
+    installer.unlink(missing_ok=True)
     return python_exe
 
 
