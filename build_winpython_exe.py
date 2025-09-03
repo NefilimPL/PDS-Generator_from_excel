@@ -84,8 +84,8 @@ def build() -> None:
     dist_dir = Path("dist")
     dist_dir.mkdir(exist_ok=True)
 
-    launcher_script = dist_dir / "pds_generator.py"
-    launcher_script.write_text(
+    launcher_module = dist_dir / "_launcher.py"
+    launcher_module.write_text(
         "from pathlib import Path\n"
         "import runpy, sys\n"
         "def main():\n"
@@ -98,9 +98,9 @@ def build() -> None:
 
     maker = ScriptMaker(str(dist_dir), str(dist_dir))
     maker.executable = str(python_dir / "pythonw.exe")
-    maker.make(launcher_script.name, {"gui": True})
-    launcher_script.unlink()
-    print("Launcher created in the 'dist' directory")
+    maker.make(f"pds_generator = {launcher_module.stem}:main", {"gui": True})
+    exe_path = dist_dir / "pds_generator.exe"
+    print(f"Launcher created: {exe_path}")
 
 
 if __name__ == "__main__":
