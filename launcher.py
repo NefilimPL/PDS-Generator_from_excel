@@ -16,7 +16,9 @@ from pathlib import Path
 
 PYTHON_VERSION = "3.11.6"
 BASE_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/"
-PYTHON_DIR = Path(__file__).resolve().parent / "python_runtime"
+# Place the downloaded Python runtime next to the executable/launcher script.
+BASE_DIR = Path(sys.argv[0]).resolve().parent
+PYTHON_DIR = BASE_DIR / "python_runtime"
 
 
 def _ensure_windows_python() -> Path:
@@ -54,7 +56,7 @@ def main() -> None:
         python = _ensure_windows_python()
     else:
         python = Path(sys.executable)
-    script = Path(__file__).resolve().parent / "pds_gui.py"
+    script = BASE_DIR / "pds_gui.py"
     subprocess.run([str(python), str(script)], check=True)
 
 

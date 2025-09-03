@@ -31,8 +31,10 @@ build_launcher_exe.bat
 ```
 
 Po zakończeniu w katalogu projektu pojawi się plik `launcher.exe`, który
-można uruchomić zamiast skryptu `launcher.py`. Tymczasowa instalacja
-Pythona oraz pobrane pliki zostaną usunięte.
+można uruchomić zamiast skryptu `launcher.py`. Przy pierwszym uruchomieniu
+`launcher.exe` pobierze on pełny interpreter Pythona do podkatalogu
+`python_runtime` znajdującego się obok pliku wykonywalnego. Tymczasowa
+instalacja Pythona użyta do zbudowania `launcher.exe` zostanie usunięta.
 
 Po uruchomieniu aplikacji:
 
