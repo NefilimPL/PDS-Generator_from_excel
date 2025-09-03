@@ -78,6 +78,27 @@ def get_remote_hash(owner: str, repo: str, branch: str = "MAIN") -> Optional[str
     return None
 
 
+def get_remote_commit_info(
+    owner: str, repo: str, branch: str = DEFAULT_BRANCH
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return latest commit hash and date for the given GitHub repo/branch."""
+    try:
+        resp = requests.get(
+            f"https://api.github.com/repos/{owner}/{repo}/commits/{branch}",
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        sha = data.get("sha")
+        date = data.get("commit", {}).get("author", {}).get("date")
+        if date:
+            date = date.split("T", 1)[0]
+        return sha, date
+    except Exception as err:  # pragma: no cover - best effort logging
+        logger.debug("Failed to fetch remote commit info: %s", err)
+    return None, None
+
+
 def get_remote_version(owner: str, repo: str, branch: str = DEFAULT_BRANCH) -> Optional[str]:
     """Return the ``VERSION`` file value from the remote repository."""
     try:

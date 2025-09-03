@@ -24,10 +24,9 @@ from .config_io import (
 
 from ..github_utils import (
     get_repo_info,
-    get_remote_hash,
+    get_remote_commit_info,
     get_remote_version,
     pull_updates,
-    get_last_update_date,
     get_version,
 )
 
@@ -51,7 +50,8 @@ class PDSGeneratorGUI(tk.Tk):
             os.path.join(os.path.dirname(__file__), "..", "..")
         )
         self.version = get_version(self.repo_dir)
-        self.last_update = get_last_update_date(self.repo_dir) or ""
+        self.remote_version = None
+        self.remote_date = None
         icon_path = os.path.join(os.path.dirname(__file__), "github_icon.png")
         self.github_image = None
         if os.path.exists(icon_path):
@@ -106,17 +106,35 @@ class PDSGeneratorGUI(tk.Tk):
         local_hash, owner, repo = get_repo_info(self.repo_dir)
         self.repo_owner, self.repo_name = owner, repo
 
-        remote_hash = get_remote_hash(owner, repo) if local_hash else None
-        if local_hash and remote_hash:
-            self.update_available = remote_hash != local_hash
+        remote_hash = None
+        remote_date = None
+        remote_version = None
+        if local_hash:
+            remote_hash, remote_date = get_remote_commit_info(owner, repo)
+            self.update_available = bool(remote_hash and remote_hash != local_hash)
+            if self.update_available:
+                remote_version = get_remote_version(owner, repo)
         else:
             remote_version = get_remote_version(owner, repo)
             self.update_available = bool(remote_version and remote_version != self.version)
+            if self.update_available:
+                _, remote_date = get_remote_commit_info(owner, repo)
+
+        self.remote_version = remote_version
+        self.remote_date = remote_date
 
         if self.update_available:
+            if remote_version:
+                info = f"Aktualna wersja: {self.version} | Dostępna: {remote_version}"
+                if remote_date:
+                    info += f" ({remote_date})"
+            else:
+                info = f"Aktualna wersja: {self.version}"
+            self.update_info_var.set(info)
             self.update_button.pack(side="left", padx=5)
             self.blink_update_button()
         else:
+            self.update_info_var.set(f"Aktualna wersja: {self.version}")
             self.update_button.pack_forget()
         should_prompt = False
         if self.update_test:
