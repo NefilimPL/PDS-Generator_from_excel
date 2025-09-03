@@ -16,15 +16,30 @@ import zipfile
 from pathlib import Path
 
 import requests
-from distlib.scripts import ScriptMaker
 
-WINPYTHON_ZIP_URL = (
-    "https://github.com/winpython/winpython/releases/latest/download/"
-    "WinPython64-3.11.4.0Zero.zip"
-)
+try:
+    from distlib.scripts import ScriptMaker
+except ModuleNotFoundError:  # ensure distlib is available
+    import subprocess, sys
+
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "distlib"])
+    from distlib.scripts import ScriptMaker
+
 WINPYTHON_DIR = Path("winpython")
 REQUIREMENTS = Path("requirements.txt")
 SCRIPT_TO_RUN = Path("pds_gui.py")
+
+
+def get_winpython_zip_url() -> str:
+    """Fetch download URL for latest WinPython 64-bit ZIP archive."""
+    api_url = "https://api.github.com/repos/winpython/winpython/releases/latest"
+    resp = requests.get(api_url, timeout=60)
+    resp.raise_for_status()
+    for asset in resp.json().get("assets", []):
+        name = asset.get("name", "").lower()
+        if name.startswith("winpython64") and name.endswith(".zip"):
+            return asset["browser_download_url"]
+    raise RuntimeError("No suitable WinPython ZIP asset found")
 
 
 def download_winpython() -> Path:
@@ -39,7 +54,8 @@ def download_winpython() -> Path:
         print("WinPython already present, skipping download")
     else:
         print("Downloading WinPython distribution…")
-        response = requests.get(WINPYTHON_ZIP_URL, timeout=60)
+        zip_url = get_winpython_zip_url()
+        response = requests.get(zip_url, timeout=60)
         response.raise_for_status()
         with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
             zf.extractall(WINPYTHON_DIR)
@@ -60,7 +76,6 @@ def build() -> None:
     python_dir = download_winpython()
     print("Installing dependencies…")
     run_python(python_dir, "-m", "pip", "install", "--upgrade", "pip")
-    run_python(python_dir, "-m", "pip", "install", "distlib")
     if REQUIREMENTS.exists():
         run_python(python_dir, "-m", "pip", "install", "-r", str(REQUIREMENTS))
 

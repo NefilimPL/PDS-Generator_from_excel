@@ -36,7 +36,8 @@ wykonywalny uruchamiający projekt bez instalacji Pythona:
 python build_winpython_exe.py
 ```
 
-Skrypt pobierze dystrybucję WinPython, zainstaluje wymagane pakiety i
+Skrypt pobierze najnowszą dystrybucję WinPython, doinstaluje brakujące
+narzędzia (np. `distlib`) oraz pakiety z `requirements.txt`, a następnie
 utworzy w katalogu `dist/` plik `pds_generator.exe`. Jest to jedynie
 launcher korzystający z plików źródłowych w katalogu projektu, więc
 aktualizacje kodu nie wymagają ponownego budowania.
