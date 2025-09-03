@@ -168,11 +168,18 @@ def build() -> None:
     shutil.copytree(python_dir, runtime_dir)
 
     maker = ScriptMaker(str(dist_dir), str(dist_dir))
-    maker.version_info = None  # generate only unversioned launcher
-    pyw = Path("python/pythonw.exe")
-    maker.executable = str(pyw if (runtime_dir / "pythonw.exe").exists() else Path("python/python.exe"))
+    pyw = runtime_dir / "pythonw.exe"
+    maker.executable = str(pyw if pyw.exists() else runtime_dir / "python.exe")
     maker.make(f"pds_generator = {launcher_module.stem}:main", {"gui": True})
+
     exe_path = dist_dir / "pds_generator.exe"
+    if not exe_path.exists():
+        raise RuntimeError("pds_generator.exe was not created")
+
+    # remove versioned and helper files (e.g. `-3.x.exe`, `-script.py`)
+    for extra in dist_dir.glob("pds_generator*"):
+        if extra != exe_path:
+            extra.unlink(missing_ok=True)
     print(f"Launcher created: {exe_path}")
 
 
