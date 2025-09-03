@@ -125,7 +125,9 @@ def ensure_pip(python_dir: Path) -> None:
     get_pip_path = python_dir / "get-pip.py"
     get_pip_path.write_bytes(resp.content)
     try:
-        run_python(python_dir, str(get_pip_path))
+        # ``run_python`` executes with ``cwd`` set to ``python_dir``; pass only
+        # the filename so the interpreter can locate ``get-pip.py`` correctly.
+        run_python(python_dir, get_pip_path.name)
     finally:
         get_pip_path.unlink(missing_ok=True)
 
