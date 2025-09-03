@@ -61,10 +61,15 @@ def main() -> None:
     system = platform.system()
     if system == "Windows":
         python = _ensure_windows_python()
+        # Use pythonw.exe to avoid showing a console window when launching the GUI
+        pythonw = python.with_name("pythonw.exe")
+        if pythonw.exists():
+            python = pythonw
     else:
         python = Path(sys.executable)
     script = BASE_DIR / "pds_gui.py"
-    subprocess.run([str(python), str(script)], check=True)
+    # Run from the repository directory so update checks and relative paths work.
+    subprocess.run([str(python), str(script)], check=True, cwd=BASE_DIR)
 
 
 if __name__ == "__main__":
