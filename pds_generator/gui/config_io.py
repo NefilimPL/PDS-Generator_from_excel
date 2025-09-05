@@ -68,17 +68,25 @@ def save_config(app):
     if not cfg_path:
         messagebox.showerror("Błąd", "Brak ścieżki do konfiguracji")
         return
-    lock = _acquire_lock(cfg_path)
-    if not lock:
-        return
+    expected_lock = f"{cfg_path}.lock"
+    current_lock = getattr(app, "config_lock_path", None)
+    if (
+        not current_lock
+        or current_lock != expected_lock
+        or not os.path.exists(current_lock)
+    ):
+        if current_lock and current_lock != expected_lock:
+            _release_lock(current_lock)
+        lock = _acquire_lock(cfg_path)
+        if not lock:
+            return
+        app.config_lock_path = lock
     try:
         with open(cfg_path, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
     except OSError:
         logger.exception("Failed to save config to %s", cfg_path)
         messagebox.showerror("Błąd", f"Nie można zapisać konfiguracji do {cfg_path}")
-    finally:
-        _release_lock(lock)
     _ensure_config_dir()
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
