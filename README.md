@@ -1,10 +1,18 @@
 # PDS-Generator_from_excel
 
-Rozbudowany generator dokumentów **PDS** (PDF) oparty na danych z arkuszy Excel.  
+Rozbudowany generator dokumentów **PDS** (PDF) oparty na danych z arkuszy Excel.
 Aplikacja udostępnia graficzny edytor umożliwiający projektowanie układu
 strony poprzez przeciąganie pól tekstowych, obrazów oraz elementów grupowych.
 Skonfigurowany projekt może zostać wykorzystany do seryjnego tworzenia plików
 PDF – dla każdego wiersza arkusza powstaje oddzielny dokument.
+
+## Opis / Description
+
+| Polski | English |
+|---|---|
+| Rozbudowany generator dokumentów **PDS** (PDF) oparty na danych z arkuszy Excel. | Advanced **PDS** (PDF) document generator based on data from Excel sheets. |
+| Aplikacja udostępnia graficzny edytor umożliwiający projektowanie układu strony poprzez przeciąganie pól tekstowych, obrazów oraz elementów grupowych. | The application provides a graphical editor that lets you design the page layout by dragging text fields, images, and group elements. |
+| Skonfigurowany projekt może zostać wykorzystany do seryjnego tworzenia plików PDF – dla każdego wiersza arkusza powstaje oddzielny dokument. | A configured project can be used to generate PDF files in batches—creating a separate document for each row in the sheet. |
 
 ## Funkcjonalności
 - Wczytywanie wielu arkuszy Excela (`.xlsx`) i przypisywanie kolumn do pól na
