@@ -17,8 +17,9 @@ PDF – dla każdego wiersza arkusza powstaje oddzielny dokument.
 - Obsługa obrazów lokalnych lub zdalnych (URL podany w komórce Excela).
 - Grupowanie pól w *obszary* z własnym podglądem i indywidualną konfiguracją,
   w tym warunkowym ukrywaniem elementów zależnie od zawartości innych pól.
-- Zapisywanie i wczytywanie konfiguracji do pliku
-  `~/.pds_generator/config.json` – zapamiętywane są m.in. rozmieszczenie
+- Zapisywanie i wczytywanie konfiguracji do pliku `config.json` w katalogu
+  wybranego pliku Excel (tworzona jest także kopia zapasowa w
+  `~/.pds_generator/config.json`) – zapamiętywane są m.in. rozmieszczenie
   elementów, ostatnio użyty plik Excel, pola statyczne czy grupy.
 - Automatyczne sprawdzanie dostępności nowszej wersji programu w repozytorium
   GitHub oraz możliwość pobrania aktualizacji.
