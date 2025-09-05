@@ -1,60 +1,102 @@
 # PDS-Generator_from_excel
 
-Prosty generator PDS (PDF) na podstawie danych z Excela z opcją dodawania nowych pól dla nowych kolumn.
+Rozbudowany generator dokumentów **PDS** (PDF) oparty na danych z arkuszy Excel.  
+Aplikacja udostępnia graficzny edytor umożliwiający projektowanie układu
+strony poprzez przeciąganie pól tekstowych, obrazów oraz elementów grupowych.
+Skonfigurowany projekt może zostać wykorzystany do seryjnego tworzenia plików
+PDF – dla każdego wiersza arkusza powstaje oddzielny dokument.
 
-## Uruchomienie
+## Funkcjonalności
+- Wczytywanie wielu arkuszy Excela (`.xlsx`) i przypisywanie kolumn do pól na
+  stronie.
+- Pola statyczne z własną treścią i możliwością dowolnego formatowania.
+- Przeciąganie i skalowanie elementów na siatce z przyciąganiem do kroków
+  (domyślnie co 5 pkt) oraz podglądem linii wyrównania.
+- Edycja kroju, rozmiaru i stylu czcionki, kolorów tła i tekstu, wyrównania oraz
+  warstwy (kolejności rysowania) każdego elementu.
+- Obsługa obrazów lokalnych lub zdalnych (URL podany w komórce Excela).
+- Grupowanie pól w *obszary* z własnym podglądem i indywidualną konfiguracją,
+  w tym warunkowym ukrywaniem elementów zależnie od zawartości innych pól.
+- Zapisywanie i wczytywanie konfiguracji do pliku
+  `~/.pds_generator/config.json` – zapamiętywane są m.in. rozmieszczenie
+  elementów, ostatnio użyty plik Excel, pola statyczne czy grupy.
+- Automatyczne sprawdzanie dostępności nowszej wersji programu w repozytorium
+  GitHub oraz możliwość pobrania aktualizacji.
+- Automatyczna instalacja wymaganych pakietów przy pierwszym uruchomieniu.
 
-Jeśli nie masz zainstalowanego środowiska Python, możesz skorzystać ze
-skryptu `launcher.py`, który w razie potrzeby pobierze i zainstaluje
-lokalną kopię Pythona (na systemie Windows) i uruchomi główną aplikację.
-Przy pierwszym uruchomieniu pojawi się niewielkie okno pokazujące postęp
-pobierania i instalacji. Przy kolejnych uruchomieniach wykorzystana
-zostanie już pobrana wersja.
-Na Windowsie launcher uruchamia `pythonw.exe`, dzięki czemu przy starcie
-nie pojawia się dodatkowa konsola:
-
-```bash
-python launcher.py
+## Struktura projektu
+```
+├── launcher.py           # uruchomienie bez zainstalowanego Pythona
+├── pds_gui.py            # główny punkt startowy aplikacji (GUI)
+├── pds_generator/        # logika aplikacji jako paczka Pythona
+│   ├── elements.py       # definicja obiektów przeciągalnych na płótnie
+│   ├── groups.py         # obsługa obszarów grupujących i edytora grup
+│   ├── github_utils.py   # komunikacja z GitHubem i aktualizacje
+│   ├── requirements_installer.py  # doinstalowywanie zależności
+│   └── gui/
+│       ├── gui.py        # klasa głównego okna PDSGeneratorGUI
+│       ├── pdf_export.py # generowanie plików PDF (ReportLab)
+│       ├── config_io.py  # zapis/odczyt konfiguracji użytkownika
+│       └── ui_layout.py  # budowanie interfejsu w Tkinterze
+├── requirements.txt     # lista wymaganych bibliotek
+└── build_launcher_exe.bat # tworzenie samodzielnego `launcher.exe` (Windows)
 ```
 
-Gdy Python jest już zainstalowany, program można uruchomić bezpośrednio:
+## Instalacja i uruchomienie
+1. **Windows – bez zainstalowanego Pythona**  
+   Uruchom `python launcher.py`. Skrypt pobierze przenośną wersję Pythona,
+   doinstaluje wymagane pakiety i wystartuje aplikację w trybie graficznym.
+2. **System z zainstalowanym Pythonem**  
+   Zainstaluj zależności z `requirements.txt` (przy pierwszym uruchomieniu
+   robi to automatycznie `pds_gui.py`) i uruchom:
+   ```bash
+   python pds_gui.py
+   ```
+3. **Budowanie samodzielnego `launcher.exe` (Windows)**  
+   Skrypt `build_launcher_exe.bat` pobierze instalator Pythona, utworzy
+   katalog `python_runtime`, zainstaluje PyInstaller i spakuje `launcher.py` w
+   pojedynczy plik wykonywalny:
+   ```bash
+   build_launcher_exe.bat
+   ```
+   Po zakończeniu w katalogu projektu pojawi się `launcher.exe` wraz z
+   katalogiem `python_runtime` zawierającym wbudowany interpreter.
 
-```bash
-python pds_gui.py
-```
+## Podstawowy przepływ pracy
+1. Wskaż plik Excel z danymi. Wiele arkuszy traktowane jest jako osobne
+   źródła kolumn.
+2. Zaznacz kolumny, które mają pojawić się na stronie, lub dodaj pola
+   statyczne z własnym tekstem.
+3. Ustal rozmiar strony (np. A4/B5 lub parametry własne w punktach) i
+   zaprojektuj układ poprzez przeciąganie elementów na płótnie. Dostępne są
+   narzędzia formatowania, zmiana warstwy, przybliżanie oraz usuwanie
+   elementów klawiszem `Del`.
+4. Opcjonalnie twórz *grupy* zawierające zestawy pól. Dla każdej grupy możesz
+   ustawić pozycje poszczególnych pól, dodatkowe style oraz warunki
+   wyświetlania.
+5. Zapisz konfigurację, aby przy kolejnym uruchomieniu wczytać układ i
+   ostatnio użyty plik Excel.
+6. Wybierz „Generuj PDF”, aby utworzyć dokumenty w katalogu `PDS` obok pliku
+   Excel. Nazwy plików bazują na pierwszej kolumnie wiersza – znaki niedozwolone
+   są automatycznie usuwane.
+7. W komórkach Excela można podawać nazwy plików obrazów (w folderze pliku
+   lub jego podfolderach) bądź pełne adresy URL; obrazy zostaną osadzone w
+   odpowiednich elementach.
 
-### Budowanie samodzielnego `launcher.exe`
+## Wymagane biblioteki
+Pakiety instalowane automatycznie (lista w `requirements.txt`):
+- `pandas`
+- `Pillow`
+- `reportlab`
+- `requests`
+- `openpyxl`
 
-W repozytorium znajduje się skrypt `build_launcher_exe.bat`, który tworzy
-samodzielny plik wykonywalny `launcher.exe`. Skrypt nie wymaga wcześniej
-zainstalowanego Pythona – w razie potrzeby pobiera oficjalny instalator,
-instaluje Pythona do katalogu `python_runtime` (bez tworzenia skrótów),
-po czym instaluje PyInstaller i pakuje `launcher.py` w pojedynczy plik EXE.
-Jeżeli katalog `python_runtime` już istnieje, skrypt wykorzysta
-zainstalowany tam interpreter, dzięki czemu ponowne budowanie jest
-znacznie szybsze.
+## Aktualizacje
+Podczas uruchamiania aplikacja sprawdza dostępność nowszej wersji w
+repozytorium GitHub. W razie wykrycia aktualizacji można ją pobrać jednym
+kliknięciem; gdy brak lokalnego repozytorium Git, pobierana jest paczka ZIP
+z najnowszego kodu.
 
-```bash
-build_launcher_exe.bat
-```
-
-Po zakończeniu w katalogu projektu pojawi się plik `launcher.exe` oraz
-zainstalowany interpreter w podkatalogu `python_runtime`. Dzięki temu
-`launcher.exe` może uruchomić aplikację bez dodatkowego pobierania
-Pythona.
-
-Po uruchomieniu aplikacji:
-
-1. Wybierz plik Excel zawierający dane.
-2. Zaznacz kolumny oraz pola statyczne, które chcesz umieścić na stronie.
-3. Wybierz rozmiar strony lub podaj własne w formacie `szerokośćxwysokość` (w punktach).
-4. Przeciągnij i zmień rozmiar elementów na polu konfiguracji z wyraźną siatką; elementy przyciągają się do siatki po puszczeniu przycisku.
-5. Listy po prawej stronie można przewijać kółkiem myszy. Pola statyczne można dodawać w dowolnej liczbie i dla każdego wpisać własną wartość.
-6. Nad polem konfiguracji znajdziesz przyciski formatowania tekstu oraz wybór kolorów tekstu i tła zaznaczonego elementu.
-7. Suwak Zoom pozwala powiększać pole konfiguracji, a klawisz `Del` usuwa zaznaczony element i odznacza jego checkbox.
-8. Układ dopasowuje się do rozmiaru okna, zachowując proporcje strony. Ostatnio zapisany rozmiar strony jest wczytywany przy kolejnym uruchomieniu.
-9. Zapisz konfigurację (zapamiętuje ostatni plik Excel i ustawienia pól) lub wygeneruj pliki PDF dla wszystkich wierszy Excela.
-10. W komórkach Excela możesz podać nazwę pliku obrazu (np. `czarny.jpg`); program wyszuka go w folderze pliku Excel oraz jego podfolderach.
-
-Wymagane biblioteki są instalowane automatycznie przy pierwszym uruchomieniu skryptu.
+## Licencja
+Projekt udostępniany jest na licencji określonej w pliku `LICENSE`.
 
