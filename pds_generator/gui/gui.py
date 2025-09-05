@@ -67,6 +67,8 @@ class PDSGeneratorGUI(tk.Tk):
         self.groups = {}
         self.conditions = []
         self.image_cache = {}
+        self.excel_lock_path = None
+        self.config_lock_path = None
         self.selected_elements = []
         self.selected_element = None
         self.sel_rect = None
@@ -96,6 +98,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.check_for_updates()
         if not self.history:
             self.push_history()
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     # ------------------------------------------------------------------
     def setup_ui(self):
@@ -213,12 +216,13 @@ class PDSGeneratorGUI(tk.Tk):
     def browse_file(self):
         path = filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx *.xls")])
         if path:
+            if not self.acquire_excel_lock(path):
+                return
             self.path_var.set(path)
             self.excel_path = path
             self.image_cache = {}
             self.load_excel(path)
             self.load_config(path=path)
-            self.save_config()
 
     def load_excel(self, path):
         try:
@@ -1048,5 +1052,37 @@ class PDSGeneratorGUI(tk.Tk):
 
     def _on_mousewheel(self, event):
         self.right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+
+    def acquire_excel_lock(self, path):
+        lock = f"{path}.lock"
+        if os.path.exists(lock):
+            messagebox.showerror(
+                "Błąd", "Plik Excel jest używany na innym komputerze."
+            )
+            return False
+        self.release_lock("excel_lock_path")
+        try:
+            with open(lock, "w", encoding="utf-8") as f:
+                f.write(str(os.getpid()))
+        except OSError:
+            messagebox.showerror("Błąd", f"Nie można utworzyć blokady dla {path}")
+            return False
+        self.excel_lock_path = lock
+        return True
+
+    def release_lock(self, attr):
+        path = getattr(self, attr, None)
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        setattr(self, attr, None)
+
+    def on_close(self):
+        self.release_lock("excel_lock_path")
+        self.release_lock("config_lock_path")
+        self.destroy()
 
 
