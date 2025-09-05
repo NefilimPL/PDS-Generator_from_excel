@@ -5,12 +5,14 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Iterable
 
 from importlib import metadata
 
 import tkinter as tk
 from tkinter import ttk
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -45,20 +47,40 @@ def install_missing_requirements(requirements_file: str = "requirements.txt") ->
 
     root = tk.Tk()
     root.title("PDS Generator")
-    label = ttk.Label(root, text="Pobieranie wymaganych modułów...")
+
+    status = tk.StringVar(value="Pobieranie wymaganych modułów...")
+    label = ttk.Label(root, textvariable=status)
     label.pack(padx=20, pady=(20, 10))
+
     progress = ttk.Progressbar(root, mode="indeterminate", length=300)
     progress.pack(padx=20, pady=(0, 20))
     progress.start(10)
-    root.update()
 
-    for pkg in missing:
+    updates: Queue[str | None] = Queue()
+
+    def worker() -> None:
+        for pkg in missing:
+            updates.put(pkg)
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+            except Exception as err:  # pragma: no cover - best effort logging
+                logger.error("Failed to install %s: %s", pkg, err)
+        updates.put(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def poll_queue() -> None:
         try:
-            label.config(text=f"Instalowanie {pkg}...")
-            root.update()
-            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
-        except Exception as err:  # pragma: no cover - best effort logging
-            logger.error("Failed to install %s: %s", pkg, err)
+            pkg = updates.get_nowait()
+        except Empty:
+            pass
+        else:
+            if pkg is None:
+                progress.stop()
+                root.destroy()
+                return
+            status.set(f"Instalowanie {pkg}...")
+        root.after(100, poll_queue)
 
-    progress.stop()
-    root.destroy()
+    poll_queue()
+    root.mainloop()
