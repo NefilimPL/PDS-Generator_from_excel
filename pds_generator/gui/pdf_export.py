@@ -12,6 +12,7 @@ from PIL import Image
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.lib import colors
+from reportlab.pdfbase import pdfmetrics
 import tkinter as tk
 from tkinter import messagebox
 
@@ -72,24 +73,26 @@ def draw_pdf_element(app, c, element, value, x, y):
             stroke=0,
         )
     c.setFillColor(to_reportlab_color(element.text_color))
-    c.setFont(
-        "Helvetica-Bold" if element.bold else "Helvetica",
-        element.font_size / app.scale,
-    )
+    font_name = "Helvetica-Bold" if element.bold else "Helvetica"
+    font_size = element.font_size / app.scale
+    c.setFont(font_name, font_size)
+    ascent = pdfmetrics.getAscent(font_name, font_size)
+    descent = pdfmetrics.getDescent(font_name, font_size)
+    text_y = y + (element.height / app.scale - (ascent - descent)) / 2 - descent
     if element.align == "center":
         c.drawCentredString(
             x + (element.width / app.scale) / 2,
-            y + (element.height / app.scale) / 2,
+            text_y,
             str(value),
         )
     elif element.align == "right":
         c.drawRightString(
             x + (element.width / app.scale),
-            y + (element.height / app.scale) / 2,
+            text_y,
             str(value),
         )
     else:
-        c.drawString(x, y + (element.height / app.scale) / 2, str(value))
+        c.drawString(x, text_y, str(value))
 
 
 def generate_pds(app):
@@ -157,8 +160,8 @@ def generate_pds(app):
                     el = app.elements.get(fname)
                     if not conf and not el:
                         continue
-                    width = conf.get("width", el.width if el else 0)
-                    height = conf.get("height", el.height if el else 0)
+                    width = conf.get("width", el.width / app.scale if el else 0)
+                    height = conf.get("height", el.height / app.scale if el else 0)
                     x0, y0 = positions.get(fname, (0, 0))
                     columns.setdefault(x0, []).append((y0, fname, width, height, conf, el, val))
 
@@ -183,12 +186,13 @@ def generate_pds(app):
                                     break
                             if not overlap:
                                 break
-                        if y + height > group.height:
+                        if y + height > group.height / app.scale:
                             continue
+                        font_size = conf.get("font_size", el.font_size / app.scale if el else 12)
                         dummy = SimpleNamespace(
-                            width=width,
-                            height=height,
-                            font_size=conf.get("font_size", el.font_size if el else 12),
+                            width=width * app.scale,
+                            height=height * app.scale,
+                            font_size=font_size * app.scale,
                             bold=conf.get("bold", el.bold if el else False),
                             text_color=conf.get("text_color", el.text_color if el else "black"),
                             bg_color=conf.get("bg_color", el.bg_color if el else "white"),
@@ -196,8 +200,8 @@ def generate_pds(app):
                             align=conf.get("align", el.align if el else "left"),
                             auto_font=conf.get("auto_font", el.auto_font if el else True),
                         )
-                        x_pdf = (group.x + x0) / app.scale
-                        y_pdf = page_height - (group.y + y + height) / app.scale
+                        x_pdf = group.x / app.scale + x0
+                        y_pdf = page_height - (group.y / app.scale + y + height)
                         draw_pdf_element(app, c, dummy, val, x_pdf, y_pdf)
                         placed.append((x0, y, width, height))
                         cur_y = y + height
