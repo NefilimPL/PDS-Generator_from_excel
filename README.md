@@ -22,37 +22,7 @@
 | Automatyczne sprawdzanie dostępności nowszej wersji programu w repozytorium GitHub oraz możliwość pobrania aktualizacji. | Automatic check for newer versions in the GitHub repository and option to download updates. |
 | Automatyczna instalacja wymaganych pakietów przy pierwszym uruchomieniu. | Automatic installation of required packages on first run. |
 
-## Struktura projektu / Project Structure
 
-| Polski | English |
-|---|---|
-| <pre>├── launcher.py           # uruchomienie bez zainstalowanego Pythona
-├── pds_gui.py            # główny punkt startowy aplikacji (GUI)
-├── pds_generator/        # logika aplikacji jako paczka Pythona
-│   ├── elements.py       # definicja obiektów przeciągalnych na płótnie
-│   ├── groups.py         # obsługa obszarów grupujących i edytora grup
-│   ├── github_utils.py   # komunikacja z GitHubem i aktualizacje
-│   ├── requirements_installer.py  # doinstalowywanie zależności
-│   └── gui/
-│       ├── gui.py        # klasa głównego okna PDSGeneratorGUI
-│       ├── pdf_export.py # generowanie plików PDF (ReportLab)
-│       ├── config_io.py  # zapis/odczyt konfiguracji użytkownika
-│       └── ui_layout.py  # budowanie interfejsu w Tkinterze
-├── requirements.txt     # lista wymaganych bibliotek
-└── build_launcher_exe.bat # tworzenie samodzielnego `launcher.exe` (Windows)</pre> | <pre>├── launcher.py           # launch without installed Python
-├── pds_gui.py            # main application entry point (GUI)
-├── pds_generator/        # application logic as a Python package
-│   ├── elements.py       # definition of draggable objects on the canvas
-│   ├── groups.py         # handling group areas and group editor
-│   ├── github_utils.py   # communication with GitHub and updates
-│   ├── requirements_installer.py  # installing dependencies
-│   └── gui/
-│       ├── gui.py        # PDSGeneratorGUI main window class
-│       ├── pdf_export.py # generating PDF files (ReportLab)
-│       ├── config_io.py  # saving/loading user configuration
-│       └── ui_layout.py  # building the interface in Tkinter
-├── requirements.txt     # list of required libraries
-└── build_launcher_exe.bat # creating standalone `launcher.exe` (Windows)</pre> |
 
 ## Instalacja i uruchomienie / Installation and Run
 
