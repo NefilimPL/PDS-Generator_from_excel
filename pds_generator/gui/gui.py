@@ -561,15 +561,27 @@ class PDSGeneratorGUI(tk.Tk):
     def open_conditions(self):
         win = tk.Toplevel(self)
         win.title("Warunki")
+
+        # allow the window to expand with resizing
+        win.columnconfigure(0, weight=1)
+        win.columnconfigure(1, weight=1)
+        win.rowconfigure(3, weight=1)
+
         src_var = tk.StringVar()
         tgt_var = tk.StringVar()
         options = list(self.elements.keys())
-        ttk.Label(win, text="Jeśli puste:").grid(row=0, column=0)
-        ttk.Combobox(win, values=options, textvariable=src_var, width=20).grid(row=0, column=1)
-        ttk.Label(win, text="ukryj:").grid(row=1, column=0)
-        ttk.Combobox(win, values=options, textvariable=tgt_var, width=20).grid(row=1, column=1)
-        listbox = tk.Listbox(win, width=40)
-        listbox.grid(row=3, column=0, columnspan=2, pady=5)
+
+        ttk.Label(win, text="Jeśli puste:").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(win, values=options, textvariable=src_var).grid(
+            row=0, column=1, sticky="ew", padx=5, pady=2
+        )
+        ttk.Label(win, text="ukryj:").grid(row=1, column=0, sticky="w")
+        ttk.Combobox(win, values=options, textvariable=tgt_var).grid(
+            row=1, column=1, sticky="ew", padx=5, pady=2
+        )
+
+        listbox = tk.Listbox(win)
+        listbox.grid(row=3, column=0, columnspan=2, pady=5, sticky="nsew")
         for s, t in self.conditions:
             listbox.insert("end", f"{t} jeśli {s} puste")
         def add():
@@ -578,14 +590,18 @@ class PDSGeneratorGUI(tk.Tk):
             if s and t and (s, t) not in self.conditions:
                 self.conditions.append((s, t))
                 listbox.insert("end", f"{t} jeśli {s} puste")
-        ttk.Button(win, text="Dodaj", command=add).grid(row=2, column=0, columnspan=2, pady=5)
+        ttk.Button(win, text="Dodaj", command=add).grid(
+            row=2, column=0, columnspan=2, pady=5, sticky="ew"
+        )
         def remove():
             sel = listbox.curselection()
             if sel:
                 idx = sel[0]
                 listbox.delete(idx)
                 self.conditions.pop(idx)
-        ttk.Button(win, text="Usuń zaznaczone", command=remove).grid(row=4, column=0, columnspan=2, pady=5)
+        ttk.Button(win, text="Usuń zaznaczone", command=remove).grid(
+            row=4, column=0, columnspan=2, pady=5, sticky="ew"
+        )
 
     def element_in_group(self, el, group):
         return (

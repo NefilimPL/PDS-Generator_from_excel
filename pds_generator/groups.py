@@ -671,15 +671,25 @@ class GroupEditor(tk.Toplevel):
     def open_conditions(self):
         win = tk.Toplevel(self)
         win.title("Warunki")
+
+        # make the window resizable
+        win.columnconfigure(0, weight=1)
+        win.columnconfigure(1, weight=1)
+        win.rowconfigure(2, weight=1)
+
         src_var = tk.StringVar()
         tgt_var = tk.StringVar()
         options = list(self.elements.keys())
-        ttk.Label(win, text="Jeśli puste:").grid(row=0, column=0)
-        ttk.Combobox(win, values=options, textvariable=src_var, width=20).grid(row=0, column=1)
-        ttk.Label(win, text="Ukryj:").grid(row=1, column=0)
-        ttk.Combobox(win, values=options, textvariable=tgt_var, width=20).grid(row=1, column=1)
+        ttk.Label(win, text="Jeśli puste:").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(win, values=options, textvariable=src_var).grid(
+            row=0, column=1, sticky="ew", padx=5, pady=2
+        )
+        ttk.Label(win, text="Ukryj:").grid(row=1, column=0, sticky="w")
+        ttk.Combobox(win, values=options, textvariable=tgt_var).grid(
+            row=1, column=1, sticky="ew", padx=5, pady=2
+        )
         box = tk.Listbox(win, height=6)
-        box.grid(row=2, column=0, columnspan=2, sticky="nsew")
+        box.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=5)
         for s, t in self.conditions:
             box.insert("end", f"{s} -> {t}")
         def add():
@@ -694,8 +704,8 @@ class GroupEditor(tk.Toplevel):
                 idx = sel[0]
                 self.conditions.pop(idx)
                 box.delete(idx)
-        ttk.Button(win, text="Dodaj", command=add).grid(row=3, column=0, sticky="ew")
-        ttk.Button(win, text="Usuń", command=remove).grid(row=3, column=1, sticky="ew")
+        ttk.Button(win, text="Dodaj", command=add).grid(row=3, column=0, sticky="ew", pady=2)
+        ttk.Button(win, text="Usuń", command=remove).grid(row=3, column=1, sticky="ew", pady=2)
 
     def push_history(self):
         """Delegate history recording to the main window."""
