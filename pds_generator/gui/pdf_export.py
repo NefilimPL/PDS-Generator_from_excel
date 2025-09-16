@@ -181,16 +181,6 @@ def _collect_static_entries(app):
     return {name: var.get() for name, var in getattr(app, "static_entries", {}).items()}
 
 
-def _dataframes_to_rows(dataframes):
-    payload = {}
-    for sheet, df in dataframes.items():
-        payload[sheet] = {
-            "columns": list(df.columns),
-            "rows": df.to_dict(orient="records"),
-        }
-    return payload
-
-
 def render_single_pdf(task):
     if _render_context is None or _render_proxy is None:
         raise RuntimeError("Render context not initialised")
@@ -208,8 +198,6 @@ def render_single_pdf(task):
     groups = context["groups"]
     conditions = context["conditions"]
     static_entries = context["static_entries"]
-    data = context["data"]
-
     elements = {name: SimpleNamespace(**spec) for name, spec in element_specs.items()}
 
     needed = set(elements.keys())
@@ -217,16 +205,11 @@ def render_single_pdf(task):
         needed.update(group["fields"])
     needed.update(static_entries.keys())
 
+    row_values = task.get("row_values", {})
     values = {}
     for name in needed:
         if ":" in name:
-            sheet, col = name.split(":", 1)
-            sheet_data = data.get(sheet)
-            if sheet_data and idx < len(sheet_data["rows"]):
-                row = sheet_data["rows"][idx]
-                value = row.get(col, "")
-            else:
-                value = ""
+            value = row_values.get(name, "")
         else:
             value = static_entries.get(name, "")
         if pd.isna(value):
@@ -371,6 +354,31 @@ def generate_pds(app):
     group_specs = _collect_group_specs(app)
     conditions = [tuple(cond) for cond in app.conditions]
 
+    dynamic_fields = set()
+
+    def collect_dynamic(name):
+        if isinstance(name, str) and ":" in name:
+            dynamic_fields.add(name)
+
+    for name in element_specs.keys():
+        collect_dynamic(name)
+    for group in group_specs:
+        for fname in group["fields"]:
+            collect_dynamic(fname)
+        for src, tgt in group["conditions"]:
+            collect_dynamic(src)
+            collect_dynamic(tgt)
+    for src, tgt in conditions:
+        collect_dynamic(src)
+        collect_dynamic(tgt)
+
+    sheet_fields = {}
+    for field in dynamic_fields:
+        sheet, col = field.split(":", 1)
+        sheet_fields.setdefault(sheet, set()).add(col)
+
+    sheet_columns = {sheet: set(df.columns) for sheet, df in app.dataframes.items()}
+
     filename_counters = {}
     tasks = []
     for idx in range(total_rows):
@@ -385,10 +393,33 @@ def generate_pds(app):
         else:
             unique_name = filename
         pdf_path = os.path.join(output_dir, f"{unique_name}.pdf")
-        tasks.append({"idx": idx, "pdf_path": pdf_path, "name": unique_name})
+        row_values = {}
+        for sheet, columns in sheet_fields.items():
+            df = app.dataframes.get(sheet)
+            if df is None or idx >= len(df):
+                for col in columns:
+                    row_values[f"{sheet}:{col}"] = ""
+                continue
+            row_series = df.iloc[idx]
+            available = sheet_columns.get(sheet, set())
+            for col in columns:
+                if col in available:
+                    value = row_series[col]
+                else:
+                    value = ""
+                if pd.isna(value):
+                    value = ""
+                row_values[f"{sheet}:{col}"] = value
+        tasks.append(
+            {
+                "idx": idx,
+                "pdf_path": pdf_path,
+                "name": unique_name,
+                "row_values": row_values,
+            }
+        )
 
     worker_payload = {
-        "dataframes": app.dataframes,
         "static_entries": static_entries,
         "elements": element_specs,
         "element_order": element_order,
@@ -405,7 +436,6 @@ def generate_pds(app):
 
     def worker(payload):
         start_time = time.time()
-        data_payload = _dataframes_to_rows(payload["dataframes"])
         context = {
             "scale": payload["scale"],
             "page_width": payload["page_width"],
@@ -415,7 +445,6 @@ def generate_pds(app):
             "groups": payload["groups"],
             "conditions": payload["conditions"],
             "static_entries": payload["static_entries"],
-            "data": data_payload,
             "excel_dir": payload["excel_dir"],
         }
 
