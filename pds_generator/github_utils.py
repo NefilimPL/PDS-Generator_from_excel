@@ -153,14 +153,35 @@ def pull_updates(repo_dir: str, branch: str = DEFAULT_BRANCH) -> bool:
     also restores any files that might be missing locally.
     """
 
+    git_dir = os.path.join(repo_dir, ".git")
+    if not os.path.isdir(git_dir):
+        logger.info(
+            "Local copy at %s is not a git repository; downloading archive from GitHub.",
+            repo_dir,
+        )
+        _, owner, repo = get_repo_info(repo_dir)
+        return _download_and_extract(repo_dir, owner, repo, branch)
+
+    git_kwargs = {
+        "cwd": repo_dir,
+        "check": True,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+
     try:
-        subprocess.run(["git", "fetch"], cwd=repo_dir, check=True)
-        subprocess.run(["git", "pull"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "fetch"], **git_kwargs)
+        subprocess.run(["git", "pull"], **git_kwargs)
         return True
+    except subprocess.CalledProcessError as err:  # pragma: no cover - best effort logging
+        message = err.stderr.strip() or err.stdout.strip() or str(err)
+        logger.error("Failed to pull updates via git: %s", message)
     except Exception as err:  # pragma: no cover - best effort logging
-        logger.error("Failed to pull updates: %s", err)
+        logger.error("Failed to pull updates via git: %s", err)
 
     _, owner, repo = get_repo_info(repo_dir)
+    logger.info("Falling back to downloading archive from GitHub.")
     return _download_and_extract(repo_dir, owner, repo, branch)
 
 

@@ -173,13 +173,7 @@ class PDSGeneratorGUI(tk.Tk):
                         "Aktualizacja", "Symulacja pobierania aktualizacji."
                     )
                     return
-                if not pull_updates(self.repo_dir):
-                    messagebox.showerror(
-                        "Błąd", "Aktualizacja nie powiodła się"
-                    )
-                    return
-                python = sys.executable
-                os.execl(python, python, *sys.argv)
+                self._run_update()
 
             ttk.Button(btns, text="Aktualizuj", command=do_update).pack(
                 side="left", padx=5
@@ -194,11 +188,56 @@ class PDSGeneratorGUI(tk.Tk):
                 "Aktualizacja", "Symulacja pobierania aktualizacji."
             )
             return
-        if not pull_updates(self.repo_dir):
+        self._run_update()
+
+    def _run_update(self):
+        previous_excel_lock = self.excel_lock_path
+        previous_config_lock = self.config_lock_path
+
+        self.release_lock("excel_lock_path")
+        self.release_lock("config_lock_path")
+
+        try:
+            updated = pull_updates(self.repo_dir)
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Unexpected error while pulling updates")
+            updated = False
+
+        if not updated:
             messagebox.showerror("Błąd", "Aktualizacja nie powiodła się")
+            self._restore_locks_after_failed_update(
+                previous_excel_lock, previous_config_lock
+            )
             return
+
         python = sys.executable
         os.execl(python, python, *sys.argv)
+
+    def _restore_locks_after_failed_update(
+        self, excel_lock_path, config_lock_path
+    ):
+        if excel_lock_path and self.excel_path:
+            if not self.acquire_excel_lock(self.excel_path):
+                logger.warning(
+                    "Failed to reacquire Excel lock for %s", self.excel_path
+                )
+
+        if config_lock_path:
+            resource_path = (
+                config_lock_path[:-5]
+                if str(config_lock_path).endswith(".lock")
+                else None
+            )
+            if resource_path:
+                lock = locks.acquire_lock(
+                    resource_path, os.path.basename(resource_path)
+                )
+                if lock:
+                    self.config_lock_path = lock
+                else:
+                    logger.warning(
+                        "Failed to reacquire config lock for %s", resource_path
+                    )
 
     def open_github(self):
         if self.repo_owner and self.repo_name:
