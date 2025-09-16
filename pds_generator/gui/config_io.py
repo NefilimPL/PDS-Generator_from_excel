@@ -6,6 +6,7 @@ from tkinter import messagebox
 
 from ..elements import DraggableElement
 from ..groups import GroupArea
+from . import locks
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".pds_generator")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -27,26 +28,14 @@ def _excel_config_path(excel_path):
 
 
 def _acquire_lock(path):
-    lock = f"{path}.lock"
-    if os.path.exists(lock):
-        messagebox.showerror("Błąd", f"Plik {os.path.basename(path)} jest używany na innym komputerze")
-        return None
-    try:
-        with open(lock, "w", encoding="utf-8") as f:
-            f.write(str(os.getpid()))
-    except OSError:
-        logger.exception("Failed to create lock %s", lock)
-        messagebox.showerror("Błąd", f"Nie można utworzyć blokady dla {path}")
-        return None
-    return lock
+    return locks.acquire_lock(path, os.path.basename(path))
 
 
 def _release_lock(path):
-    if path and os.path.exists(path):
-        try:
-            os.remove(path)
-        except OSError:
-            logger.exception("Failed to remove lock %s", path)
+    try:
+        locks.release_lock(path)
+    except Exception:
+        logger.exception("Failed to remove lock %s", path)
 
 
 def save_config(app):
