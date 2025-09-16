@@ -7,6 +7,7 @@ from io import BytesIO
 from types import SimpleNamespace
 
 import pandas as pd
+from pandas.api.types import is_scalar
 import requests
 from PIL import Image
 from reportlab.pdfgen import canvas as pdf_canvas
@@ -122,7 +123,10 @@ def generate_pds(app):
             for row in row_dicts:
                 normalized_row = {}
                 for key, val in row.items():
-                    normalized_row[key] = "" if pd.isna(val) else val
+                    if is_scalar(val):
+                        normalized_row[key] = "" if pd.isna(val) else val
+                    else:
+                        normalized_row[key] = val
                 normalized_rows.append(normalized_row)
             records_map[sheet_name] = normalized_rows
         first_records = records_map.get(first_sheet_name, [])
@@ -150,7 +154,7 @@ def generate_pds(app):
                         value = ""
                 else:
                     value = app.static_entries.get(name, tk.StringVar()).get()
-                if pd.isna(value):
+                if is_scalar(value) and pd.isna(value):
                     value = ""
                 values[name] = value
             group_field_names = {fname for g in app.groups.values() for fname in g.fields}
@@ -159,14 +163,16 @@ def generate_pds(app):
             for src, tgt in app.conditions:
                 if src in group_field_names or tgt in group_field_names:
                     continue
-                if pd.isna(values.get(src)) or values.get(src) == "":
+                src_val = values.get(src)
+                if (is_scalar(src_val) and pd.isna(src_val)) or src_val == "":
                     hidden.add(tgt)
             for group in app.groups.values():
                 g_hidden = set()
                 for src, tgt in group.conditions:
                     if src not in group.fields or tgt not in group.fields:
                         continue
-                    if pd.isna(values.get(src)) or values.get(src) == "":
+                    g_src_val = values.get(src)
+                    if (is_scalar(g_src_val) and pd.isna(g_src_val)) or g_src_val == "":
                         g_hidden.add(tgt)
                 positions = group.field_pos
                 columns = {}
