@@ -99,8 +99,9 @@ def generate_pds(app):
     if not app.excel_path or not app.dataframes:
         messagebox.showerror("Błąd", "Brak danych do generowania")
         return
-    first_df = next(iter(app.dataframes.values()))
+    first_sheet_name, first_df = next(iter(app.dataframes.items()))
     total_rows = len(first_df)
+    first_col_name = first_df.columns[0] if first_df.shape[1] else None
     if total_rows == 0:
         messagebox.showinfo("Info", "Brak wierszy w pliku Excel")
         return
@@ -112,8 +113,24 @@ def generate_pds(app):
 
     def worker():
         start_time = time.time()
+        records_map = {}
+        for sheet_name, df in app.dataframes.items():
+            if df is None:
+                continue
+            row_dicts = df.to_dict(orient="records")
+            normalized_rows = []
+            for row in row_dicts:
+                normalized_row = {}
+                for key, val in row.items():
+                    normalized_row[key] = "" if pd.isna(val) else val
+                normalized_rows.append(normalized_row)
+            records_map[sheet_name] = normalized_rows
+        first_records = records_map.get(first_sheet_name, [])
         for idx in range(total_rows):
-            first_val = first_df.iloc[idx, 0] if first_df.shape[1] else ""
+            if first_col_name is not None and idx < len(first_records):
+                first_val = first_records[idx].get(first_col_name, "")
+            else:
+                first_val = ""
             filename = sanitize_filename(first_val) or f"pds_{idx+1}"
             pdf_path = os.path.join(output_dir, f"{filename}.pdf")
             tmp_path = pdf_path + ".tmp"
@@ -126,8 +143,11 @@ def generate_pds(app):
             for name in needed:
                 if ":" in name:
                     sheet, col = name.split(":", 1)
-                    df = app.dataframes.get(sheet)
-                    value = df.iloc[idx].get(col, "") if df is not None else ""
+                    records = records_map.get(sheet)
+                    if records is not None and idx < len(records):
+                        value = records[idx].get(col, "")
+                    else:
+                        value = ""
                 else:
                     value = app.static_entries.get(name, tk.StringVar()).get()
                 if pd.isna(value):
