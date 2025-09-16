@@ -21,6 +21,7 @@ from .config_io import (
     save_config as save_config_func,
     load_config as load_config_func,
 )
+from . import locks
 
 from ..github_utils import (
     get_repo_info,
@@ -1084,29 +1085,23 @@ class PDSGeneratorGUI(tk.Tk):
 
 
     def acquire_excel_lock(self, path):
-        lock = f"{path}.lock"
-        if os.path.exists(lock):
-            messagebox.showerror(
-                "Błąd", "Plik Excel jest używany na innym komputerze."
-            )
+        current_lock_path = getattr(self, "excel_lock_path", None)
+        expected_lock_path = locks._lock_path(path)
+
+        if current_lock_path == expected_lock_path and os.path.exists(current_lock_path):
+            return True
+
+        lock_path = locks.acquire_lock(path, os.path.basename(path))
+        if not lock_path:
             return False
         self.release_lock("excel_lock_path")
-        try:
-            with open(lock, "w", encoding="utf-8") as f:
-                f.write(str(os.getpid()))
-        except OSError:
-            messagebox.showerror("Błąd", f"Nie można utworzyć blokady dla {path}")
-            return False
-        self.excel_lock_path = lock
+        self.excel_lock_path = lock_path
         return True
 
     def release_lock(self, attr):
         path = getattr(self, attr, None)
-        if path and os.path.exists(path):
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+        if path:
+            locks.release_lock(path)
         setattr(self, attr, None)
 
     def on_close(self):
