@@ -1085,10 +1085,16 @@ class PDSGeneratorGUI(tk.Tk):
 
 
     def acquire_excel_lock(self, path):
-        self.release_lock("excel_lock_path")
+        current_lock_path = getattr(self, "excel_lock_path", None)
+        expected_lock_path = locks._lock_path(path)
+
+        if current_lock_path == expected_lock_path and os.path.exists(current_lock_path):
+            return True
+
         lock_path = locks.acquire_lock(path, os.path.basename(path))
         if not lock_path:
             return False
+        self.release_lock("excel_lock_path")
         self.excel_lock_path = lock_path
         return True
 
