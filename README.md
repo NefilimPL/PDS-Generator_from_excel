@@ -1,4 +1,5 @@
 # PDS-Generator_from_excel
+<img width="1920" height="1040" alt="image" src="https://github.com/user-attachments/assets/252bb043-014d-47ed-bdc0-853664916e82" />
 
 ## Opis / Description
 
