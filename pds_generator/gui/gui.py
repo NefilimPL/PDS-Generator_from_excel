@@ -21,6 +21,7 @@ from .config_io import (
     save_config as save_config_func,
     load_config as load_config_func,
 )
+from .excel_tracking import is_tracking_column
 from . import locks
 
 from ..github_utils import (
@@ -281,6 +282,8 @@ class PDSGeneratorGUI(tk.Tk):
             lf = ttk.LabelFrame(self.columns_frame, text=sheet)
             lf.pack(fill="x", padx=2, pady=2)
             for col in df.columns:
+                if is_tracking_column(col):
+                    continue
                 var = tk.BooleanVar()
                 chk = ttk.Checkbutton(
                     lf,
