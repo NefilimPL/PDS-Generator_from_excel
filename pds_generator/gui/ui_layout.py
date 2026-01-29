@@ -118,6 +118,10 @@ def setup_ui(app):
     app.columns_frame = ttk.Frame(right_frame)
     app.columns_frame.pack(fill="y", expand=True)
     app.columns_vars = {}
+    app.tracking_btn = ttk.Button(
+        right_frame, text="Śledzenie zmian", command=app.open_tracking_settings
+    )
+    app.tracking_btn.pack(fill="x", pady=(5, 10))
 
     # Static field checkboxes
     ttk.Label(right_frame, text="Pola statyczne:").pack(anchor="w", pady=(10, 0))
@@ -157,11 +161,29 @@ def setup_ui(app):
     ttk.Button(button_frame, text="Zapisz konfigurację", command=app.save_config).pack(fill="x")
     ttk.Button(button_frame, text="Warunki", command=app.open_conditions).pack(fill="x", pady=5)
     ttk.Button(button_frame, text="Dodaj grupę", command=app.add_group).pack(fill="x", pady=5)
-    ttk.Button(button_frame, text="Generuj PDS", command=app.generate_pds).pack(fill="x", pady=5)
+    gen_frame = ttk.Frame(button_frame)
+    gen_frame.pack(fill="x", pady=5)
+    app.generate_btn = ttk.Button(gen_frame, text="Generuj PDS", command=app.generate_pds)
+    app.generate_btn.pack(fill="x")
+    app.cancel_btn = ttk.Button(gen_frame, text="Anuluj", command=app.cancel_generation)
+    app.cancel_btn.pack(fill="x")
+    app.cancel_btn.pack_forget()
 
     # Progress bar
+    app.status_var = tk.StringVar(value="Akcja: Gotowe")
+    app.status_label = ttk.Label(right_frame, textvariable=app.status_var, anchor="w")
+    app.status_label.pack(fill="x", pady=(20, 0))
     app.progress = ttk.Progressbar(right_frame, orient="horizontal", mode="determinate")
-    app.progress.pack(fill="x", pady=(20, 0))
+    app.progress.pack(fill="x", pady=(5, 0))
+    app.progress_info_var = tk.StringVar(value="")
+    app.progress_info_label = ttk.Label(right_frame, textvariable=app.progress_info_var, anchor="w")
+    app.progress_info_label.pack(fill="x")
+    app.skip_var = tk.StringVar(value="")
+    app.skip_label = ttk.Label(right_frame, textvariable=app.skip_var, anchor="w")
+    app.skip_label.pack(fill="x")
+    app.rows_var = tk.StringVar(value="")
+    app.rows_label = ttk.Label(right_frame, textvariable=app.rows_var, anchor="w")
+    app.rows_label.pack(fill="x")
     app.time_label = ttk.Label(right_frame, text="")
     app.time_label.pack()
     app.draw_grid()
