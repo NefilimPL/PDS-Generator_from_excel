@@ -17,9 +17,55 @@ from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from tkinter import messagebox
 
-from .excel_tracking import TRACKING_COLUMN, update_tracking_column
+from .excel_tracking import (
+    TRACKING_COLUMN,
+    update_tracking_column,
+    update_tracking_cache,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _ui_call(app, func, *args, **kwargs):
+    try:
+        if hasattr(app, "ui_call"):
+            app.ui_call(func, *args, **kwargs)
+        else:
+            func(*args, **kwargs)
+    except Exception:
+        logger.exception("Failed to update UI")
+
+
+def _ui_status(app, text):
+    if hasattr(app, "set_status"):
+        _ui_call(app, app.set_status, text)
+
+
+def _ui_counts(app, total_rows=None, total_tasks=None, processed=None, skipped=None):
+    if hasattr(app, "set_counts"):
+        _ui_call(
+            app,
+            app.set_counts,
+            total_rows=total_rows,
+            total_tasks=total_tasks,
+            processed=processed,
+            skipped=skipped,
+        )
+
+
+def _ui_progress_mode(app, indeterminate):
+    if hasattr(app, "set_progress_indeterminate"):
+        _ui_call(app, app.set_progress_indeterminate, indeterminate)
+
+
+def _ui_finish(app, status):
+    if hasattr(app, "finish_generation_ui"):
+        _ui_call(app, app.finish_generation_ui, status)
+
+
+def _is_cancelled(app):
+    cancel_event = getattr(app, "cancel_event", None)
+    return cancel_event is not None and cancel_event.is_set()
 
 
 def to_reportlab_color(value):
@@ -354,38 +400,26 @@ def render_single_pdf(task):
 
 
 def generate_pds(app):
+    def finish_now(status):
+        if hasattr(app, "finish_generation_ui"):
+            app.finish_generation_ui(status)
+        else:
+            _ui_finish(app, status)
+
     if not app.excel_path or not app.dataframes:
         messagebox.showerror("Błąd", "Brak danych do generowania")
-        return
+        finish_now("Brak danych")
+        return False
 
     _, first_df = next(iter(app.dataframes.items()))
     total_rows = len(first_df)
     if total_rows == 0:
         messagebox.showinfo("Info", "Brak wierszy w pliku Excel")
-        return
+        finish_now("Brak wierszy")
+        return False
 
-    changed_rows = None
-    try:
-        changed_rows = update_tracking_column(
-            app.excel_path, app.dataframes, total_rows
-        )
-    except Exception:
-        logger.exception("Failed to update tracking column")
-        messagebox.showwarning(
-            "Uwaga",
-            "Nie udało się zaktualizować kolumny kontrolnej w Excelu "
-            "(sprawdź, czy plik nie jest otwarty). "
-            "Pliki PDF zostaną wygenerowane ponownie.",
-        )
-        changed_rows = None
+    _ui_counts(app, total_rows=total_rows)
 
-    output_dir = os.path.join(os.path.dirname(app.excel_path), "PDS")
-    os.makedirs(output_dir, exist_ok=True)
-
-    page_width = app.page_width
-    page_height = app.page_height
-
-    static_entries = _collect_static_entries(app)
     element_specs, element_order = _collect_element_specs(app)
     group_specs = _collect_group_specs(app)
     conditions = [tuple(cond) for cond in app.conditions]
@@ -409,11 +443,110 @@ def generate_pds(app):
         collect_dynamic(tgt)
 
     sheet_fields = {}
+    excluded_fields = getattr(app, "tracking_excluded", set())
     for field in dynamic_fields:
+        if field in excluded_fields:
+            continue
         sheet, col = field.split(":", 1)
         if col == TRACKING_COLUMN:
             continue
         sheet_fields.setdefault(sheet, set()).add(col)
+
+    cache_rows = None
+    cache_changed_cols = {}
+    excel_rows = None
+    tracking_mode = "none"
+
+    try:
+        cache_rows, cache_changed_cols = update_tracking_cache(
+            app.excel_path, app.dataframes, total_rows, sheet_fields=sheet_fields
+        )
+    except Exception:
+        logger.exception("Failed to update tracking cache")
+        cache_rows = None
+        cache_changed_cols = {}
+
+    try:
+        excel_rows = update_tracking_column(
+            app.excel_path, app.dataframes, total_rows, sheet_fields=sheet_fields
+        )
+        tracking_mode = "excel"
+    except Exception:
+        logger.exception("Failed to update tracking column")
+        if cache_rows is None:
+            messagebox.showwarning(
+                "Uwaga",
+                "Nie udało się zaktualizować kolumny kontrolnej w Excelu "
+                "(sprawdź, czy plik nie jest otwarty). "
+                "Pliki PDF zostaną wygenerowane ponownie.",
+            )
+        else:
+            tracking_mode = "cache"
+            messagebox.showinfo(
+                "Info",
+                "Nie udało się zaktualizować kolumny kontrolnej w Excelu "
+                "(sprawdź, czy plik nie jest otwarty). "
+                "Używam lokalnego pliku śledzenia, więc wygenerują się "
+                "tylko zmienione PDF-y.",
+            )
+
+    if excel_rows is None:
+        changed_rows = cache_rows
+        tracking_mode = "cache" if cache_rows is not None else tracking_mode
+    else:
+        changed_rows = excel_rows
+        if cache_rows is not None and len(excel_rows) == total_rows and len(cache_rows) < total_rows:
+            logger.info(
+                "Excel tracking indicates all rows changed; using cache (%s/%s).",
+                len(cache_rows),
+                total_rows,
+            )
+            changed_rows = cache_rows
+            tracking_mode = "cache"
+
+    tracked_columns = sum(len(cols) for cols in sheet_fields.values())
+    cache_count = len(cache_rows) if cache_rows is not None else None
+    excel_count = len(excel_rows) if excel_rows is not None else None
+    if changed_rows is None:
+        logger.info(
+            "Tracking mode=%s; tracked_columns=%s; cache_rows=%s; excel_rows=%s; generating all rows=%s",
+            tracking_mode,
+            tracked_columns,
+            cache_count,
+            excel_count,
+            total_rows,
+        )
+    else:
+        logger.info(
+            "Tracking mode=%s; tracked_columns=%s; cache_rows=%s; excel_rows=%s; changed_rows=%s/%s",
+            tracking_mode,
+            tracked_columns,
+            cache_count,
+            excel_count,
+            len(changed_rows),
+            total_rows,
+        )
+        if len(changed_rows) >= max(1, total_rows - 1) and cache_changed_cols:
+            changed_preview = []
+            for sheet, cols in cache_changed_cols.items():
+                for col in cols:
+                    changed_preview.append(f"{sheet}:{col}")
+                    if len(changed_preview) >= 6:
+                        break
+                if len(changed_preview) >= 6:
+                    break
+            logger.info(
+                "Most rows changed; changed columns (sample): %s",
+                ", ".join(changed_preview),
+            )
+
+    output_dir = os.path.join(os.path.dirname(app.excel_path), "PDS")
+    os.makedirs(output_dir, exist_ok=True)
+
+    page_width = app.page_width
+    page_height = app.page_height
+
+    static_entries = _collect_static_entries(app)
 
     sheet_columns = {
         sheet: {col for col in df.columns if col != TRACKING_COLUMN}
@@ -465,7 +598,24 @@ def generate_pds(app):
         messagebox.showinfo(
             "Info", "Brak zmian - wszystkie pliki PDF są aktualne."
         )
-        return
+        _ui_counts(app, total_rows=total_rows, total_tasks=0, processed=0, skipped=total_rows)
+        finish_now("Brak zmian")
+        return False
+
+    skipped_rows = total_rows - len(tasks) if changed_rows is not None else 0
+    _ui_counts(
+        app,
+        total_rows=total_rows,
+        total_tasks=len(tasks),
+        processed=0,
+        skipped=skipped_rows,
+    )
+    _ui_progress_mode(app, False)
+    _ui_status(app, "Generowanie PDF...")
+
+    if _is_cancelled(app):
+        finish_now("Anulowano")
+        return False
 
     worker_payload = {
         "static_entries": static_entries,
@@ -479,7 +629,9 @@ def generate_pds(app):
         "excel_dir": os.path.dirname(app.excel_path),
         "tasks": tasks,
         "output_dir": output_dir,
-        "total_rows": len(tasks),
+        "total_tasks": len(tasks),
+        "total_rows": total_rows,
+        "skipped_rows": skipped_rows,
     }
 
     def worker(payload):
@@ -497,51 +649,83 @@ def generate_pds(app):
         }
 
         tasks_local = payload["tasks"]
-        total = payload["total_rows"]
+        total = payload["total_tasks"]
         failures = []
         completed = 0
+        cancelled = False
         max_workers = max(1, min(len(tasks_local), os.cpu_count() or 1))
 
+        executor = None
+        future_map = {}
         try:
-            with ProcessPoolExecutor(
+            executor = ProcessPoolExecutor(
                 max_workers=max_workers,
                 initializer=_init_render_context,
                 initargs=(context,),
-            ) as executor:
-                future_map = {
-                    executor.submit(render_single_pdf, task): task for task in tasks_local
-                }
-                for future in as_completed(future_map):
-                    task = future_map[future]
-                    try:
-                        future.result()
-                    except Exception as exc:  # pragma: no cover - defensive logging
-                        failures.append((task["idx"], task.get("name", ""), str(exc)))
-                        logger.exception(
-                            "Failed to render PDF for row %s", task["idx"] + 1, exc_info=exc
-                        )
-                    completed += 1
-                    progress = completed / total * 100
-                    elapsed = time.time() - start_time
-                    remaining = (elapsed / completed) * (total - completed) if completed else 0
-                    remaining_seconds = max(0, int(remaining))
-                    app.progress.after(
-                        0, lambda p=progress: app.progress.config(value=p)
+            )
+            future_map = {
+                executor.submit(render_single_pdf, task): task for task in tasks_local
+            }
+            for future in as_completed(future_map):
+                if _is_cancelled(app):
+                    cancelled = True
+                    break
+                task = future_map[future]
+                try:
+                    future.result()
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    failures.append((task["idx"], task.get("name", ""), str(exc)))
+                    logger.exception(
+                        "Failed to render PDF for row %s", task["idx"] + 1, exc_info=exc
                     )
-                    app.time_label.after(
-                        0,
-                        lambda r=remaining_seconds: app.time_label.config(
-                            text=f"Pozostały czas: {r} s"
-                        ),
-                    )
+                completed += 1
+                progress = completed / total * 100
+                elapsed = time.time() - start_time
+                remaining = (elapsed / completed) * (total - completed) if completed else 0
+                remaining_seconds = max(0, int(remaining))
+                app.progress.after(
+                    0, lambda p=progress: app.progress.config(value=p)
+                )
+                _ui_counts(
+                    app,
+                    total_tasks=total,
+                    processed=completed,
+                )
+                app.time_label.after(
+                    0,
+                    lambda r=remaining_seconds: app.time_label.config(
+                        text=f"Pozostały czas: {r} s"
+                    ),
+                )
         except Exception as exc:  # pragma: no cover - executor level failure
             failures.append((-1, "", str(exc)))
             logger.exception("PDF generation failed", exc_info=exc)
         finally:
+            if executor is not None:
+                if cancelled:
+                    for fut in future_map:
+                        fut.cancel()
+                    try:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:
+                        try:
+                            executor.shutdown(wait=False)
+                        except TypeError:
+                            executor.shutdown()
+                else:
+                    executor.shutdown()
             def finish():
-                app.progress.config(value=0)
-                app.time_label.config(text="Zakończono")
+                if cancelled:
+                    if hasattr(app, "finish_generation_ui"):
+                        app.finish_generation_ui("Anulowano")
+                    else:
+                        _ui_finish(app, "Anulowano")
+                    return
                 if failures:
+                    if hasattr(app, "finish_generation_ui"):
+                        app.finish_generation_ui("Błąd")
+                    else:
+                        _ui_finish(app, "Błąd")
                     failed_rows = [idx for idx, _name, _err in failures if idx >= 0]
                     if failed_rows:
                         rows_text = ", ".join(str(idx + 1) for idx in failed_rows)
@@ -553,6 +737,10 @@ def generate_pds(app):
                         message = "Wystąpił błąd podczas generowania plików PDF. Sprawdź logi."
                     messagebox.showerror("Błąd", message)
                 else:
+                    if hasattr(app, "finish_generation_ui"):
+                        app.finish_generation_ui("Zakończono")
+                    else:
+                        _ui_finish(app, "Zakończono")
                     messagebox.showinfo(
                         "Zakończono", f"Pliki zapisane w {payload['output_dir']}"
                     )
@@ -560,3 +748,4 @@ def generate_pds(app):
             app.after(0, finish)
 
     threading.Thread(target=worker, args=(worker_payload,), daemon=True).start()
+    return True

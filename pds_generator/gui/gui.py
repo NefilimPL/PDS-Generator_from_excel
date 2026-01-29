@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import webbrowser
+import threading
 
 import pandas as pd
 import tkinter as tk
@@ -92,6 +93,9 @@ class PDSGeneratorGUI(tk.Tk):
         self.repo_owner = None
         self.repo_name = None
         self.blink_state = False
+        self.generation_in_progress = False
+        self.cancel_event = None
+        self.tracking_excluded = set()
         self.setup_ui()
         self.bind_all("<Control-z>", self.undo)
         self.bind_all("<Control-x>", self.redo)
@@ -372,6 +376,74 @@ class PDSGeneratorGUI(tk.Tk):
         else:
             self.remove_element(name)
         self.push_history()
+
+    def _collect_dynamic_fields(self):
+        dynamic_fields = set()
+
+        def collect(name):
+            if isinstance(name, str) and ":" in name:
+                dynamic_fields.add(name)
+
+        for name in self.elements.keys():
+            collect(name)
+        for group in self.groups.values():
+            for fname in group.fields:
+                collect(fname)
+            for src, tgt in group.conditions:
+                collect(src)
+                collect(tgt)
+        for src, tgt in self.conditions:
+            collect(src)
+            collect(tgt)
+        return dynamic_fields
+
+    def open_tracking_settings(self):
+        dynamic_fields = self._collect_dynamic_fields()
+        if not dynamic_fields:
+            messagebox.showinfo(
+                "Śledzenie zmian",
+                "Brak pól z Excela w szablonie. Najpierw dodaj kolumny.",
+            )
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Śledzenie zmian")
+        ttk.Label(
+            win,
+            text="Zaznaczone pola będą brane pod uwagę przy wykrywaniu zmian.",
+        ).pack(padx=10, pady=5)
+
+        frame = ttk.Frame(win)
+        frame.pack(fill="both", expand=True, padx=10, pady=5)
+        listbox = tk.Listbox(frame, selectmode="multiple", height=12)
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=listbox.yview)
+        listbox.configure(yscrollcommand=scroll.set)
+        listbox.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        fields = sorted(dynamic_fields)
+        for idx, field in enumerate(fields):
+            listbox.insert("end", field)
+            if field not in self.tracking_excluded:
+                listbox.selection_set(idx)
+
+        btns = ttk.Frame(win)
+        btns.pack(fill="x", padx=10, pady=5)
+
+        def select_all():
+            listbox.selection_set(0, "end")
+
+        def clear_all():
+            listbox.selection_clear(0, "end")
+
+        def save():
+            selected = {listbox.get(i) for i in listbox.curselection()}
+            self.tracking_excluded = set(fields) - selected
+            win.destroy()
+
+        ttk.Button(btns, text="Zaznacz wszystkie", command=select_all).pack(side="left")
+        ttk.Button(btns, text="Wyczyść", command=clear_all).pack(side="left", padx=5)
+        ttk.Button(btns, text="Zapisz", command=save).pack(side="right")
 
     def toggle_static(self, name, state):
         if state:
@@ -698,7 +770,99 @@ class PDSGeneratorGUI(tk.Tk):
         load_config_func(self, startup=startup, path=path)
     # ------------------------------------------------------------------
     def generate_pds(self):
-        export_pds(self)
+        if self.generation_in_progress:
+            return
+        self._start_generation_ui()
+        try:
+            started = export_pds(self)
+        except Exception:
+            self.finish_generation_ui(status="Błąd")
+            raise
+        if not started and self.generation_in_progress:
+            self.finish_generation_ui(status="Gotowe")
+
+    def cancel_generation(self):
+        if not self.generation_in_progress:
+            return
+        if self.cancel_event:
+            self.cancel_event.set()
+        self.set_status("Anulowanie...")
+        if hasattr(self, "cancel_btn") and self.cancel_btn:
+            self.cancel_btn.state(["disabled"])
+
+    def ui_call(self, func, *args, **kwargs):
+        self.after(0, lambda: func(*args, **kwargs))
+
+    def set_status(self, text):
+        if hasattr(self, "status_var") and self.status_var:
+            self.status_var.set(f"Akcja: {text}")
+
+    def set_counts(self, total_rows=None, total_tasks=None, processed=None, skipped=None):
+        if total_rows is not None and hasattr(self, "rows_var") and self.rows_var:
+            self.rows_var.set(f"Wykryto wierszy: {total_rows}")
+        if total_tasks is not None and hasattr(self, "progress_info_var") and self.progress_info_var:
+            if processed is None:
+                processed = 0
+            self.progress_info_var.set(
+                f"Przetworzono plików: {processed}/{total_tasks}"
+            )
+        if skipped is not None and hasattr(self, "skip_var") and self.skip_var:
+            self.skip_var.set(f"Pomijam: {skipped}")
+
+    def set_progress_indeterminate(self, active=True):
+        if not hasattr(self, "progress") or not self.progress:
+            return
+        if active:
+            self.progress.config(mode="indeterminate")
+            self.progress.start(10)
+        else:
+            self.progress.stop()
+            self.progress.config(mode="determinate")
+
+    def finish_generation_ui(self, status="Zakończono"):
+        self.generation_in_progress = False
+        self.cancel_event = None
+        if hasattr(self, "cancel_btn") and self.cancel_btn:
+            self.cancel_btn.state(["!disabled"])
+        self._toggle_generation_buttons(False)
+        self.set_progress_indeterminate(False)
+        if hasattr(self, "progress") and self.progress:
+            self.progress.config(value=0)
+        if hasattr(self, "time_label") and self.time_label:
+            self.time_label.config(text=status)
+        self.set_status(status)
+
+    def _start_generation_ui(self):
+        self.generation_in_progress = True
+        self.cancel_event = threading.Event()
+        self._toggle_generation_buttons(True)
+        if hasattr(self, "cancel_btn") and self.cancel_btn:
+            self.cancel_btn.state(["!disabled"])
+        self.set_status("Przygotowanie danych...")
+        self.set_progress_indeterminate(True)
+        if hasattr(self, "rows_var") and self.rows_var:
+            self.rows_var.set("")
+        if hasattr(self, "skip_var") and self.skip_var:
+            self.skip_var.set("")
+        if hasattr(self, "progress_info_var") and self.progress_info_var:
+            self.progress_info_var.set("")
+        if hasattr(self, "time_label") and self.time_label:
+            self.time_label.config(text="")
+        if hasattr(self, "progress") and self.progress:
+            self.progress.config(value=0)
+        self.update_idletasks()
+
+    def _toggle_generation_buttons(self, running):
+        if not hasattr(self, "generate_btn") or not hasattr(self, "cancel_btn"):
+            return
+        if running:
+            self.generate_btn.pack_forget()
+            if not self.cancel_btn.winfo_ismapped():
+                self.cancel_btn.pack(fill="x")
+        else:
+            self.cancel_btn.pack_forget()
+            if not self.generate_btn.winfo_ismapped():
+                self.generate_btn.pack(fill="x")
 
     # ------------------------------------------------------------------
     def resize_canvas(self, event=None):

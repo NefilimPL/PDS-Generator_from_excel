@@ -50,6 +50,7 @@ def save_config(app):
         "static_fields": {name: var.get() for name, var in app.static_entries.items()},
         "conditions": app.conditions,
         "groups": [g.to_dict() for g in app.groups.values()],
+        "tracking_excluded": sorted(getattr(app, "tracking_excluded", set())),
         "ignore_updates": getattr(app, "ignore_updates", False),
         "update_test": getattr(app, "update_test", False),
     }
@@ -142,6 +143,7 @@ def load_config(app, startup=False, path=None):
 
     app.ignore_updates = config.get("ignore_updates", False)
     app.update_test = config.get("update_test", False)
+    app.tracking_excluded = set(config.get("tracking_excluded", []))
     excel_cfg = config.get("excel_path")
     if startup and excel_cfg and os.path.exists(excel_cfg):
         if not getattr(app, "excel_lock_path", None):
