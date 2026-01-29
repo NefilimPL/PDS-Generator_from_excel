@@ -17,6 +17,8 @@ from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from tkinter import messagebox
 
+from .excel_tracking import TRACKING_COLUMN, update_tracking_column
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,6 +33,25 @@ def sanitize_filename(name: str) -> str:
     cleaned = re.sub(r"[^\w\s-]", "", str(name))
     cleaned = re.sub(r"\s+", "_", cleaned).strip("_")
     return cleaned
+
+
+def _first_data_column(df):
+    for col in df.columns:
+        if col != TRACKING_COLUMN:
+            return col
+    return None
+
+
+def _get_filename_value(df, name_column, idx):
+    if df is None or df.empty or not name_column:
+        return ""
+    if idx >= len(df):
+        return ""
+    row = df.iloc[idx]
+    value = row.get(name_column, "")
+    if pd.isna(value):
+        return ""
+    return value
 
 
 def draw_pdf_element(app, c, element, value, x, y):
@@ -343,6 +364,21 @@ def generate_pds(app):
         messagebox.showinfo("Info", "Brak wierszy w pliku Excel")
         return
 
+    changed_rows = None
+    try:
+        changed_rows = update_tracking_column(
+            app.excel_path, app.dataframes, total_rows
+        )
+    except Exception:
+        logger.exception("Failed to update tracking column")
+        messagebox.showwarning(
+            "Uwaga",
+            "Nie udało się zaktualizować kolumny kontrolnej w Excelu "
+            "(sprawdź, czy plik nie jest otwarty). "
+            "Pliki PDF zostaną wygenerowane ponownie.",
+        )
+        changed_rows = None
+
     output_dir = os.path.join(os.path.dirname(app.excel_path), "PDS")
     os.makedirs(output_dir, exist_ok=True)
 
@@ -375,16 +411,20 @@ def generate_pds(app):
     sheet_fields = {}
     for field in dynamic_fields:
         sheet, col = field.split(":", 1)
+        if col == TRACKING_COLUMN:
+            continue
         sheet_fields.setdefault(sheet, set()).add(col)
 
-    sheet_columns = {sheet: set(df.columns) for sheet, df in app.dataframes.items()}
+    sheet_columns = {
+        sheet: {col for col in df.columns if col != TRACKING_COLUMN}
+        for sheet, df in app.dataframes.items()
+    }
 
+    name_column = _first_data_column(first_df)
     filename_counters = {}
     tasks = []
     for idx in range(total_rows):
-        first_val = first_df.iloc[idx, 0] if first_df.shape[1] else ""
-        if pd.isna(first_val):
-            first_val = ""
+        first_val = _get_filename_value(first_df, name_column, idx)
         filename = sanitize_filename(first_val) or f"pds_{idx + 1}"
         count = filename_counters.get(filename, 0)
         filename_counters[filename] = count + 1
@@ -393,6 +433,8 @@ def generate_pds(app):
         else:
             unique_name = filename
         pdf_path = os.path.join(output_dir, f"{unique_name}.pdf")
+        if os.path.exists(pdf_path) and changed_rows is not None and idx not in changed_rows:
+            continue
         row_values = {}
         for sheet, columns in sheet_fields.items():
             df = app.dataframes.get(sheet)
@@ -419,6 +461,12 @@ def generate_pds(app):
             }
         )
 
+    if not tasks:
+        messagebox.showinfo(
+            "Info", "Brak zmian - wszystkie pliki PDF są aktualne."
+        )
+        return
+
     worker_payload = {
         "static_entries": static_entries,
         "elements": element_specs,
@@ -431,7 +479,7 @@ def generate_pds(app):
         "excel_dir": os.path.dirname(app.excel_path),
         "tasks": tasks,
         "output_dir": output_dir,
-        "total_rows": total_rows,
+        "total_rows": len(tasks),
     }
 
     def worker(payload):

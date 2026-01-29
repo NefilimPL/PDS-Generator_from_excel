@@ -10,6 +10,7 @@ from tkinter import messagebox
 logger = logging.getLogger(__name__)
 
 _STALE_LOCK_AGE = 48 * 60 * 60  # 48 hours
+LOCKS_ENABLED = False
 
 
 def _lock_path(resource_path):
@@ -143,6 +144,8 @@ def _remove_lock(lock):
 
 
 def acquire_lock(resource_path, display_name=None):
+    if not LOCKS_ENABLED:
+        return _lock_path(resource_path)
     lock = _lock_path(resource_path)
     label = display_name or os.path.basename(resource_path) or resource_path
     payload = {
@@ -189,6 +192,8 @@ def _handle_existing_lock(lock, label):
 
 
 def release_lock(lock_path):
+    if not LOCKS_ENABLED:
+        return
     if not lock_path:
         return
     _remove_lock(lock_path)
