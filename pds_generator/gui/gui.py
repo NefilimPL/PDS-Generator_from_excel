@@ -37,6 +37,18 @@ from ..github_utils import (
 
 logger = logging.getLogger(__name__)
 
+IMAGE_EXTENSIONS = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".webp",
+    ".ico",
+)
+
 class PDSGeneratorGUI(tk.Tk):
     PAGE_SIZES = {
         "A4": (595, 842),  # 210 x 297 mm in points
@@ -73,6 +85,9 @@ class PDSGeneratorGUI(tk.Tk):
         self.conditions = []
         self.conditions_win = None
         self.image_cache = {}
+        self.image_fields = set()
+        self.image_vars = {}
+        self.image_dirs = []
         self.excel_lock_path = None
         self.config_lock_path = None
         self.selected_elements = []
@@ -282,7 +297,10 @@ class PDSGeneratorGUI(tk.Tk):
         # Clear previous
         for child in self.columns_frame.winfo_children():
             child.destroy()
+        old_column_keys = list(self.columns_vars.keys())
         self.columns_vars.clear()
+        for key in old_column_keys:
+            self.image_vars.pop(key, None)
 
         for sheet, df in self.dataframes.items():
             lf = ttk.LabelFrame(self.columns_frame, text=sheet)
@@ -290,40 +308,107 @@ class PDSGeneratorGUI(tk.Tk):
             for col in df.columns:
                 if is_tracking_column(col):
                     continue
+                name = f"{sheet}:{col}"
+                row = ttk.Frame(lf)
+                row.pack(fill="x", padx=2, pady=1)
                 var = tk.BooleanVar()
                 chk = ttk.Checkbutton(
-                    lf,
+                    row,
                     text=col,
                     variable=var,
                     command=lambda s=sheet, c=col, v=var: self.toggle_column(f"{s}:{c}", v.get()),
                 )
-                chk.pack(anchor="w")
-                self.columns_vars[f"{sheet}:{col}"] = var
+                chk.pack(side="left", anchor="w")
+                img_var = tk.BooleanVar(value=name in self.image_fields)
+                img_chk = ttk.Checkbutton(
+                    row,
+                    text="IMG",
+                    variable=img_var,
+                    command=lambda n=name, v=img_var: self.set_field_image(n, v.get()),
+                )
+                img_chk.pack(side="right")
+                self.columns_vars[name] = var
+                self.image_vars[name] = img_var
 
     # ------------------------------------------------------------------
     def find_local_image(self, filename):
         """Search for an image file relative to the Excel file directory."""
-        if not filename or not getattr(self, "excel_path", ""):
+        if not filename:
             return None
-        key = filename.lower()
+        if not getattr(self, "excel_path", "") and not getattr(self, "image_dirs", None):
+            return None
+        name = str(filename).strip()
+        if not name:
+            return None
+        key = name.lower()
         if key in self.image_cache:
             return self.image_cache[key]
         base_dir = os.path.dirname(self.excel_path)
-        if os.path.isabs(filename):
-            path = filename if os.path.exists(filename) else None
+        roots = [base_dir] + list(getattr(self, "image_dirs", []) or [])
+        seen = set()
+        search_roots = []
+        for root in roots:
+            if not root:
+                continue
+            root = os.path.abspath(root)
+            if root not in seen:
+                seen.add(root)
+                search_roots.append(root)
+
+        stem, _ext = os.path.splitext(os.path.basename(name))
+        stem_lower = stem.lower()
+
+        path = None
+        if os.path.isabs(name):
+            if os.path.isfile(name):
+                path = name
+            elif stem:
+                abs_dir = os.path.dirname(name)
+                for ext in IMAGE_EXTENSIONS:
+                    candidate = os.path.join(abs_dir, stem + ext)
+                    if os.path.isfile(candidate):
+                        path = candidate
+                        break
         else:
-            candidate = os.path.join(base_dir, filename)
-            if os.path.exists(candidate):
-                path = candidate
-            else:
-                path = None
-                for root, _, files in os.walk(base_dir):
-                    for f in files:
-                        if f.lower() == key:
-                            path = os.path.join(root, f)
+            for root in search_roots:
+                candidate = os.path.join(root, name)
+                if os.path.isfile(candidate):
+                    path = candidate
+                    break
+                if stem:
+                    rel_dir = os.path.dirname(name)
+                    if rel_dir:
+                        for ext in IMAGE_EXTENSIONS:
+                            candidate = os.path.join(root, rel_dir, stem + ext)
+                            if os.path.isfile(candidate):
+                                path = candidate
+                                break
+                        if path:
+                            break
+                    for ext in IMAGE_EXTENSIONS:
+                        candidate = os.path.join(root, stem + ext)
+                        if os.path.isfile(candidate):
+                            path = candidate
                             break
                     if path:
                         break
+        if path is None and stem:
+            target_name = os.path.basename(name).lower()
+            for root in search_roots:
+                for current_root, _dirs, files in os.walk(root):
+                    for f in files:
+                        f_lower = f.lower()
+                        if f_lower == target_name:
+                            path = os.path.join(current_root, f)
+                            break
+                        file_stem, file_ext = os.path.splitext(f_lower)
+                        if file_stem == stem_lower and file_ext in IMAGE_EXTENSIONS:
+                            path = os.path.join(current_root, f)
+                            break
+                    if path:
+                        break
+                if path:
+                    break
         self.image_cache[key] = path
         return path
 
@@ -373,11 +458,85 @@ class PDSGeneratorGUI(tk.Tk):
         if state:
             if name not in self.elements:
                 element = DraggableElement(self, self.canvas, name, name)
+                element.is_image = name in self.image_fields
                 self.elements[name] = element
                 self.restack_elements()
         else:
             self.remove_element(name)
         self.push_history()
+
+    def set_field_image(self, name, state):
+        if state:
+            self.image_fields.add(name)
+        else:
+            self.image_fields.discard(name)
+        var = self.image_vars.get(name)
+        if var is not None and var.get() != state:
+            var.set(state)
+        element = self.elements.get(name)
+        if element:
+            element.is_image = state
+            value = self._resolve_preview_value(name)
+            element.update_value(value)
+        self.image_cache = {}
+        self.push_history()
+
+    def _resolve_preview_value(self, name):
+        if ":" in name:
+            if not self.dataframes:
+                return ""
+            try:
+                idx = int(self.row_var.get()) - 1
+            except (ValueError, AttributeError):
+                idx = 0
+            sheet, col = name.split(":", 1)
+            df = self.dataframes.get(sheet)
+            value = None
+            if df is not None and 0 <= idx < len(df):
+                value = df.iloc[idx].get(col)
+                value = round_numeric_value(value)
+            return value
+        if name in getattr(self, "static_entries", {}):
+            return self.static_entries[name].get()
+        return name
+
+    def apply_image_field_state(self):
+        for name, var in self.image_vars.items():
+            var.set(name in self.image_fields)
+        for name, element in self.elements.items():
+            element.is_image = name in self.image_fields
+
+    def add_image_dir(self):
+        path = filedialog.askdirectory()
+        if not path:
+            return
+        path = os.path.abspath(path)
+        if path in self.image_dirs:
+            return
+        self.image_dirs.append(path)
+        self.refresh_image_dir_list()
+        self.image_cache = {}
+        self.push_history()
+
+    def remove_image_dir(self):
+        if not hasattr(self, "image_dirs_list"):
+            return
+        selection = list(self.image_dirs_list.curselection())
+        if not selection:
+            return
+        for idx in sorted(selection, reverse=True):
+            if 0 <= idx < len(self.image_dirs):
+                self.image_dirs.pop(idx)
+        self.refresh_image_dir_list()
+        self.image_cache = {}
+        self.push_history()
+
+    def refresh_image_dir_list(self):
+        if not hasattr(self, "image_dirs_list"):
+            return
+        self.image_dirs_list.delete(0, "end")
+        for path in self.image_dirs:
+            self.image_dirs_list.insert("end", path)
 
     def _collect_dynamic_fields(self):
         dynamic_fields = set()
@@ -452,9 +611,12 @@ class PDSGeneratorGUI(tk.Tk):
             value = self.static_entries[name].get()
             if name not in self.elements:
                 element = DraggableElement(self, self.canvas, name, value)
+                element.is_image = name in self.image_fields
+                element.update_value(value)
                 self.elements[name] = element
                 self.restack_elements()
             else:
+                self.elements[name].is_image = name in self.image_fields
                 self.elements[name].update_value(value)
         else:
             self.remove_element(name)
@@ -490,11 +652,20 @@ class PDSGeneratorGUI(tk.Tk):
         entry = ttk.Entry(row, textvariable=entry_var, width=15)
         entry.pack(side="left", padx=5)
         entry_var.trace_add("write", lambda *a, f=name: self.update_static_value(f))
+        img_var = tk.BooleanVar(value=name in self.image_fields)
+        img_chk = ttk.Checkbutton(
+            row,
+            text="IMG",
+            variable=img_var,
+            command=lambda n=name, v=img_var: self.set_field_image(n, v.get()),
+        )
+        img_chk.pack(side="left", padx=2)
         del_btn = ttk.Button(row, text="X", width=2, command=lambda n=name, r=row: self.remove_static_field(n, r))
         del_btn.pack(side="left")
         self.static_vars[name] = var
         self.static_entries[name] = entry_var
         self.static_rows[name] = row
+        self.image_vars[name] = img_var
 
     def add_static_field(self):
         idx = 1
@@ -510,6 +681,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.static_vars.pop(name, None)
         self.static_entries.pop(name, None)
         self.static_rows.pop(name, None)
+        self.image_vars.pop(name, None)
         self.push_history()
 
     def remove_element(self, name):
@@ -555,6 +727,8 @@ class PDSGeneratorGUI(tk.Tk):
         state = {
             "elements": [el.to_dict() for el in self.elements.values()],
             "groups": [g.to_dict() for g in self.groups.values()],
+            "image_fields": sorted(self.image_fields),
+            "image_dirs": list(self.image_dirs),
         }
         self.history.append(state)
         if len(self.history) > 50:
@@ -562,6 +736,9 @@ class PDSGeneratorGUI(tk.Tk):
         self.future.clear()
 
     def restore_state(self, state):
+        self.image_fields = set(state.get("image_fields", []))
+        self.image_dirs = list(state.get("image_dirs", []))
+        self.refresh_image_dir_list()
         target = {conf["name"]: conf for conf in state.get("elements", [])}
         # remove elements not in target
         for name in list(self.elements.keys()):
@@ -584,6 +761,9 @@ class PDSGeneratorGUI(tk.Tk):
             el.align = conf.get("align", "left")
             el.auto_font = conf.get("auto_font", True)
             el.layer = conf.get("layer", el.layer)
+            if conf.get("is_image"):
+                self.image_fields.add(name)
+            el.is_image = name in self.image_fields
             el.sync_canvas()
 
         self.restack_elements()
@@ -628,6 +808,7 @@ class PDSGeneratorGUI(tk.Tk):
             self.groups_list.delete(0, "end")
             for name in self.groups:
                 self.groups_list.insert("end", name)
+        self.apply_image_field_state()
 
     def undo(self, event=None):
         if len(self.history) < 2:

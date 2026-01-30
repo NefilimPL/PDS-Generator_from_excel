@@ -111,7 +111,9 @@ class HeadlessApp:
         self.scale = 1.0
         self.conditions = config.get("conditions", [])
         self.tracking_excluded = set(config.get("tracking_excluded", []))
-        self.elements = _build_elements(config.get("elements", []))
+        self.image_fields = set(config.get("image_fields", []))
+        self.image_dirs = list(config.get("image_dirs", []))
+        self.elements = _build_elements(config.get("elements", []), self.image_fields)
         self.groups = _build_groups(config.get("groups", []))
         self.static_entries = {
             name: _DummyVar(value)
@@ -156,23 +158,84 @@ class HeadlessApp:
         self._done_event.wait()
 
     def find_local_image(self, filename):
-        if not filename or not self.excel_path:
+        if not filename:
             return None
-        key = str(filename).lower()
-        base_dir = os.path.dirname(self.excel_path)
-        if os.path.isabs(filename):
-            return filename if os.path.exists(filename) else None
-        candidate = os.path.join(base_dir, str(filename))
-        if os.path.exists(candidate):
-            return candidate
-        for root, _dirs, files in os.walk(base_dir):
-            for current in files:
-                if current.lower() == key:
-                    return os.path.join(root, current)
-        return None
+        if not self.excel_path and not self.image_dirs:
+            return None
+        name = str(filename).strip()
+        if not name:
+            return None
+        key = name.lower()
+        base_dir = os.path.dirname(self.excel_path) if self.excel_path else ""
+        roots = [base_dir] + list(self.image_dirs or [])
+        seen = set()
+        search_roots = []
+        for root in roots:
+            if not root:
+                continue
+            root = os.path.abspath(root)
+            if root not in seen:
+                seen.add(root)
+                search_roots.append(root)
+
+        stem, _ext = os.path.splitext(os.path.basename(name))
+        stem_lower = stem.lower()
+
+        path = None
+        if os.path.isabs(name):
+            if os.path.isfile(name):
+                path = name
+            elif stem:
+                abs_dir = os.path.dirname(name)
+                for ext in pdf_export.IMAGE_EXTENSIONS:
+                    candidate = os.path.join(abs_dir, stem + ext)
+                    if os.path.isfile(candidate):
+                        path = candidate
+                        break
+        else:
+            for root in search_roots:
+                candidate = os.path.join(root, name)
+                if os.path.isfile(candidate):
+                    path = candidate
+                    break
+                if stem:
+                    rel_dir = os.path.dirname(name)
+                    if rel_dir:
+                        for ext in pdf_export.IMAGE_EXTENSIONS:
+                            candidate = os.path.join(root, rel_dir, stem + ext)
+                            if os.path.isfile(candidate):
+                                path = candidate
+                                break
+                        if path:
+                            break
+                    for ext in pdf_export.IMAGE_EXTENSIONS:
+                        candidate = os.path.join(root, stem + ext)
+                        if os.path.isfile(candidate):
+                            path = candidate
+                            break
+                    if path:
+                        break
+        if path is None and stem:
+            target_name = os.path.basename(name).lower()
+            for root in search_roots:
+                for current_root, _dirs, files in os.walk(root):
+                    for f in files:
+                        f_lower = f.lower()
+                        if f_lower == target_name:
+                            path = os.path.join(current_root, f)
+                            break
+                        file_stem, file_ext = os.path.splitext(f_lower)
+                        if file_stem == stem_lower and file_ext in pdf_export.IMAGE_EXTENSIONS:
+                            path = os.path.join(current_root, f)
+                            break
+                    if path:
+                        break
+                if path:
+                    break
+        return path
 
 
-def _build_elements(elements_conf):
+def _build_elements(elements_conf, image_fields):
     elements = {}
     for el in elements_conf:
         name = el.get("name")
@@ -192,6 +255,7 @@ def _build_elements(elements_conf):
             align=el.get("align", "left"),
             auto_font=el.get("auto_font", True),
             layer=el.get("layer", 1),
+            is_image=el.get("is_image", name in image_fields),
         )
     return elements
 
