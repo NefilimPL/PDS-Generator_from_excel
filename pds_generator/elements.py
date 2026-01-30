@@ -19,6 +19,7 @@ class DraggableElement:
         self.canvas = canvas
         self.name = name
         self.text = text
+        self.is_image = name in getattr(parent, "image_fields", set())
         self.x = canvas.winfo_width() // 2 - 50
         self.y = canvas.winfo_height() // 2 - 20
         self.width = 100
@@ -200,6 +201,7 @@ class DraggableElement:
             "bg_visible": self.bg_visible,
             "align": self.align,
             "layer": self.layer,
+            "is_image": self.is_image,
         }
 
     def sync_canvas(self):
@@ -244,35 +246,36 @@ class DraggableElement:
         except TypeError:
             if value is None:
                 value = ""
-        if isinstance(value, str) and value.lower().startswith("http"):
-            try:
-                resp = requests.get(value, timeout=5)
-                self.raw_image = Image.open(BytesIO(resp.content))
-                img = self.raw_image.resize((int(self.width), int(self.height)), Image.LANCZOS)
-                self.image_obj = ImageTk.PhotoImage(img)
-                self.image_id = self.canvas.create_image(
-                    self.x,
-                    self.y,
-                    anchor="nw",
-                    image=self.image_obj,
-                )
-                for tag in (self.image_id,):
-                    self.canvas.tag_bind(tag, "<ButtonPress-1>", self.start_move)
-                    self.canvas.tag_bind(tag, "<B1-Motion>", self.moving)
-                    self.canvas.tag_bind(tag, "<ButtonRelease-1>", self.stop_move)
-                    self.canvas.tag_bind(tag, "<Button-3>", self.show_menu)
-                self.canvas.tag_raise(self.rect)
-                self.canvas.tag_raise(self.handle)
-                self.canvas.itemconfig(self.rect, fill="")
-                self.canvas.itemconfig(self.label, text="", state="hidden")
-                self.text = str(value)
-                if hasattr(self.parent, "restack_elements"):
-                    self.parent.restack_elements()
-                return
-            except (requests.RequestException, OSError, UnidentifiedImageError) as exc:
-                logger.exception("Failed to load remote image %s", value)
-        if isinstance(value, str):
-            local_path = self.parent.find_local_image(value)
+        value_str = value if isinstance(value, str) else str(value)
+        if self.is_image and value_str:
+            if value_str.lower().startswith("http"):
+                try:
+                    resp = requests.get(value_str, timeout=5)
+                    self.raw_image = Image.open(BytesIO(resp.content))
+                    img = self.raw_image.resize((int(self.width), int(self.height)), Image.LANCZOS)
+                    self.image_obj = ImageTk.PhotoImage(img)
+                    self.image_id = self.canvas.create_image(
+                        self.x,
+                        self.y,
+                        anchor="nw",
+                        image=self.image_obj,
+                    )
+                    for tag in (self.image_id,):
+                        self.canvas.tag_bind(tag, "<ButtonPress-1>", self.start_move)
+                        self.canvas.tag_bind(tag, "<B1-Motion>", self.moving)
+                        self.canvas.tag_bind(tag, "<ButtonRelease-1>", self.stop_move)
+                        self.canvas.tag_bind(tag, "<Button-3>", self.show_menu)
+                    self.canvas.tag_raise(self.rect)
+                    self.canvas.tag_raise(self.handle)
+                    self.canvas.itemconfig(self.rect, fill="")
+                    self.canvas.itemconfig(self.label, text="", state="hidden")
+                    self.text = str(value_str)
+                    if hasattr(self.parent, "restack_elements"):
+                        self.parent.restack_elements()
+                    return
+                except (requests.RequestException, OSError, UnidentifiedImageError) as exc:
+                    logger.exception("Failed to load remote image %s", value_str)
+            local_path = self.parent.find_local_image(value_str)
             if local_path:
                 try:
                     self.raw_image = Image.open(local_path)
@@ -293,7 +296,7 @@ class DraggableElement:
                     self.canvas.tag_raise(self.handle)
                     self.canvas.itemconfig(self.rect, fill="")
                     self.canvas.itemconfig(self.label, text="", state="hidden")
-                    self.text = str(value)
+                    self.text = str(value_str)
                     if hasattr(self.parent, "restack_elements"):
                         self.parent.restack_elements()
                     return

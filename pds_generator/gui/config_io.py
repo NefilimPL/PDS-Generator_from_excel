@@ -48,6 +48,8 @@ def save_config(app):
         "page_height": app.page_height,
         "elements": [el.to_dict() for el in app.elements.values()],
         "static_fields": {name: var.get() for name, var in app.static_entries.items()},
+        "image_fields": sorted(getattr(app, "image_fields", set())),
+        "image_dirs": list(getattr(app, "image_dirs", [])),
         "conditions": app.conditions,
         "groups": [g.to_dict() for g in app.groups.values()],
         "tracking_excluded": sorted(getattr(app, "tracking_excluded", set())),
@@ -144,6 +146,10 @@ def load_config(app, startup=False, path=None):
     app.ignore_updates = config.get("ignore_updates", False)
     app.update_test = config.get("update_test", False)
     app.tracking_excluded = set(config.get("tracking_excluded", []))
+    app.image_fields = set(config.get("image_fields", []))
+    app.image_dirs = list(config.get("image_dirs", []))
+    if hasattr(app, "refresh_image_dir_list"):
+        app.refresh_image_dir_list()
     excel_cfg = config.get("excel_path")
     if startup and excel_cfg and os.path.exists(excel_cfg):
         if not getattr(app, "excel_lock_path", None):
@@ -195,6 +201,9 @@ def load_config(app, startup=False, path=None):
             element.align = elconf.get("align", element.align)
             element.auto_font = elconf.get("auto_font", element.auto_font)
             element.layer = elconf.get("layer", element.layer)
+            if elconf.get("is_image"):
+                app.image_fields.add(name)
+            element.is_image = name in app.image_fields
             element.sync_canvas()
             app.elements[name] = element
             if name in app.columns_vars:
@@ -232,4 +241,6 @@ def load_config(app, startup=False, path=None):
         if hasattr(app, "groups_list"):
             app.groups_list.insert("end", group.name)
     app.restack_elements()
+    if hasattr(app, "apply_image_field_state"):
+        app.apply_image_field_state()
     app.push_history()

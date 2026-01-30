@@ -123,6 +123,19 @@ def setup_ui(app):
     )
     app.tracking_btn.pack(fill="x", pady=(5, 10))
 
+    # Image directories
+    ttk.Label(right_frame, text="Foldery obrazów:").pack(anchor="w")
+    app.image_dirs_list = tk.Listbox(right_frame, height=3)
+    app.image_dirs_list.pack(fill="x", pady=(2, 2))
+    img_btns = ttk.Frame(right_frame)
+    img_btns.pack(fill="x", pady=(0, 10))
+    ttk.Button(img_btns, text="Dodaj folder", command=app.add_image_dir).pack(
+        side="left", fill="x", expand=True
+    )
+    ttk.Button(img_btns, text="Usuń zaznaczone", command=app.remove_image_dir).pack(
+        side="left", fill="x", expand=True, padx=5
+    )
+
     # Static field checkboxes
     ttk.Label(right_frame, text="Pola statyczne:").pack(anchor="w", pady=(10, 0))
     app.static_frame = ttk.Frame(right_frame)

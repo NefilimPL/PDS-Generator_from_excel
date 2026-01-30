@@ -27,6 +27,18 @@ from .excel_tracking import (
 
 logger = logging.getLogger(__name__)
 
+IMAGE_EXTENSIONS = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".webp",
+    ".ico",
+)
+
 
 def _ui_call(app, func, *args, **kwargs):
     try:
@@ -103,22 +115,23 @@ def _get_filename_value(df, name_column, idx):
 
 
 def draw_pdf_element(app, c, element, value, x, y):
-    if isinstance(value, str) and value.lower().startswith("http"):
-        try:
-            resp = requests.get(value, timeout=5)
-            img = Image.open(BytesIO(resp.content))
-            c.drawImage(
-                ImageReader(img),
-                x,
-                y,
-                width=element.width / app.scale,
-                height=element.height / app.scale,
-            )
-            return
-        except (requests.RequestException, OSError):
-            logger.exception("Failed to load remote image %s", value)
-    if isinstance(value, str):
-        local_path = app.find_local_image(value)
+    value_str = value if isinstance(value, str) else str(value)
+    if getattr(element, "is_image", False) and value_str:
+        if value_str.lower().startswith("http"):
+            try:
+                resp = requests.get(value_str, timeout=5)
+                img = Image.open(BytesIO(resp.content))
+                c.drawImage(
+                    ImageReader(img),
+                    x,
+                    y,
+                    width=element.width / app.scale,
+                    height=element.height / app.scale,
+                )
+                return
+            except (requests.RequestException, OSError):
+                logger.exception("Failed to load remote image %s", value_str)
+        local_path = app.find_local_image(value_str)
         if local_path:
             try:
                 img = Image.open(local_path)
@@ -170,32 +183,89 @@ _render_proxy = None
 
 
 class RenderAppProxy:
-    def __init__(self, scale, excel_dir):
+    def __init__(self, scale, excel_dir, image_dirs=None):
         self.scale = scale
         self.excel_dir = excel_dir or ""
+        self.image_dirs = list(image_dirs or [])
         self._image_cache = {}
 
     def find_local_image(self, filename):
-        if not filename or not self.excel_dir:
+        if not filename:
             return None
-        key = str(filename).lower()
+        if not self.excel_dir and not self.image_dirs:
+            return None
+        name = str(filename).strip()
+        if not name:
+            return None
+        key = name.lower()
         if key in self._image_cache:
             return self._image_cache[key]
-        if os.path.isabs(filename):
-            path = filename if os.path.exists(filename) else None
+
+        roots = [self.excel_dir] + list(self.image_dirs or [])
+        seen = set()
+        search_roots = []
+        for root in roots:
+            if not root:
+                continue
+            root = os.path.abspath(root)
+            if root not in seen:
+                seen.add(root)
+                search_roots.append(root)
+
+        stem, _ext = os.path.splitext(os.path.basename(name))
+        stem_lower = stem.lower()
+
+        path = None
+        if os.path.isabs(name):
+            if os.path.isfile(name):
+                path = name
+            elif stem:
+                abs_dir = os.path.dirname(name)
+                for ext in IMAGE_EXTENSIONS:
+                    candidate = os.path.join(abs_dir, stem + ext)
+                    if os.path.isfile(candidate):
+                        path = candidate
+                        break
         else:
-            candidate = os.path.join(self.excel_dir, str(filename))
-            if os.path.exists(candidate):
-                path = candidate
-            else:
-                path = None
-                for root, _dirs, files in os.walk(self.excel_dir):
-                    for current in files:
-                        if current.lower() == key:
-                            path = os.path.join(root, current)
+            for root in search_roots:
+                candidate = os.path.join(root, name)
+                if os.path.isfile(candidate):
+                    path = candidate
+                    break
+                if stem:
+                    rel_dir = os.path.dirname(name)
+                    if rel_dir:
+                        for ext in IMAGE_EXTENSIONS:
+                            candidate = os.path.join(root, rel_dir, stem + ext)
+                            if os.path.isfile(candidate):
+                                path = candidate
+                                break
+                        if path:
+                            break
+                    for ext in IMAGE_EXTENSIONS:
+                        candidate = os.path.join(root, stem + ext)
+                        if os.path.isfile(candidate):
+                            path = candidate
                             break
                     if path:
                         break
+        if path is None and stem:
+            target_name = os.path.basename(name).lower()
+            for root in search_roots:
+                for current_root, _dirs, files in os.walk(root):
+                    for f in files:
+                        f_lower = f.lower()
+                        if f_lower == target_name:
+                            path = os.path.join(current_root, f)
+                            break
+                        file_stem, file_ext = os.path.splitext(f_lower)
+                        if file_stem == stem_lower and file_ext in IMAGE_EXTENSIONS:
+                            path = os.path.join(current_root, f)
+                            break
+                    if path:
+                        break
+                if path:
+                    break
         self._image_cache[key] = path
         return path
 
@@ -203,7 +273,11 @@ class RenderAppProxy:
 def _init_render_context(context):
     global _render_context, _render_proxy
     _render_context = context
-    _render_proxy = RenderAppProxy(context["scale"], context["excel_dir"])
+    _render_proxy = RenderAppProxy(
+        context["scale"],
+        context["excel_dir"],
+        context.get("image_dirs", []),
+    )
 
 
 def _collect_element_specs(app):
@@ -223,6 +297,7 @@ def _collect_element_specs(app):
             "align": element.align,
             "auto_font": getattr(element, "auto_font", True),
             "layer": element.layer,
+            "is_image": getattr(element, "is_image", False),
         }
         order.append(name)
     return elements, order
@@ -267,6 +342,7 @@ def render_single_pdf(task):
     groups = context["groups"]
     conditions = context["conditions"]
     static_entries = context["static_entries"]
+    image_fields = set(context.get("image_fields", []))
     elements = {name: SimpleNamespace(**spec) for name, spec in element_specs.items()}
 
     needed = set(elements.keys())
@@ -361,6 +437,11 @@ def render_single_pdf(task):
                         ),
                         align=conf.get("align", el.align if el else "left"),
                         auto_font=conf.get("auto_font", el.auto_font if el else True),
+                        is_image=(
+                            conf.get("is_image")
+                            if conf is not None and "is_image" in conf
+                            else (el.is_image if el and hasattr(el, "is_image") else fname in image_fields)
+                        ),
                     )
                     x_pdf = group["x"] / scale + x0
                     y_pdf = page_height - (group["y"] / scale + y + height)
@@ -631,6 +712,8 @@ def generate_pds(app):
         "page_width": page_width,
         "page_height": page_height,
         "excel_dir": os.path.dirname(app.excel_path),
+        "image_fields": sorted(getattr(app, "image_fields", set())),
+        "image_dirs": list(getattr(app, "image_dirs", [])),
         "tasks": tasks,
         "output_dir": output_dir,
         "total_tasks": len(tasks),
@@ -650,6 +733,8 @@ def generate_pds(app):
             "conditions": payload["conditions"],
             "static_entries": payload["static_entries"],
             "excel_dir": payload["excel_dir"],
+            "image_fields": payload.get("image_fields", []),
+            "image_dirs": payload.get("image_dirs", []),
         }
 
         tasks_local = payload["tasks"]
