@@ -17,6 +17,8 @@ from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from tkinter import messagebox
 
+from ..number_format import round_numeric_value
+
 from .excel_tracking import (
     TRACKING_COLUMN,
     update_tracking_column,
@@ -584,6 +586,8 @@ def generate_pds(app):
                     value = ""
                 if pd.isna(value):
                     value = ""
+                else:
+                    value = round_numeric_value(value)
                 row_values[f"{sheet}:{col}"] = value
         tasks.append(
             {

@@ -25,6 +25,8 @@ from .config_io import (
 from .excel_tracking import is_tracking_column
 from . import locks
 
+from ..number_format import round_numeric_value
+
 from ..github_utils import (
     get_repo_info,
     get_remote_commit_info,
@@ -758,6 +760,7 @@ class PDSGeneratorGUI(tk.Tk):
                 value = None
                 if df is not None and 0 <= idx < len(df):
                     value = df.iloc[idx].get(col)
+                    value = round_numeric_value(value)
             else:
                 value = self.static_entries[name].get() if name in getattr(self, "static_entries", {}) else name
             element.update_value(value)

@@ -8,7 +8,9 @@ import time
 
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.styles import Protection
+from openpyxl.styles import Protection, PatternFill
+
+from ..number_format import analyze_numeric_value, DEFAULT_DECIMALS
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +18,8 @@ TRACKING_COLUMN = "__PDS_ROW_TRACKING__"
 _EXCEL_CELL_LIMIT = 32767
 _HASH_PREFIX = "sha256:"
 _CACHE_VERSION = 1
+_ZERO_FILL = PatternFill(fill_type="solid", start_color="FFFF0000", end_color="FFFF0000")
+_DEFAULT_FILL = PatternFill()
 
 
 def is_tracking_column(name):
@@ -28,6 +32,9 @@ def _normalize_value(value):
             return ""
     except Exception:
         pass
+    analysis = analyze_numeric_value(value, decimals=DEFAULT_DECIMALS)
+    if analysis is not None:
+        return analysis["formatted_dot"]
     if isinstance(value, (dt.datetime, dt.date, dt.time)):
         return value.isoformat()
     if isinstance(value, bool):
@@ -108,6 +115,19 @@ def update_tracking_column(excel_path, dataframes, total_rows, sheet_fields=None
         else:
             requested = sheet_fields.get(sheet_name, set())
             columns = sorted({col for col in requested if col != TRACKING_COLUMN})
+        header_map = {}
+        header_map_str = {}
+        for cell in ws[1]:
+            if cell.value is None:
+                continue
+            header_map[cell.value] = cell.column
+            header_map_str[str(cell.value)] = cell.column
+        column_indices = {}
+        for col in columns:
+            idx = header_map.get(col)
+            if idx is None:
+                idx = header_map_str.get(str(col))
+            column_indices[col] = idx
         row_count = len(df)
         existing_rows = max(0, (ws.max_row or 1) - 1)
         check_rows = max(row_count, existing_rows)
@@ -119,10 +139,45 @@ def update_tracking_column(excel_path, dataframes, total_rows, sheet_fields=None
         for row_idx in range(check_rows):
             if row_idx < row_count:
                 row_series = df.iloc[row_idx]
-                values = [
-                    row_series[col] if col in df.columns else ""
-                    for col in columns
-                ]
+                values = []
+                for col in columns:
+                    if col in df.columns:
+                        value = row_series[col]
+                    else:
+                        value = ""
+                    try:
+                        if pd.isna(value):
+                            value = ""
+                    except Exception:
+                        pass
+                    analysis = analyze_numeric_value(
+                        value, decimals=DEFAULT_DECIMALS
+                    )
+                    if analysis is None:
+                        values.append(value)
+                        col_idx = column_indices.get(col)
+                        if col_idx:
+                            cell = ws.cell(row=row_idx + 2, column=col_idx)
+                            if cell.fill == _ZERO_FILL:
+                                cell.fill = _DEFAULT_FILL
+                                workbook_dirty = True
+                        continue
+                    values.append(analysis["formatted_dot"])
+                    col_idx = column_indices.get(col)
+                    if not col_idx:
+                        continue
+                    cell = ws.cell(row=row_idx + 2, column=col_idx)
+                    if cell.data_type != "f" and analysis["changed"]:
+                        cell.value = analysis["numeric"]
+                        workbook_dirty = True
+                    if analysis["should_mark"]:
+                        if cell.fill != _ZERO_FILL:
+                            cell.fill = _ZERO_FILL
+                            workbook_dirty = True
+                    else:
+                        if cell.fill == _ZERO_FILL:
+                            cell.fill = _DEFAULT_FILL
+                            workbook_dirty = True
             else:
                 values = ["" for _ in columns]
             new_sig = _row_signature(values)
