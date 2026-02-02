@@ -194,6 +194,10 @@ def load_config(app, startup=False, path=None):
             element.width = elconf.get("width", element.width) * app.scale
             element.height = elconf.get("height", element.height) * app.scale
             element.font_size = elconf.get("font_size", element.font_size) * app.scale
+            element.max_font_size = (
+                elconf.get("max_font_size", elconf.get("font_size", element.font_size / app.scale))
+                * app.scale
+            )
             element.bold = elconf.get("bold", element.bold)
             element.text_color = elconf.get("text_color", element.text_color)
             element.bg_color = elconf.get("bg_color", element.bg_color)
@@ -224,6 +228,7 @@ def load_config(app, startup=False, path=None):
                 "width": fc.get("width", 100),
                 "height": fc.get("height", 40),
                 "font_size": fc.get("font_size", 12),
+                "max_font_size": fc.get("max_font_size", fc.get("font_size", 12)),
                 "bold": fc.get("bold", False),
                 "text_color": fc.get("text_color", "black"),
                 "bg_color": fc.get("bg_color", "white"),

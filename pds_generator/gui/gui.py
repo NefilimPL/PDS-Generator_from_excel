@@ -433,6 +433,8 @@ class PDSGeneratorGUI(tk.Tk):
             el.width *= factor_w
             el.height *= factor_h
             el.font_size *= factor_h
+            if hasattr(el, "max_font_size"):
+                el.max_font_size *= factor_h
             step = self.snap_step
             el.x = round(el.x / step) * step
             el.y = round(el.y / step) * step
@@ -1186,11 +1188,13 @@ class PDSGeneratorGUI(tk.Tk):
             rel_w = el.width / self.scale
             rel_h = el.height / self.scale
             rel_f = el.font_size / self.scale
+            rel_max_f = getattr(el, "max_font_size", el.font_size) / self.scale
             el.x = rel_x * new_scale
             el.y = rel_y * new_scale
             el.width = rel_w * new_scale
             el.height = rel_h * new_scale
             el.font_size = rel_f * new_scale
+            el.max_font_size = rel_max_f * new_scale
             el.sync_canvas()
             el.apply_font()
         for group in self.groups.values():
@@ -1228,11 +1232,13 @@ class PDSGeneratorGUI(tk.Tk):
             rel_w = el.width / self.scale
             rel_h = el.height / self.scale
             rel_f = el.font_size / self.scale
+            rel_max_f = getattr(el, "max_font_size", el.font_size) / self.scale
             el.x = rel_x * new_scale
             el.y = rel_y * new_scale
             el.width = rel_w * new_scale
             el.height = rel_h * new_scale
             el.font_size = rel_f * new_scale
+            el.max_font_size = rel_max_f * new_scale
             el.sync_canvas()
             el.apply_font()
         for group in self.groups.values():
@@ -1274,6 +1280,10 @@ class PDSGeneratorGUI(tk.Tk):
         if self.selected_element:
             self.font_entry.configure(state="normal")
             self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
+            if hasattr(self, "auto_font_var"):
+                self.auto_font_var.set(bool(getattr(self.selected_element, "auto_font", True)))
+            if hasattr(self, "auto_font_check"):
+                self.auto_font_check.state(["!disabled"])
             self.bg_check.state(["!disabled"])
             self.transparent_var.set(not self.selected_element.bg_visible)
             self.layer_entry.configure(state="normal")
@@ -1281,6 +1291,10 @@ class PDSGeneratorGUI(tk.Tk):
         else:
             self.font_entry.configure(state="disabled")
             self.font_size_var.set("")
+            if hasattr(self, "auto_font_var"):
+                self.auto_font_var.set(False)
+            if hasattr(self, "auto_font_check"):
+                self.auto_font_check.state(["disabled"])
             self.transparent_var.set(False)
             self.bg_check.state(["disabled"])
             self.layer_entry.configure(state="disabled")
@@ -1352,9 +1366,12 @@ class PDSGeneratorGUI(tk.Tk):
         if not el:
             return
         el.font_size += self.scale
+        el.max_font_size = el.font_size
         el.auto_font = False
         el.apply_font()
         self.font_size_var.set(str(int(el.font_size / self.scale)))
+        if hasattr(self, "auto_font_var"):
+            self.auto_font_var.set(False)
         self.push_history()
 
     def decrease_font(self):
@@ -1363,9 +1380,12 @@ class PDSGeneratorGUI(tk.Tk):
             return
         if el.font_size > self.scale:
             el.font_size -= self.scale
+            el.max_font_size = el.font_size
             el.auto_font = False
             el.apply_font()
             self.font_size_var.set(str(int(el.font_size / self.scale)))
+            if hasattr(self, "auto_font_var"):
+                self.auto_font_var.set(False)
             self.push_history()
 
     def set_font_size(self):
@@ -1379,8 +1399,22 @@ class PDSGeneratorGUI(tk.Tk):
         if size <= 0:
             return
         el.font_size = size
+        el.max_font_size = el.font_size
         el.auto_font = False
         el.apply_font()
+        if hasattr(self, "auto_font_var"):
+            self.auto_font_var.set(False)
+        self.push_history()
+
+    def toggle_auto_font(self):
+        if not self.selected_elements:
+            return
+        state = bool(self.auto_font_var.get())
+        for el in self.selected_elements:
+            el.auto_font = state
+            if state and not hasattr(el, "max_font_size"):
+                el.max_font_size = el.font_size
+            el.sync_canvas()
         self.push_history()
 
     def set_layer(self):

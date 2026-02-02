@@ -95,6 +95,60 @@ def sanitize_filename(name: str) -> str:
     return cleaned
 
 
+def _wrap_text_lines(text, font_name, font_size, max_width):
+    if text is None:
+        return [""]
+    text = str(text)
+    if not text:
+        return [""]
+    lines = []
+    for para in text.splitlines():
+        if not para:
+            lines.append("")
+            continue
+        words = para.split()
+        if not words:
+            lines.append("")
+            continue
+        current = words[0]
+        for word in words[1:]:
+            candidate = f"{current} {word}"
+            if pdfmetrics.stringWidth(candidate, font_name, font_size) <= max_width:
+                current = candidate
+                continue
+            lines.append(current)
+            if pdfmetrics.stringWidth(word, font_name, font_size) <= max_width:
+                current = word
+            else:
+                part = ""
+                for ch in word:
+                    candidate_part = f"{part}{ch}"
+                    if part and pdfmetrics.stringWidth(candidate_part, font_name, font_size) > max_width:
+                        lines.append(part)
+                        part = ch
+                    else:
+                        part = candidate_part
+                current = part
+        lines.append(current)
+    return lines
+
+
+def _fit_text_lines(text, font_name, max_font_size, box_width, box_height, pad=2):
+    max_size = max(1, int(round(max_font_size)))
+    max_width = max(1, box_width - pad * 2)
+    max_height = max(1, box_height - pad * 2)
+    best_size = 1
+    best_lines = [""]
+    for size in range(max_size, 0, -1):
+        lines = _wrap_text_lines(text, font_name, size, max_width)
+        line_height = pdfmetrics.getAscent(font_name, size) - pdfmetrics.getDescent(font_name, size)
+        if line_height * len(lines) <= max_height:
+            return size, lines
+        best_size = size
+        best_lines = lines
+    return max(1, best_size), best_lines
+
+
 def _first_data_column(df):
     for col in df.columns:
         if col != TRACKING_COLUMN:
@@ -157,25 +211,34 @@ def draw_pdf_element(app, c, element, value, x, y):
         )
     c.setFillColor(to_reportlab_color(element.text_color))
     font_name = "Helvetica-Bold" if element.bold else "Helvetica"
-    font_size = element.font_size / app.scale
+    box_width = element.width / app.scale
+    box_height = element.height / app.scale
+    base_font_size = element.font_size / app.scale
+    max_font_size = getattr(element, "max_font_size", element.font_size) / app.scale
+    auto_fit = getattr(element, "auto_font", True)
+    pad = 2 if auto_fit else 0
+    if auto_fit:
+        font_size, lines = _fit_text_lines(
+            value_str, font_name, max_font_size, box_width, box_height, pad=pad
+        )
+    else:
+        font_size = base_font_size
+        lines = value_str.splitlines() or [value_str]
     c.setFont(font_name, font_size)
     ascent = pdfmetrics.getAscent(font_name, font_size)
     descent = pdfmetrics.getDescent(font_name, font_size)
-    text_y = y + (element.height / app.scale - (ascent - descent)) / 2 - descent
-    if element.align == "center":
-        c.drawCentredString(
-            x + (element.width / app.scale) / 2,
-            text_y,
-            str(value),
-        )
-    elif element.align == "right":
-        c.drawRightString(
-            x + (element.width / app.scale),
-            text_y,
-            str(value),
-        )
-    else:
-        c.drawString(x, text_y, str(value))
+    line_height = ascent - descent
+    total_height = line_height * len(lines)
+    bottom = y + (box_height - total_height) / 2
+    baseline_last = bottom - descent
+    for idx, line in enumerate(lines):
+        baseline = baseline_last + line_height * (len(lines) - 1 - idx)
+        if element.align == "center":
+            c.drawCentredString(x + box_width / 2, baseline, line)
+        elif element.align == "right":
+            c.drawRightString(x + box_width - pad, baseline, line)
+        else:
+            c.drawString(x + pad, baseline, line)
 
 
 _render_context = None
@@ -290,6 +353,7 @@ def _collect_element_specs(app):
             "width": element.width,
             "height": element.height,
             "font_size": element.font_size,
+            "max_font_size": getattr(element, "max_font_size", element.font_size),
             "bold": element.bold,
             "text_color": element.text_color,
             "bg_color": element.bg_color,
@@ -427,6 +491,11 @@ def render_single_pdf(task):
                         width=width * scale,
                         height=height * scale,
                         font_size=font_size * scale,
+                        max_font_size=conf.get(
+                            "max_font_size",
+                            (el.max_font_size / scale if el and hasattr(el, "max_font_size") else font_size),
+                        )
+                        * scale,
                         bold=conf.get("bold", el.bold if el else False),
                         text_color=conf.get(
                             "text_color", el.text_color if el else "black"
