@@ -79,6 +79,47 @@ def detect_formula_columns(path, max_rows=200):
     return formulas
 
 
+def collect_formula_samples(path, max_rows=200, max_formulas_per_col=3):
+    """Return {sheet_name: {column_name: [formula_strings]}} for tooltip display."""
+    samples = {}
+    try:
+        wb = load_workbook(path, data_only=False, read_only=True)
+    except Exception:
+        logger.exception("Failed to collect formulas from %s", path)
+        return samples
+
+    for ws in wb.worksheets:
+        try:
+            header_row = next(ws.iter_rows(min_row=1, max_row=1))
+        except StopIteration:
+            continue
+        headers = [cell.value for cell in header_row]
+        max_row = None if max_rows is None else max_rows + 1
+        for row in ws.iter_rows(min_row=2, max_row=max_row):
+            for idx, cell in enumerate(row):
+                if cell.data_type != "f":
+                    continue
+                if idx >= len(headers):
+                    continue
+                col_name = headers[idx]
+                if col_name is None:
+                    continue
+                if str(col_name) == TRACKING_COLUMN:
+                    continue
+                formula = cell.value
+                if formula is None:
+                    continue
+                sheet_map = samples.setdefault(ws.title, {})
+                col_key = str(col_name)
+                col_list = sheet_map.setdefault(col_key, [])
+                formula_text = str(formula)
+                if formula_text not in col_list:
+                    col_list.append(formula_text)
+                if len(col_list) >= max_formulas_per_col:
+                    continue
+    return samples
+
+
 def _col_letters_to_index(letters):
     idx = 0
     for ch in letters:

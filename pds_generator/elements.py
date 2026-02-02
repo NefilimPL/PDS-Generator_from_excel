@@ -73,6 +73,13 @@ class DraggableElement:
         self.canvas.tag_bind(self.rect, "<Button-3>", self.show_menu)
         self.canvas.tag_bind(self.label, "<Button-3>", self.show_menu)
         self.canvas.tag_bind(self.handle, "<Button-3>", self.show_menu)
+        if hasattr(self.parent, "tooltip") and hasattr(self.parent, "get_formula_tooltip"):
+            for item in (self.rect, self.label, self.handle):
+                self.parent.tooltip.bind_canvas(
+                    self.canvas,
+                    item,
+                    text_func=lambda n=self.name: self.parent.get_formula_tooltip(n),
+                )
         self.apply_font()
         self.fit_text()
         self._update_label_position()
@@ -372,21 +379,65 @@ class DraggableElement:
         max_width = max(1, int(self.width - 4))
         max_height = max(1, int(self.height - 4))
         test_font = tkfont.Font(family=self.font_family, size=max_size, weight=weight)
-        best_size = 1
-        best_lines = [self.text]
-        for size in range(max_size, 0, -1):
+        first_shrink = 3
+        second_shrink = 3
+        min_size_stage1 = max(1, max_size - first_shrink)
+        min_size_stage2 = max(1, max_size - first_shrink - second_shrink)
+
+        def split_lines(text):
+            if text is None:
+                return [""]
+            text = str(text)
+            if not text:
+                return [""]
+            lines = text.splitlines()
+            return lines if lines else [""]
+
+        def lines_fit_no_wrap(lines):
+            line_height = test_font.metrics("linespace")
+            if line_height * len(lines) > max_height:
+                return False
+            for line in lines:
+                if test_font.measure(line) > max_width:
+                    return False
+            return True
+
+        raw_lines = split_lines(self.text)
+        for size in range(max_size, min_size_stage1 - 1, -1):
+            test_font.configure(size=size)
+            if lines_fit_no_wrap(raw_lines):
+                self.font_size = size
+                self.apply_font()
+                self.canvas.itemconfig(self.label, text="\n".join(raw_lines))
+                return
+
+        fallback_size = min_size_stage1
+        fallback_lines = self._wrap_text(self.text, test_font, max_width)
+        for size in range(max_size, min_size_stage1 - 1, -1):
             test_font.configure(size=size)
             lines = self._wrap_text(self.text, test_font, max_width)
-            line_height = test_font.metrics("linespace")
-            if line_height * len(lines) <= max_height:
-                best_size = size
-                best_lines = lines
-                break
-            best_size = size
-            best_lines = lines
-        self.font_size = max(1, best_size)
+            if lines_fit_no_wrap(lines):
+                self.font_size = size
+                self.apply_font()
+                self.canvas.itemconfig(self.label, text="\n".join(lines))
+                return
+            fallback_size = size
+            fallback_lines = lines
+
+        for size in range(min_size_stage1 - 1, min_size_stage2 - 1, -1):
+            test_font.configure(size=size)
+            lines = self._wrap_text(self.text, test_font, max_width)
+            if lines_fit_no_wrap(lines):
+                self.font_size = size
+                self.apply_font()
+                self.canvas.itemconfig(self.label, text="\n".join(lines))
+                return
+            fallback_size = size
+            fallback_lines = lines
+
+        self.font_size = max(1, fallback_size)
         self.apply_font()
-        self.canvas.itemconfig(self.label, text="\n".join(best_lines))
+        self.canvas.itemconfig(self.label, text="\n".join(fallback_lines))
 
     def update_colors(self):
         if hasattr(self, "image_id"):
