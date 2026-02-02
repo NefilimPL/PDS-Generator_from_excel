@@ -200,6 +200,7 @@ class GroupArea:
                     "width": int(round(conf["width"])),
                     "height": int(round(conf["height"])),
                     "font_size": int(round(conf["font_size"])),
+                    "max_font_size": int(round(conf.get("max_font_size", conf["font_size"]))),
                     "bold": conf.get("bold", False),
                     "text_color": conf.get("text_color", "black"),
                     "bg_color": conf.get("bg_color", "white"),
@@ -310,6 +311,15 @@ class GroupEditor(tk.Toplevel):
         self.font_entry = ttk.Entry(toolbar, textvariable=self.font_size_var, width=4, state="disabled")
         self.font_entry.pack(side="left", padx=5)
         self.font_entry.bind("<Return>", lambda e: self.set_font_size())
+        self.auto_font_var = tk.BooleanVar(value=True)
+        self.auto_font_check = ttk.Checkbutton(
+            toolbar,
+            text="Auto dopasuj",
+            variable=self.auto_font_var,
+            command=self.toggle_auto_font,
+        )
+        self.auto_font_check.pack(side="left", padx=2)
+        self.auto_font_check.state(["disabled"])
         ttk.Button(toolbar, text="Z+", command=lambda: self.ctrl_zoom(factor=1.1)).pack(side="left", padx=2)
         ttk.Button(toolbar, text="Z-", command=lambda: self.ctrl_zoom(factor=0.9)).pack(side="left")
         ttk.Button(toolbar, text="Dopasuj", command=self.fit_to_window).pack(side="left", padx=5)
@@ -453,6 +463,10 @@ class GroupEditor(tk.Toplevel):
             el.width = conf.get("width", el.width) * self.scale
             el.height = conf.get("height", el.height) * self.scale
             el.font_size = conf.get("font_size", el.font_size) * self.scale
+            el.max_font_size = conf.get(
+                "max_font_size",
+                conf.get("font_size", el.font_size / self.scale),
+            ) * self.scale
             el.bold = conf.get("bold", el.bold)
             el.text_color = conf.get("text_color", el.text_color)
             el.bg_color = conf.get("bg_color", el.bg_color)
@@ -466,6 +480,7 @@ class GroupEditor(tk.Toplevel):
                 el.width = src.width
                 el.height = src.height
                 el.font_size = src.font_size
+                el.max_font_size = getattr(src, "max_font_size", src.font_size)
                 el.bold = src.bold
                 el.text_color = src.text_color
                 el.bg_color = src.bg_color
@@ -508,6 +523,8 @@ class GroupEditor(tk.Toplevel):
         if self.selected_element:
             self.font_entry.configure(state="normal")
             self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
+            self.auto_font_var.set(bool(getattr(self.selected_element, "auto_font", True)))
+            self.auto_font_check.state(["!disabled"])
             self.transparent_var.set(not self.selected_element.bg_visible)
             self.bg_check.state(["!disabled"])
             self.layer_entry.configure(state="normal")
@@ -515,6 +532,8 @@ class GroupEditor(tk.Toplevel):
         else:
             self.font_entry.configure(state="disabled")
             self.font_size_var.set("")
+            self.auto_font_var.set(False)
+            self.auto_font_check.state(["disabled"])
             self.transparent_var.set(False)
             self.bg_check.state(["disabled"])
             self.layer_entry.configure(state="disabled")
@@ -573,18 +592,22 @@ class GroupEditor(tk.Toplevel):
         if not el:
             return
         el.font_size += self.scale
+        el.max_font_size = el.font_size
         el.auto_font = False
         el.apply_font()
         self.font_size_var.set(str(int(el.font_size / self.scale)))
+        self.auto_font_var.set(False)
 
     def decrease_font(self):
         el = self.selected_element
         if not el or el.font_size <= self.scale:
             return
         el.font_size -= self.scale
+        el.max_font_size = el.font_size
         el.auto_font = False
         el.apply_font()
         self.font_size_var.set(str(int(el.font_size / self.scale)))
+        self.auto_font_var.set(False)
 
     def set_font_size(self):
         el = self.selected_element
@@ -597,8 +620,20 @@ class GroupEditor(tk.Toplevel):
         if size <= 0:
             return
         el.font_size = size
+        el.max_font_size = el.font_size
         el.auto_font = False
         el.apply_font()
+        self.auto_font_var.set(False)
+
+    def toggle_auto_font(self):
+        if not self.selected_elements:
+            return
+        state = bool(self.auto_font_var.get())
+        for el in self.selected_elements:
+            el.auto_font = state
+            if state and not hasattr(el, "max_font_size"):
+                el.max_font_size = el.font_size
+            el.sync_canvas()
 
     def set_layer(self):
         el = self.selected_element
@@ -740,6 +775,7 @@ class GroupEditor(tk.Toplevel):
                 "width": el.width / self.scale,
                 "height": el.height / self.scale,
                 "font_size": el.font_size / self.scale,
+                "max_font_size": getattr(el, "max_font_size", el.font_size) / self.scale,
                 "bold": el.bold,
                 "text_color": el.text_color,
                 "bg_color": el.bg_color,
@@ -769,6 +805,8 @@ class GroupEditor(tk.Toplevel):
             el.width *= factor
             el.height *= factor
             el.font_size *= factor
+            if hasattr(el, "max_font_size"):
+                el.max_font_size *= factor
             el.sync_canvas()
             el.apply_font()
         self.scale = new_scale

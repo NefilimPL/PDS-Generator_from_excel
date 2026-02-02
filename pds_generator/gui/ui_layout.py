@@ -51,6 +51,15 @@ def setup_ui(app):
     app.font_entry = ttk.Entry(format_frame, textvariable=app.font_size_var, width=4, state="disabled")
     app.font_entry.pack(side="left", padx=5)
     app.font_entry.bind("<Return>", lambda e: app.set_font_size())
+    app.auto_font_var = tk.BooleanVar(value=True)
+    app.auto_font_check = ttk.Checkbutton(
+        format_frame,
+        text="Auto dopasuj",
+        variable=app.auto_font_var,
+        command=app.toggle_auto_font,
+    )
+    app.auto_font_check.pack(side="left", padx=2)
+    app.auto_font_check.state(["disabled"])
     ttk.Button(format_frame, text="Kolor", command=app.choose_text_color).pack(side="left", padx=2)
     ttk.Button(format_frame, text="Tło", command=app.choose_bg_color).pack(side="left", padx=2)
     app.transparent_var = tk.BooleanVar(value=False)

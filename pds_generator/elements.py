@@ -25,6 +25,7 @@ class DraggableElement:
         self.width = 100
         self.height = 40
         self.font_size = 12
+        self.max_font_size = self.font_size
         self.bold = False
         self.font_family = "Arial"
         self.auto_font = True
@@ -194,6 +195,7 @@ class DraggableElement:
             "width": int(round(self.width / scale)),
             "height": int(round(self.height / scale)),
             "font_size": int(round(self.font_size / scale)),
+            "max_font_size": int(round(getattr(self, "max_font_size", self.font_size) / scale)),
             "bold": self.bold,
             "auto_font": self.auto_font,
             "text_color": self.text_color,
@@ -226,6 +228,8 @@ class DraggableElement:
             self.y + self.height,
         )
         self.apply_font()
+        if not self.auto_font and not hasattr(self, "image_id"):
+            self.canvas.itemconfig(self.label, text=self.text)
         if self.auto_font:
             self.fit_text()
         self.update_colors()
@@ -322,21 +326,67 @@ class DraggableElement:
         weight = "bold" if self.bold else "normal"
         self.canvas.itemconfig(self.label, font=(self.font_family, int(self.font_size), weight))
 
+    def _wrap_text(self, text, font, max_width):
+        if text is None:
+            return [""]
+        text = str(text)
+        if not text:
+            return [""]
+        lines = []
+        for para in text.splitlines():
+            if not para:
+                lines.append("")
+                continue
+            words = para.split()
+            if not words:
+                lines.append("")
+                continue
+            current = words[0]
+            for word in words[1:]:
+                candidate = f"{current} {word}"
+                if font.measure(candidate) <= max_width:
+                    current = candidate
+                    continue
+                lines.append(current)
+                if font.measure(word) <= max_width:
+                    current = word
+                else:
+                    part = ""
+                    for ch in word:
+                        candidate_part = f"{part}{ch}"
+                        if part and font.measure(candidate_part) > max_width:
+                            lines.append(part)
+                            part = ch
+                        else:
+                            part = candidate_part
+                    current = part
+            lines.append(current)
+        return lines
+
     def fit_text(self):
         if hasattr(self, "image_id") or not self.auto_font:
             return
-        size = 1
+        max_size = int(round(getattr(self, "max_font_size", self.font_size)))
+        max_size = max(1, max_size)
         weight = "bold" if self.bold else "normal"
-        test_font = tkfont.Font(family=self.font_family, size=size, weight=weight)
-        while True:
-            width = test_font.measure(self.text)
-            height = test_font.metrics("linespace")
-            if width > self.width - 4 or height > self.height - 4:
-                break
-            size += 1
+        max_width = max(1, int(self.width - 4))
+        max_height = max(1, int(self.height - 4))
+        test_font = tkfont.Font(family=self.font_family, size=max_size, weight=weight)
+        best_size = 1
+        best_lines = [self.text]
+        for size in range(max_size, 0, -1):
             test_font.configure(size=size)
-        self.font_size = max(1, size - 1)
+            lines = self._wrap_text(self.text, test_font, max_width)
+            line_height = test_font.metrics("linespace")
+            if line_height * len(lines) <= max_height:
+                best_size = size
+                best_lines = lines
+                break
+            best_size = size
+            best_lines = lines
+        self.font_size = max(1, best_size)
         self.apply_font()
+        self.canvas.itemconfig(self.label, text="\n".join(best_lines))
 
     def update_colors(self):
         if hasattr(self, "image_id"):
@@ -346,15 +396,20 @@ class DraggableElement:
         self.canvas.itemconfig(self.label, fill=self.text_color)
 
     def _update_label_position(self):
+        justify = "left"
         if self.align == "left":
+            justify = "left"
             self.canvas.itemconfig(self.label, anchor="w")
             self.canvas.coords(self.label, self.x + 2, self.y + self.height / 2)
         elif self.align == "right":
+            justify = "right"
             self.canvas.itemconfig(self.label, anchor="e")
             self.canvas.coords(self.label, self.x + self.width - 2, self.y + self.height / 2)
         else:
+            justify = "center"
             self.canvas.itemconfig(self.label, anchor="center")
             self.canvas.coords(self.label, self.x + self.width / 2, self.y + self.height / 2)
+        self.canvas.itemconfig(self.label, justify=justify)
 
 
 # ---------------------------------------------------------------------------
