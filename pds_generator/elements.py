@@ -73,6 +73,13 @@ class DraggableElement:
         self.canvas.tag_bind(self.rect, "<Button-3>", self.show_menu)
         self.canvas.tag_bind(self.label, "<Button-3>", self.show_menu)
         self.canvas.tag_bind(self.handle, "<Button-3>", self.show_menu)
+        if hasattr(self.parent, "tooltip") and hasattr(self.parent, "get_formula_tooltip"):
+            for item in (self.rect, self.label, self.handle):
+                self.parent.tooltip.bind_canvas(
+                    self.canvas,
+                    item,
+                    text_func=lambda n=self.name: self.parent.get_formula_tooltip(n),
+                )
         self.apply_font()
         self.fit_text()
         self._update_label_position()

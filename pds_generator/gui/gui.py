@@ -14,6 +14,7 @@ from ..elements import DraggableElement
 from ..groups import GroupArea, GroupEditor
 
 from .ui_layout import setup_ui as build_ui
+from .tooltips import Tooltip
 from .pdf_export import (
     generate_pds as export_pds,
     draw_pdf_element as render_pdf_element,
@@ -23,7 +24,7 @@ from .config_io import (
     load_config as load_config_func,
 )
 from .excel_tracking import is_tracking_column
-from ..excel_io import read_excel_data, detect_formula_columns
+from ..excel_io import read_excel_data, detect_formula_columns, collect_formula_samples
 from . import locks
 
 from ..number_format import round_numeric_value
@@ -114,6 +115,14 @@ class PDSGeneratorGUI(tk.Tk):
         self.generation_in_progress = False
         self.cancel_event = None
         self.tracking_excluded = set()
+        self.formula_map = {}
+        self.column_rows = {}
+        self.column_indicators = {}
+        self.static_indicators = {}
+        self._highlighted_fields = set()
+        self.panel_bg = self.cget("background")
+        self.highlight_color = "#ffd46a"
+        self.tooltip = Tooltip(self)
         self.setup_ui()
         self.bind_all("<Control-z>", self.undo)
         self.bind_all("<Control-x>", self.redo)
@@ -296,6 +305,12 @@ class PDSGeneratorGUI(tk.Tk):
             messagebox.showerror("Błąd", f"Nie można wczytać Excela: {e}")
             return
 
+        self.formula_map = {}
+        formula_samples = collect_formula_samples(path)
+        for sheet, cols in formula_samples.items():
+            for col, formulas in cols.items():
+                self.formula_map[f"{sheet}:{col}"] = formulas
+
         formula_cols = detect_formula_columns(path)
         missing_formula_cols = {}
         for sheet, cols in formula_cols.items():
@@ -343,6 +358,8 @@ class PDSGeneratorGUI(tk.Tk):
             child.destroy()
         old_column_keys = list(self.columns_vars.keys())
         self.columns_vars.clear()
+        self.column_rows.clear()
+        self.column_indicators.clear()
         for key in old_column_keys:
             self.image_vars.pop(key, None)
 
@@ -355,6 +372,9 @@ class PDSGeneratorGUI(tk.Tk):
                 name = f"{sheet}:{col}"
                 row = ttk.Frame(lf)
                 row.pack(fill="x", padx=2, pady=1)
+                indicator = tk.Frame(row, width=6, height=18, bg=self.panel_bg)
+                indicator.pack(side="left", fill="y", padx=(0, 4))
+                indicator.pack_propagate(False)
                 var = tk.BooleanVar()
                 chk = ttk.Checkbutton(
                     row,
@@ -373,6 +393,14 @@ class PDSGeneratorGUI(tk.Tk):
                 img_chk.pack(side="right")
                 self.columns_vars[name] = var
                 self.image_vars[name] = img_var
+                self.column_rows[name] = row
+                self.column_indicators[name] = indicator
+                self.bind_formula_tooltip(row, name)
+                self.bind_formula_tooltip(chk, name)
+                if hasattr(self, "tooltip"):
+                    self.tooltip.bind(img_chk, text="Traktuj wartość jako obraz")
+
+        self.update_field_highlights()
 
     # ------------------------------------------------------------------
     def find_local_image(self, filename):
@@ -684,12 +712,49 @@ class PDSGeneratorGUI(tk.Tk):
             return f"{name}: {el.text}"
         return name
 
+    def _set_indicator(self, name, active):
+        indicator = self.static_indicators.get(name) or self.column_indicators.get(name)
+        if not indicator:
+            return
+        color = self.highlight_color if active else self.panel_bg
+        indicator.configure(bg=color)
+
+    def update_field_highlights(self, names=None):
+        if names is None:
+            names = [el.name for el in self.selected_elements]
+        new_set = set(names)
+        for name in self._highlighted_fields - new_set:
+            self._set_indicator(name, False)
+        for name in new_set - self._highlighted_fields:
+            self._set_indicator(name, True)
+        self._highlighted_fields = new_set
+
+    def get_formula_tooltip(self, field_name):
+        formulas = self.formula_map.get(field_name) or []
+        if not formulas:
+            return ""
+        lines = [f"{field_name}", "Przykładowe formuły:"]
+        for formula in formulas[:3]:
+            cleaned = formula.replace("\n", " ").strip()
+            if len(cleaned) > 160:
+                cleaned = cleaned[:157] + "..."
+            lines.append(f"- {cleaned}")
+        return "\n".join(lines)
+
+    def bind_formula_tooltip(self, widget, field_name):
+        if not hasattr(self, "tooltip"):
+            return
+        self.tooltip.bind(widget, text_func=lambda n=field_name: self.get_formula_tooltip(n))
+
     def create_static_row(self, name, value=None):
         row = ttk.Frame(self.static_frame)
         if hasattr(self, "add_static_btn"):
             row.pack(fill="x", pady=2, before=self.add_static_btn)
         else:
             row.pack(fill="x", pady=2)
+        indicator = tk.Frame(row, width=6, height=18, bg=self.panel_bg)
+        indicator.pack(side="left", fill="y", padx=(0, 4))
+        indicator.pack_propagate(False)
         var = tk.BooleanVar()
         chk = ttk.Checkbutton(row, variable=var, command=lambda n=name, v=var: self.toggle_static(n, v.get()))
         chk.pack(side="left")
@@ -711,7 +776,12 @@ class PDSGeneratorGUI(tk.Tk):
         self.static_vars[name] = var
         self.static_entries[name] = entry_var
         self.static_rows[name] = row
+        self.static_indicators[name] = indicator
         self.image_vars[name] = img_var
+        if hasattr(self, "tooltip"):
+            self.tooltip.bind(chk, text="Włącz pole statyczne")
+            self.tooltip.bind(img_chk, text="Traktuj wartość jako obraz")
+            self.tooltip.bind(del_btn, text="Usuń pole statyczne")
 
     def add_static_field(self):
         idx = 1
@@ -727,7 +797,9 @@ class PDSGeneratorGUI(tk.Tk):
         self.static_vars.pop(name, None)
         self.static_entries.pop(name, None)
         self.static_rows.pop(name, None)
+        self.static_indicators.pop(name, None)
         self.image_vars.pop(name, None)
+        self.update_field_highlights()
         self.push_history()
 
     def remove_element(self, name):
@@ -746,6 +818,7 @@ class PDSGeneratorGUI(tk.Tk):
                 self.layer_entry.configure(state="disabled")
                 self.layer_var.set("")
         self.restack_elements()
+        self.update_field_highlights()
 
     def restack_elements(self):
         if not self.elements:
@@ -1394,6 +1467,7 @@ class PDSGeneratorGUI(tk.Tk):
             self.bg_check.state(["disabled"])
             self.layer_entry.configure(state="disabled")
             self.layer_var.set("")
+        self.update_field_highlights()
 
     def canvas_button_press(self, event):
         current = self.canvas.find_withtag("current")

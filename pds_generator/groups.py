@@ -301,12 +301,16 @@ class GroupEditor(tk.Toplevel):
         self.conditions_win = None
         self.align_line_h = None
         self.align_line_v = None
+        self.tooltip = getattr(parent, "tooltip", None)
 
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x", padx=5, pady=5)
-        ttk.Button(toolbar, text="B", command=self.toggle_bold).pack(side="left")
-        ttk.Button(toolbar, text="A+", command=self.increase_font).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="A-", command=self.decrease_font).pack(side="left")
+        bold_btn = ttk.Button(toolbar, text="B", command=self.toggle_bold)
+        bold_btn.pack(side="left")
+        inc_btn = ttk.Button(toolbar, text="A+", command=self.increase_font)
+        inc_btn.pack(side="left", padx=2)
+        dec_btn = ttk.Button(toolbar, text="A-", command=self.decrease_font)
+        dec_btn.pack(side="left")
         self.font_size_var = tk.StringVar()
         self.font_entry = ttk.Entry(toolbar, textvariable=self.font_size_var, width=4, state="disabled")
         self.font_entry.pack(side="left", padx=5)
@@ -320,24 +324,50 @@ class GroupEditor(tk.Toplevel):
         )
         self.auto_font_check.pack(side="left", padx=2)
         self.auto_font_check.state(["disabled"])
-        ttk.Button(toolbar, text="Z+", command=lambda: self.ctrl_zoom(factor=1.1)).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="Z-", command=lambda: self.ctrl_zoom(factor=0.9)).pack(side="left")
-        ttk.Button(toolbar, text="Dopasuj", command=self.fit_to_window).pack(side="left", padx=5)
+        zoom_in_btn = ttk.Button(toolbar, text="Z+", command=lambda: self.ctrl_zoom(factor=1.1))
+        zoom_in_btn.pack(side="left", padx=2)
+        zoom_out_btn = ttk.Button(toolbar, text="Z-", command=lambda: self.ctrl_zoom(factor=0.9))
+        zoom_out_btn.pack(side="left")
+        fit_btn = ttk.Button(toolbar, text="Dopasuj", command=self.fit_to_window)
+        fit_btn.pack(side="left", padx=5)
         ttk.Label(toolbar, text="Warstwa:").pack(side="left", padx=(5, 0))
         self.layer_var = tk.StringVar()
         self.layer_entry = ttk.Entry(toolbar, textvariable=self.layer_var, width=4, state="disabled")
         self.layer_entry.pack(side="left", padx=2)
         self.layer_entry.bind("<Return>", lambda e: self.set_layer())
-        ttk.Button(toolbar, text="Kolor", command=self.choose_text_color).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="Tło", command=self.choose_bg_color).pack(side="left", padx=2)
+        text_color_btn = ttk.Button(toolbar, text="Kolor", command=self.choose_text_color)
+        text_color_btn.pack(side="left", padx=2)
+        bg_color_btn = ttk.Button(toolbar, text="Tło", command=self.choose_bg_color)
+        bg_color_btn.pack(side="left", padx=2)
         self.transparent_var = tk.BooleanVar(value=False)
         self.bg_check = ttk.Checkbutton(toolbar, text="Przezroczyste", variable=self.transparent_var, command=self.toggle_bg_visible)
         self.bg_check.pack(side="left", padx=2)
         self.bg_check.state(["disabled"])
-        ttk.Button(toolbar, text="L", command=lambda: self.set_alignment("left")).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="C", command=lambda: self.set_alignment("center")).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="R", command=lambda: self.set_alignment("right")).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="Warunki", command=self.open_conditions).pack(side="left", padx=5)
+        align_left_btn = ttk.Button(toolbar, text="←", command=lambda: self.set_alignment("left"))
+        align_left_btn.pack(side="left", padx=2)
+        align_center_btn = ttk.Button(toolbar, text="↔", command=lambda: self.set_alignment("center"))
+        align_center_btn.pack(side="left", padx=2)
+        align_right_btn = ttk.Button(toolbar, text="→", command=lambda: self.set_alignment("right"))
+        align_right_btn.pack(side="left", padx=2)
+        conditions_btn = ttk.Button(toolbar, text="Warunki", command=self.open_conditions)
+        conditions_btn.pack(side="left", padx=5)
+
+        if self.tooltip:
+            self.tooltip.bind(bold_btn, text="Pogrubienie")
+            self.tooltip.bind(inc_btn, text="Zwiększ rozmiar czcionki")
+            self.tooltip.bind(dec_btn, text="Zmniejsz rozmiar czcionki")
+            self.tooltip.bind(self.font_entry, text="Rozmiar czcionki (pt)")
+            self.tooltip.bind(self.auto_font_check, text="Auto dopasuj rozmiar czcionki")
+            self.tooltip.bind(zoom_in_btn, text="Przybliż")
+            self.tooltip.bind(zoom_out_btn, text="Oddal")
+            self.tooltip.bind(fit_btn, text="Dopasuj widok do okna")
+            self.tooltip.bind(text_color_btn, text="Kolor tekstu")
+            self.tooltip.bind(bg_color_btn, text="Kolor tła")
+            self.tooltip.bind(self.bg_check, text="Przezroczyste tło")
+            self.tooltip.bind(align_left_btn, text="Wyrównaj tekst do lewej")
+            self.tooltip.bind(align_center_btn, text="Wyśrodkuj tekst")
+            self.tooltip.bind(align_right_btn, text="Wyrównaj tekst do prawej")
+            self.tooltip.bind(conditions_btn, text="Edytuj warunki widoczności")
 
         main = ttk.Frame(self)
         main.pack(fill="both", expand=True)
@@ -394,11 +424,18 @@ class GroupEditor(tk.Toplevel):
             )
             cb.pack(anchor="w")
             self.vars[name] = var
+            if self.tooltip:
+                self.tooltip.bind(cb, text_func=lambda n=name: self.get_formula_tooltip(n))
 
         for name, pos in group.field_pos.items():
             self.add_element(name, pos)
 
         self.protocol("WM_DELETE_WINDOW", self.close)
+
+    def get_formula_tooltip(self, name):
+        if hasattr(self.parent, "get_formula_tooltip"):
+            return self.parent.get_formula_tooltip(name)
+        return ""
 
     def draw_grid(self):
         self.canvas.delete("grid")
