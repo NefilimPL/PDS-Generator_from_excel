@@ -730,22 +730,48 @@ class GroupEditor(tk.Toplevel):
         ttk.Combobox(win, values=options, textvariable=tgt_var).grid(
             row=1, column=1, sticky="ew", padx=5, pady=2
         )
-        box = tk.Listbox(win, height=6)
-        box.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=5)
+        table = ttk.Frame(win)
+        table.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=5)
+        table.columnconfigure(0, weight=1)
+        table.rowconfigure(0, weight=1)
+
+        tree = ttk.Treeview(
+            table,
+            columns=("src", "tgt"),
+            show="headings",
+            selectmode="extended",
+        )
+        tree.heading("src", text="Jeśli puste")
+        tree.heading("tgt", text="Ukryj")
+        tree.column("src", width=240, anchor="w", stretch=True)
+        tree.column("tgt", width=240, anchor="w", stretch=True)
+        vsb = ttk.Scrollbar(table, orient="vertical", command=tree.yview)
+        hsb = ttk.Scrollbar(table, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+
         for s, t in self.conditions:
-            box.insert("end", f"{s} -> {t}")
+            tree.insert("", "end", values=(s, t))
         def add():
             s = src_var.get()
             t = tgt_var.get()
             if s and t:
                 self.conditions.append((s, t))
-                box.insert("end", f"{s} -> {t}")
+                tree.insert("", "end", values=(s, t))
         def remove():
-            sel = box.curselection()
-            if sel:
-                idx = sel[0]
-                self.conditions.pop(idx)
-                box.delete(idx)
+            sel = tree.selection()
+            if not sel:
+                return
+            for item in sel:
+                values = tree.item(item, "values")
+                if values:
+                    try:
+                        self.conditions.remove(tuple(values))
+                    except ValueError:
+                        pass
+                tree.delete(item)
         ttk.Button(win, text="Dodaj", command=add).grid(row=3, column=0, sticky="ew", pady=2)
         ttk.Button(win, text="Usuń", command=remove).grid(row=3, column=1, sticky="ew", pady=2)
 
