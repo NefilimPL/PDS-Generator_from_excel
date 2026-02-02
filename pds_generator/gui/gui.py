@@ -23,6 +23,7 @@ from .config_io import (
     load_config as load_config_func,
 )
 from .excel_tracking import is_tracking_column
+from ..excel_io import read_excel_data, detect_formula_columns
 from . import locks
 
 from ..number_format import round_numeric_value
@@ -289,11 +290,54 @@ class PDSGeneratorGUI(tk.Tk):
 
     def load_excel(self, path):
         try:
-            self.dataframes = pd.read_excel(path, sheet_name=None)
+            self.dataframes = read_excel_data(path)
         except (OSError, ValueError) as e:
             logger.exception("Failed to read Excel file %s", path)
             messagebox.showerror("Błąd", f"Nie można wczytać Excela: {e}")
             return
+
+        formula_cols = detect_formula_columns(path)
+        missing_formula_cols = {}
+        for sheet, cols in formula_cols.items():
+            df = self.dataframes.get(sheet)
+            if df is None:
+                continue
+            for col in cols:
+                if col not in df.columns:
+                    continue
+                series = df[col].head(200)
+                has_value = False
+                for val in series:
+                    try:
+                        if pd.isna(val):
+                            continue
+                    except Exception:
+                        pass
+                    if val != "":
+                        has_value = True
+                        break
+                if not has_value:
+                    missing_formula_cols.setdefault(sheet, []).append(col)
+        if missing_formula_cols:
+            preview = []
+            for sheet, cols in missing_formula_cols.items():
+                for col in cols:
+                    preview.append(f"{sheet}:{col}")
+                    if len(preview) >= 6:
+                        break
+                if len(preview) >= 6:
+                    break
+            logger.warning(
+                "Formula columns without cached values: %s",
+                ", ".join(preview),
+            )
+            messagebox.showwarning(
+                "Uwaga",
+                "Wykryto kolumny z formułami bez zapisanych wyników. "
+                "Otwórz plik w Excelu, odśwież obliczenia i zapisz, "
+                "a następnie wczytaj ponownie. "
+                f"Przykłady: {', '.join(preview)}",
+            )
         # Clear previous
         for child in self.columns_frame.winfo_children():
             child.destroy()
@@ -887,25 +931,51 @@ class PDSGeneratorGUI(tk.Tk):
             row=1, column=1, sticky="ew", padx=5, pady=2
         )
 
-        listbox = tk.Listbox(win)
-        listbox.grid(row=3, column=0, columnspan=2, pady=5, sticky="nsew")
+        table = ttk.Frame(win)
+        table.grid(row=3, column=0, columnspan=2, pady=5, sticky="nsew")
+        table.columnconfigure(0, weight=1)
+        table.rowconfigure(0, weight=1)
+
+        tree = ttk.Treeview(
+            table,
+            columns=("src", "tgt"),
+            show="headings",
+            selectmode="extended",
+        )
+        tree.heading("src", text="Jeśli puste")
+        tree.heading("tgt", text="Ukryj")
+        tree.column("src", width=240, anchor="w", stretch=True)
+        tree.column("tgt", width=240, anchor="w", stretch=True)
+        vsb = ttk.Scrollbar(table, orient="vertical", command=tree.yview)
+        hsb = ttk.Scrollbar(table, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+
         for s, t in self.conditions:
-            listbox.insert("end", f"{t} jeśli {s} puste")
+            tree.insert("", "end", values=(s, t))
         def add():
             s = src_var.get()
             t = tgt_var.get()
             if s and t and (s, t) not in self.conditions:
                 self.conditions.append((s, t))
-                listbox.insert("end", f"{t} jeśli {s} puste")
+                tree.insert("", "end", values=(s, t))
         ttk.Button(win, text="Dodaj", command=add).grid(
             row=2, column=0, columnspan=2, pady=5, sticky="ew"
         )
         def remove():
-            sel = listbox.curselection()
-            if sel:
-                idx = sel[0]
-                listbox.delete(idx)
-                self.conditions.pop(idx)
+            sel = tree.selection()
+            if not sel:
+                return
+            for item in sel:
+                values = tree.item(item, "values")
+                if values:
+                    try:
+                        self.conditions.remove(tuple(values))
+                    except ValueError:
+                        pass
+                tree.delete(item)
         ttk.Button(win, text="Usuń zaznaczone", command=remove).grid(
             row=4, column=0, columnspan=2, pady=5, sticky="ew"
         )
@@ -936,16 +1006,41 @@ class PDSGeneratorGUI(tk.Tk):
         except ValueError:
             messagebox.showerror("Błąd", "Nieprawidłowy numer wiersza")
             return
-        for name, element in sorted(self.elements.items(), key=lambda kv: kv[1].layer):
+        values = {}
+        for name in self.elements.keys():
             if ":" in name:
                 sheet, col = name.split(":", 1)
                 df = self.dataframes.get(sheet)
-                value = None
+                value = ""
                 if df is not None and 0 <= idx < len(df):
                     value = df.iloc[idx].get(col)
                     value = round_numeric_value(value)
             else:
                 value = self.static_entries[name].get() if name in getattr(self, "static_entries", {}) else name
+            try:
+                if pd.isna(value):
+                    value = ""
+            except TypeError:
+                if value is None:
+                    value = ""
+            values[name] = value
+
+        hidden = set()
+        for src, tgt in self.conditions:
+            if src not in values:
+                continue
+            src_val = values.get(src, "")
+            try:
+                empty = pd.isna(src_val) or src_val == ""
+            except TypeError:
+                empty = src_val == ""
+            if empty:
+                hidden.add(tgt)
+
+        for name, element in sorted(self.elements.items(), key=lambda kv: kv[1].layer):
+            value = values.get(name, "")
+            if name in hidden:
+                value = ""
             element.update_value(value)
 
     # ------------------------------------------------------------------

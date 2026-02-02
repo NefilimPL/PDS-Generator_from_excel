@@ -594,15 +594,17 @@ def generate_pds(app):
         collect_dynamic(src)
         collect_dynamic(tgt)
 
-    sheet_fields = {}
+    sheet_fields_all = {}
+    sheet_fields_tracking = {}
     excluded_fields = getattr(app, "tracking_excluded", set())
     for field in dynamic_fields:
-        if field in excluded_fields:
-            continue
         sheet, col = field.split(":", 1)
         if col == TRACKING_COLUMN:
             continue
-        sheet_fields.setdefault(sheet, set()).add(col)
+        sheet_fields_all.setdefault(sheet, set()).add(col)
+        if field in excluded_fields:
+            continue
+        sheet_fields_tracking.setdefault(sheet, set()).add(col)
 
     cache_rows = None
     cache_changed_cols = {}
@@ -611,7 +613,7 @@ def generate_pds(app):
 
     try:
         cache_rows, cache_changed_cols = update_tracking_cache(
-            app.excel_path, app.dataframes, total_rows, sheet_fields=sheet_fields
+            app.excel_path, app.dataframes, total_rows, sheet_fields=sheet_fields_tracking
         )
     except Exception:
         logger.exception("Failed to update tracking cache")
@@ -620,7 +622,7 @@ def generate_pds(app):
 
     try:
         excel_rows = update_tracking_column(
-            app.excel_path, app.dataframes, total_rows, sheet_fields=sheet_fields
+            app.excel_path, app.dataframes, total_rows, sheet_fields=sheet_fields_tracking
         )
         tracking_mode = "excel"
     except Exception:
@@ -656,7 +658,7 @@ def generate_pds(app):
             changed_rows = cache_rows
             tracking_mode = "cache"
 
-    tracked_columns = sum(len(cols) for cols in sheet_fields.values())
+    tracked_columns = sum(len(cols) for cols in sheet_fields_tracking.values())
     cache_count = len(cache_rows) if cache_rows is not None else None
     excel_count = len(excel_rows) if excel_rows is not None else None
     if changed_rows is None:
@@ -721,7 +723,7 @@ def generate_pds(app):
         if os.path.exists(pdf_path) and changed_rows is not None and idx not in changed_rows:
             continue
         row_values = {}
-        for sheet, columns in sheet_fields.items():
+        for sheet, columns in sheet_fields_all.items():
             df = app.dataframes.get(sheet)
             if df is None or idx >= len(df):
                 for col in columns:

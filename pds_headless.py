@@ -22,6 +22,7 @@ except ImportError as exc:  # pragma: no cover - runtime guard
     raise
 
 from pds_generator.gui import pdf_export
+from pds_generator.excel_io import read_excel_data, detect_formula_columns
 
 LOG_PREFIX = "pds_headless_"
 CONFIG_DIR = Path.home() / ".pds_generator"
@@ -264,16 +265,18 @@ def _build_groups(groups_conf):
     groups = {}
     for gconf in groups_conf:
         name = gconf.get("name") or f"group_{len(groups) + 1}"
+        field_pos = {
+            k: (v[0], v[1]) for k, v in (gconf.get("field_pos") or {}).items()
+        }
+        fields = list(gconf.get("fields") or field_pos.keys())
         groups[name] = SimpleNamespace(
             name=name,
             x=gconf.get("x", 0),
             y=gconf.get("y", 0),
             width=gconf.get("width", 0),
             height=gconf.get("height", 0),
-            fields=list(gconf.get("fields", [])),
-            field_pos={
-                k: (v[0], v[1]) for k, v in (gconf.get("field_pos") or {}).items()
-            },
+            fields=fields,
+            field_pos=field_pos,
             field_conf={
                 k: dict(v) for k, v in (gconf.get("field_conf") or {}).items()
             },
@@ -303,7 +306,7 @@ def _load_config(path: Path) -> dict:
 
 
 def _load_excel(path: str) -> dict:
-    return pd.read_excel(path, sheet_name=None)
+    return read_excel_data(path)
 
 
 def run_headless(excel_path: str | None, config_path: str | None, log_dir: Path) -> int:
@@ -328,6 +331,41 @@ def run_headless(excel_path: str | None, config_path: str | None, log_dir: Path)
 
     logging.info("Excel: %s", resolved_excel)
     dataframes = _load_excel(resolved_excel)
+    formula_cols = detect_formula_columns(resolved_excel)
+    missing_formula_cols = {}
+    for sheet, cols in formula_cols.items():
+        df = dataframes.get(sheet)
+        if df is None:
+            continue
+        for col in cols:
+            if col not in df.columns:
+                continue
+            series = df[col].head(200)
+            has_value = False
+            for val in series:
+                try:
+                    if pd.isna(val):
+                        continue
+                except Exception:
+                    pass
+                if val != "":
+                    has_value = True
+                    break
+            if not has_value:
+                missing_formula_cols.setdefault(sheet, []).append(col)
+    if missing_formula_cols:
+        preview = []
+        for sheet, cols in missing_formula_cols.items():
+            for col in cols:
+                preview.append(f"{sheet}:{col}")
+                if len(preview) >= 6:
+                    break
+            if len(preview) >= 6:
+                break
+        logging.warning(
+            "Formula columns without cached values: %s",
+            ", ".join(preview),
+        )
 
     app = HeadlessApp(config, resolved_excel, dataframes)
     started = pdf_export.generate_pds(app)
