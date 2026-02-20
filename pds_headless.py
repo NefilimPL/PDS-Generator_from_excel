@@ -154,15 +154,19 @@ class HeadlessApp:
     def finish_generation_ui(self, status="Done"):
         self.status = status
         logging.info("Finished: %s", status)
-        self._done_event.set()
 
     def wait_for_finish(self):
         self._done_event.wait()
 
     def on_generation_complete(self, report):
-        if not self.mail_config.get("enabled"):
-            return
         try:
+            logging.info(
+                "Generation completion callback reached. Mail enabled=%s status=%s",
+                bool(self.mail_config.get("enabled")),
+                report.get("status"),
+            )
+            if not self.mail_config.get("enabled"):
+                return
             cfg = mailer.validate_mail_config(self.mail_config, require_recipients=True)
             mailer.send_generation_report(cfg, report)
             logging.info("Mail report sent.")
@@ -172,6 +176,8 @@ class HeadlessApp:
             global _ERROR_FLAG
             _ERROR_FLAG = True
             logging.exception("Failed to send mail report")
+        finally:
+            self._done_event.set()
 
     def find_local_image(self, filename):
         if not filename:
