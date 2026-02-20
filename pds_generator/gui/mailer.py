@@ -392,6 +392,7 @@ def _build_generation_body(report):
     new_files = list(report.get("new_pdfs") or [])
     changed_files = list(report.get("updated_pdfs") or [])
     errors = list(report.get("errors") or [])
+    warnings = list(report.get("warnings") or [])
 
     lines = [
         "Raport generowania PDS",
@@ -427,6 +428,14 @@ def _build_generation_body(report):
     if changed_files:
         for path in sorted(changed_files):
             lines.append(f"- {_short_path(path)}")
+    else:
+        lines.append("- brak")
+
+    lines.append("")
+    lines.append("Ostrzeżenia jakości danych:")
+    if warnings:
+        for warn in warnings:
+            lines.append(f"- {warn}")
     else:
         lines.append("- brak")
 

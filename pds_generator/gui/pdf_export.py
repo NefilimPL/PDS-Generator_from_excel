@@ -3,6 +3,7 @@ import os
 import time
 import threading
 import re
+import math
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import suppress
 from io import BytesIO
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 import pandas as pd
 import requests
 from PIL import Image
+from openpyxl import load_workbook
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.lib import colors
@@ -38,6 +40,215 @@ IMAGE_EXTENSIONS = (
     ".webp",
     ".ico",
 )
+
+
+def _to_float(value):
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+            return None
+        return float(value)
+    text = str(value).strip().replace("\u00a0", "").replace(" ", "")
+    if not text:
+        return None
+    text = text.replace(",", ".")
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _extract_rgb(color_obj):
+    if not color_obj:
+        return None
+    rgb = getattr(color_obj, "rgb", None)
+    if not rgb:
+        return None
+    rgb = str(rgb).strip().lstrip("#")
+    if len(rgb) == 8:
+        rgb = rgb[2:]
+    if len(rgb) != 6:
+        return None
+    try:
+        int(rgb, 16)
+    except ValueError:
+        return None
+    return rgb.upper()
+
+
+def _is_red_color(color_obj):
+    rgb = _extract_rgb(color_obj)
+    if rgb:
+        r = int(rgb[0:2], 16)
+        g = int(rgb[2:4], 16)
+        b = int(rgb[4:6], 16)
+        return r >= 170 and g <= 110 and b <= 110
+    indexed = getattr(color_obj, "indexed", None)
+    return indexed in {10}
+
+
+def _cell_marked_red(cell):
+    fill = getattr(cell, "fill", None)
+    if fill and getattr(fill, "patternType", None) not in (None, "none"):
+        if _is_red_color(getattr(fill, "fgColor", None)) or _is_red_color(
+            getattr(fill, "start_color", None)
+        ):
+            return True
+    font = getattr(cell, "font", None)
+    if font and _is_red_color(getattr(font, "color", None)):
+        return True
+    return False
+
+
+def _collect_red_nonpositive_issues(app, tasks, sheet_fields_all):
+    if not tasks or not sheet_fields_all:
+        return []
+
+    task_rows = sorted({task.get("idx") for task in tasks if isinstance(task.get("idx"), int)})
+    if not task_rows:
+        return []
+
+    issues = set()
+    try:
+        wb = load_workbook(app.excel_path, data_only=False, read_only=True)
+    except Exception:
+        logger.exception("Failed to open workbook for red-cell validation")
+        return ["Nie udało się sprawdzić pól oznaczonych na czerwono w Excelu."]
+
+    for sheet_name, columns in sheet_fields_all.items():
+        if sheet_name not in wb.sheetnames:
+            continue
+        df = app.dataframes.get(sheet_name)
+        if df is None or df.empty:
+            continue
+        ws = wb[sheet_name]
+        try:
+            header_row = next(ws.iter_rows(min_row=1, max_row=1))
+        except StopIteration:
+            continue
+        header_indices = {}
+        for col_idx, header_cell in enumerate(header_row, start=1):
+            header_value = header_cell.value
+            if header_value is None:
+                continue
+            header_indices[str(header_value)] = col_idx
+
+        for col_name in columns:
+            col_idx = header_indices.get(col_name)
+            if not col_idx:
+                continue
+            for row_idx in task_rows:
+                if row_idx < 0 or row_idx >= len(df):
+                    continue
+                excel_row = row_idx + 2
+                cell = ws.cell(row=excel_row, column=col_idx)
+                if not _cell_marked_red(cell):
+                    continue
+                value = df.iloc[row_idx].get(col_name)
+                number = _to_float(value)
+                if number is None or number > 0:
+                    continue
+                shown = round_numeric_value(value)
+                issues.add(
+                    f"Wiersz {row_idx + 1}: {sheet_name}:{col_name} ma wartość {shown} (<= 0) i jest oznaczone na czerwono."
+                )
+    return sorted(issues)
+
+
+def _is_http_value(value):
+    text = str(value or "").strip().lower()
+    return text.startswith("http://") or text.startswith("https://")
+
+
+def _check_remote_image_exists(url, timeout=3):
+    response = None
+    try:
+        response = requests.head(url, allow_redirects=True, timeout=timeout)
+        status = response.status_code
+        if status in {405} or status >= 400:
+            with suppress(Exception):
+                response.close()
+            response = requests.get(url, stream=True, timeout=timeout)
+            status = response.status_code
+        return 200 <= status < 400
+    except requests.RequestException:
+        return False
+    finally:
+        if response is not None:
+            with suppress(Exception):
+                response.close()
+
+
+def _collect_missing_image_issues(app, tasks):
+    image_fields = set(getattr(app, "image_fields", set()) or [])
+    if not tasks or not image_fields:
+        return []
+
+    issues = set()
+    remote_cache = {}
+    max_remote_checks = 30
+
+    for task in tasks:
+        row_idx = task.get("idx", -1)
+        row_no = row_idx + 1 if isinstance(row_idx, int) and row_idx >= 0 else "?"
+        row_values = task.get("row_values", {}) or {}
+
+        for field in image_fields:
+            if ":" not in field:
+                continue
+            if field not in row_values:
+                continue
+            value = row_values.get(field)
+            text = str(value or "").strip()
+            if not text:
+                continue
+            if _is_http_value(text):
+                if text not in remote_cache and len(remote_cache) < max_remote_checks:
+                    remote_cache[text] = _check_remote_image_exists(text)
+                if text in remote_cache and not remote_cache[text]:
+                    issues.add(
+                        f"Wiersz {row_no}: nie można pobrać obrazu z URL dla pola {field}: {text}"
+                    )
+                continue
+            if not app.find_local_image(text):
+                issues.add(
+                    f"Wiersz {row_no}: nie znaleziono pliku obrazu dla pola {field}: {text}"
+                )
+
+    static_entries = _collect_static_entries(app)
+    for field in image_fields:
+        if ":" in field:
+            continue
+        value = static_entries.get(field, "")
+        text = str(value or "").strip()
+        if not text:
+            continue
+        if _is_http_value(text):
+            if text not in remote_cache and len(remote_cache) < max_remote_checks:
+                remote_cache[text] = _check_remote_image_exists(text)
+            if text in remote_cache and not remote_cache[text]:
+                issues.add(
+                    f"Pole statyczne {field}: nie można pobrać obrazu z URL: {text}"
+                )
+            continue
+        if not app.find_local_image(text):
+            issues.add(
+                f"Pole statyczne {field}: nie znaleziono pliku obrazu: {text}"
+            )
+
+    if len(remote_cache) >= max_remote_checks:
+        issues.add(
+            "Pominięto część zdalnych sprawdzeń URL obrazów (limit 30 unikalnych linków na uruchomienie)."
+        )
+    return sorted(issues)
 
 
 def _ui_call(app, func, *args, **kwargs):
@@ -603,6 +814,7 @@ def generate_pds(app):
         "new_pdfs": [],
         "updated_pdfs": [],
         "errors": [],
+        "warnings": [],
     }
 
     def finish_now(status_label, status_code):
@@ -826,6 +1038,34 @@ def generate_pds(app):
         finish_now("Brak zmian", "no_changes")
         return False
 
+    validation_warnings = []
+    try:
+        validation_warnings.extend(
+            _collect_red_nonpositive_issues(app, tasks, sheet_fields_all)
+        )
+    except Exception:
+        logger.exception("Failed while validating red-marked numeric fields")
+        validation_warnings.append(
+            "Nie udało się sprawdzić pól oznaczonych na czerwono."
+        )
+    try:
+        validation_warnings.extend(_collect_missing_image_issues(app, tasks))
+    except Exception:
+        logger.exception("Failed while validating image references")
+        validation_warnings.append(
+            "Nie udało się sprawdzić ścieżek i linków obrazów."
+        )
+    if validation_warnings:
+        report["warnings"] = sorted(set(validation_warnings))
+        sample = ", ".join(report["warnings"][:3])
+        logger.warning(
+            "Detected data quality warnings: %s (sample: %s)",
+            len(report["warnings"]),
+            sample,
+        )
+        for warning_text in report["warnings"][:200]:
+            logger.warning("Data warning: %s", warning_text)
+
     skipped_rows = total_rows - len(tasks) if changed_rows is not None else 0
     report["total_tasks"] = len(tasks)
     report["skipped_rows"] = skipped_rows
@@ -1000,6 +1240,13 @@ def generate_pds(app):
                     messagebox.showinfo(
                         "Zakończono", f"Pliki zapisane w {payload['output_dir']}"
                     )
+                    if report["warnings"]:
+                        messagebox.showwarning(
+                            "Uwaga",
+                            "Wykryto ostrzeżenia jakości danych: "
+                            f"{len(report['warnings'])}. "
+                            "Szczegóły są dostępne w raporcie e-mail i logach.",
+                        )
                 _notify_generation_complete(app, report)
 
             app.after(0, finish)
