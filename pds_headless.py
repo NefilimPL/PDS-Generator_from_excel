@@ -21,7 +21,7 @@ except ImportError as exc:  # pragma: no cover - runtime guard
     )
     raise
 
-from pds_generator.gui import pdf_export
+from pds_generator.gui import mailer, pdf_export
 from pds_generator.excel_io import read_excel_data, detect_formula_columns
 
 LOG_PREFIX = "pds_headless_"
@@ -112,6 +112,7 @@ class HeadlessApp:
         self.scale = 1.0
         self.conditions = config.get("conditions", [])
         self.tracking_excluded = set(config.get("tracking_excluded", []))
+        self.mail_config = mailer.normalize_mail_config(config.get("mail", {}))
         self.image_fields = set(config.get("image_fields", []))
         self.image_dirs = list(config.get("image_dirs", []))
         self.elements = _build_elements(config.get("elements", []), self.image_fields)
@@ -157,6 +158,20 @@ class HeadlessApp:
 
     def wait_for_finish(self):
         self._done_event.wait()
+
+    def on_generation_complete(self, report):
+        if not self.mail_config.get("enabled"):
+            return
+        try:
+            cfg = mailer.validate_mail_config(self.mail_config, require_recipients=True)
+            mailer.send_generation_report(cfg, report)
+            logging.info("Mail report sent.")
+        except ValueError as exc:
+            logging.warning("Mail report skipped due to invalid config: %s", exc)
+        except Exception:
+            global _ERROR_FLAG
+            _ERROR_FLAG = True
+            logging.exception("Failed to send mail report")
 
     def find_local_image(self, filename):
         if not filename:

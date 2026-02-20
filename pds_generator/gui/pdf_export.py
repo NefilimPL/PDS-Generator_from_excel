@@ -77,6 +77,11 @@ def _ui_finish(app, status):
         _ui_call(app, app.finish_generation_ui, status)
 
 
+def _notify_generation_complete(app, report):
+    if hasattr(app, "on_generation_complete"):
+        _ui_call(app, app.on_generation_complete, report)
+
+
 def _is_cancelled(app):
     cancel_event = getattr(app, "cancel_event", None)
     return cancel_event is not None and cancel_event.is_set()
@@ -587,22 +592,39 @@ def render_single_pdf(task):
 
 
 def generate_pds(app):
-    def finish_now(status):
+    report = {
+        "status": "started",
+        "excel_path": getattr(app, "excel_path", ""),
+        "output_dir": "",
+        "total_rows": 0,
+        "total_tasks": 0,
+        "processed_rows": 0,
+        "skipped_rows": 0,
+        "new_pdfs": [],
+        "updated_pdfs": [],
+        "errors": [],
+    }
+
+    def finish_now(status_label, status_code):
         if hasattr(app, "finish_generation_ui"):
-            app.finish_generation_ui(status)
+            app.finish_generation_ui(status_label)
         else:
-            _ui_finish(app, status)
+            _ui_finish(app, status_label)
+        report["status"] = status_code
+        _notify_generation_complete(app, report)
 
     if not app.excel_path or not app.dataframes:
+        report["errors"].append("Brak danych do generowania.")
         messagebox.showerror("Błąd", "Brak danych do generowania")
-        finish_now("Brak danych")
+        finish_now("Brak danych", "no_data")
         return False
 
     _, first_df = next(iter(app.dataframes.items()))
     total_rows = len(first_df)
+    report["total_rows"] = total_rows
     if total_rows == 0:
         messagebox.showinfo("Info", "Brak wierszy w pliku Excel")
-        finish_now("Brak wierszy")
+        finish_now("Brak wierszy", "no_rows")
         return False
 
     _ui_counts(app, total_rows=total_rows)
@@ -652,6 +674,9 @@ def generate_pds(app):
         )
     except Exception:
         logger.exception("Failed to update tracking cache")
+        report["errors"].append(
+            "Nie udało się zaktualizować lokalnego cache śledzenia zmian."
+        )
         cache_rows = None
         cache_changed_cols = {}
 
@@ -662,6 +687,9 @@ def generate_pds(app):
         tracking_mode = "excel"
     except Exception:
         logger.exception("Failed to update tracking column")
+        report["errors"].append(
+            "Nie udało się zaktualizować kolumny kontrolnej w Excelu."
+        )
         if cache_rows is None:
             messagebox.showwarning(
                 "Uwaga",
@@ -731,6 +759,7 @@ def generate_pds(app):
 
     output_dir = os.path.join(os.path.dirname(app.excel_path), "PDS")
     os.makedirs(output_dir, exist_ok=True)
+    report["output_dir"] = output_dir
 
     page_width = app.page_width
     page_height = app.page_height
@@ -755,7 +784,8 @@ def generate_pds(app):
         else:
             unique_name = filename
         pdf_path = os.path.join(output_dir, f"{unique_name}.pdf")
-        if os.path.exists(pdf_path) and changed_rows is not None and idx not in changed_rows:
+        existed_before = os.path.exists(pdf_path)
+        if existed_before and changed_rows is not None and idx not in changed_rows:
             continue
         row_values = {}
         for sheet, columns in sheet_fields_all.items():
@@ -782,18 +812,23 @@ def generate_pds(app):
                 "pdf_path": pdf_path,
                 "name": unique_name,
                 "row_values": row_values,
+                "existed_before": existed_before,
             }
         )
 
     if not tasks:
+        report["total_tasks"] = 0
+        report["skipped_rows"] = total_rows
         messagebox.showinfo(
             "Info", "Brak zmian - wszystkie pliki PDF są aktualne."
         )
         _ui_counts(app, total_rows=total_rows, total_tasks=0, processed=0, skipped=total_rows)
-        finish_now("Brak zmian")
+        finish_now("Brak zmian", "no_changes")
         return False
 
     skipped_rows = total_rows - len(tasks) if changed_rows is not None else 0
+    report["total_tasks"] = len(tasks)
+    report["skipped_rows"] = skipped_rows
     _ui_counts(
         app,
         total_rows=total_rows,
@@ -805,7 +840,7 @@ def generate_pds(app):
     _ui_status(app, "Generowanie PDF...")
 
     if _is_cancelled(app):
-        finish_now("Anulowano")
+        finish_now("Anulowano", "cancelled")
         return False
 
     worker_payload = {
@@ -848,6 +883,8 @@ def generate_pds(app):
         failures = []
         completed = 0
         cancelled = False
+        new_files = []
+        updated_files = []
         max_workers = max(1, min(len(tasks_local), os.cpu_count() or 1))
 
         executor = None
@@ -867,7 +904,12 @@ def generate_pds(app):
                     break
                 task = future_map[future]
                 try:
-                    future.result()
+                    result = future.result()
+                    final_pdf = result.get("pdf_path", task["pdf_path"])
+                    if task.get("existed_before"):
+                        updated_files.append(final_pdf)
+                    else:
+                        new_files.append(final_pdf)
                 except Exception as exc:  # pragma: no cover - defensive logging
                     failures.append((task["idx"], task.get("name", ""), str(exc)))
                     logger.exception(
@@ -909,14 +951,32 @@ def generate_pds(app):
                             executor.shutdown()
                 else:
                     executor.shutdown()
+
             def finish():
+                report["processed_rows"] = completed
+                report["new_pdfs"] = sorted(new_files)
+                report["updated_pdfs"] = sorted(updated_files)
+                for idx, name, err in failures:
+                    if idx >= 0:
+                        if name:
+                            report["errors"].append(
+                                f"Wiersz {idx + 1} ({name}): {err}"
+                            )
+                        else:
+                            report["errors"].append(f"Wiersz {idx + 1}: {err}")
+                    else:
+                        report["errors"].append(f"Błąd wykonawcy: {err}")
+
                 if cancelled:
+                    report["status"] = "cancelled"
                     if hasattr(app, "finish_generation_ui"):
                         app.finish_generation_ui("Anulowano")
                     else:
                         _ui_finish(app, "Anulowano")
+                    _notify_generation_complete(app, report)
                     return
                 if failures:
+                    report["status"] = "error"
                     if hasattr(app, "finish_generation_ui"):
                         app.finish_generation_ui("Błąd")
                     else:
@@ -932,6 +992,7 @@ def generate_pds(app):
                         message = "Wystąpił błąd podczas generowania plików PDF. Sprawdź logi."
                     messagebox.showerror("Błąd", message)
                 else:
+                    report["status"] = "success"
                     if hasattr(app, "finish_generation_ui"):
                         app.finish_generation_ui("Zakończono")
                     else:
@@ -939,6 +1000,7 @@ def generate_pds(app):
                     messagebox.showinfo(
                         "Zakończono", f"Pliki zapisane w {payload['output_dir']}"
                     )
+                _notify_generation_complete(app, report)
 
             app.after(0, finish)
 

@@ -3,6 +3,7 @@ import os
 import sys
 import webbrowser
 import threading
+from copy import deepcopy
 
 import pandas as pd
 import tkinter as tk
@@ -23,6 +24,7 @@ from .config_io import (
     save_config as save_config_func,
     load_config as load_config_func,
 )
+from . import mailer
 from .excel_tracking import is_tracking_column
 from ..excel_io import read_excel_data, detect_formula_columns, collect_formula_samples
 from . import locks
@@ -115,6 +117,9 @@ class PDSGeneratorGUI(tk.Tk):
         self.generation_in_progress = False
         self.cancel_event = None
         self.tracking_excluded = set()
+        self.mail_config = mailer.normalize_mail_config({})
+        self.mail_settings_win = None
+        self.last_generation_report = None
         self.formula_map = {}
         self.column_rows = {}
         self.column_indicators = {}
@@ -679,6 +684,294 @@ class PDSGeneratorGUI(tk.Tk):
         ttk.Button(btns, text="Zaznacz wszystkie", command=select_all).pack(side="left")
         ttk.Button(btns, text="Wyczyść", command=clear_all).pack(side="left", padx=5)
         ttk.Button(btns, text="Zapisz", command=save).pack(side="right")
+
+    def _mail_settings_from_inputs(
+        self,
+        enabled,
+        smtp_host,
+        smtp_port,
+        smtp_security,
+        username,
+        password,
+        sender,
+        recipients_text,
+        subject_prefix,
+        timeout_seconds,
+        strict=False,
+        require_recipients=False,
+    ):
+        try:
+            port = int(str(smtp_port).strip())
+        except (TypeError, ValueError):
+            messagebox.showerror("E-mail", "Port SMTP musi być liczbą całkowitą.")
+            return None
+        try:
+            timeout = int(str(timeout_seconds).strip())
+        except (TypeError, ValueError):
+            messagebox.showerror("E-mail", "Timeout musi być liczbą całkowitą.")
+            return None
+
+        cfg = mailer.normalize_mail_config(
+            {
+                "enabled": bool(enabled),
+                "smtp_host": smtp_host,
+                "smtp_port": port,
+                "smtp_security": smtp_security,
+                "username": username,
+                "password": password,
+                "sender": sender,
+                "recipients": recipients_text,
+                "subject_prefix": subject_prefix,
+                "timeout_seconds": timeout,
+            }
+        )
+        if strict:
+            try:
+                cfg = mailer.validate_mail_config(
+                    cfg, require_recipients=require_recipients
+                )
+            except ValueError as exc:
+                messagebox.showerror("E-mail", str(exc))
+                return None
+        return cfg
+
+    def _run_mail_action_async(
+        self,
+        config,
+        action,
+        success_message,
+        start_status,
+        success_status,
+        error_prefix,
+    ):
+        self.set_status(start_status)
+
+        def worker():
+            try:
+                action(config)
+            except Exception as exc:
+                logger.exception("%s failed", error_prefix)
+                self.ui_call(
+                    messagebox.showerror,
+                    "E-mail",
+                    f"{error_prefix}: {exc}",
+                )
+                self.ui_call(self.set_status, "Błąd e-mail")
+                return
+            self.ui_call(messagebox.showinfo, "E-mail", success_message)
+            self.ui_call(self.set_status, success_status)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def open_mail_settings(self):
+        if self.mail_settings_win and self.mail_settings_win.winfo_exists():
+            self.mail_settings_win.lift()
+            self.mail_settings_win.focus_force()
+            return
+
+        cfg = mailer.normalize_mail_config(getattr(self, "mail_config", {}))
+
+        win = tk.Toplevel(self)
+        self.mail_settings_win = win
+        win.title("Konfiguracja e-mail")
+        win.columnconfigure(1, weight=1)
+
+        enabled_var = tk.BooleanVar(value=cfg["enabled"])
+        host_var = tk.StringVar(value=cfg["smtp_host"])
+        port_var = tk.StringVar(value=str(cfg["smtp_port"]))
+        security_var = tk.StringVar(value=cfg["smtp_security"])
+        username_var = tk.StringVar(value=cfg["username"])
+        password_var = tk.StringVar(value=cfg["password"])
+        sender_var = tk.StringVar(value=cfg["sender"])
+        subject_var = tk.StringVar(value=cfg["subject_prefix"])
+        timeout_var = tk.StringVar(value=str(cfg["timeout_seconds"]))
+
+        ttk.Checkbutton(
+            win,
+            text="Włącz wysyłkę raportów po generowaniu PDF",
+            variable=enabled_var,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 8))
+
+        ttk.Label(win, text="Serwer SMTP:").grid(
+            row=1, column=0, sticky="w", padx=10, pady=2
+        )
+        ttk.Entry(win, textvariable=host_var).grid(
+            row=1, column=1, sticky="ew", padx=10, pady=2
+        )
+
+        ttk.Label(win, text="Port SMTP:").grid(
+            row=2, column=0, sticky="w", padx=10, pady=2
+        )
+        ttk.Entry(win, textvariable=port_var, width=10).grid(
+            row=2, column=1, sticky="w", padx=10, pady=2
+        )
+
+        ttk.Label(win, text="Zabezpieczenie:").grid(
+            row=3, column=0, sticky="w", padx=10, pady=2
+        )
+        security_box = ttk.Combobox(
+            win,
+            textvariable=security_var,
+            values=(mailer.SECURITY_STARTTLS, mailer.SECURITY_SSL, mailer.SECURITY_NONE),
+            state="readonly",
+        )
+        security_box.grid(row=3, column=1, sticky="w", padx=10, pady=2)
+
+        ttk.Label(win, text="Login SMTP:").grid(
+            row=4, column=0, sticky="w", padx=10, pady=2
+        )
+        ttk.Entry(win, textvariable=username_var).grid(
+            row=4, column=1, sticky="ew", padx=10, pady=2
+        )
+
+        ttk.Label(win, text="Hasło SMTP:").grid(
+            row=5, column=0, sticky="w", padx=10, pady=2
+        )
+        ttk.Entry(win, textvariable=password_var, show="*").grid(
+            row=5, column=1, sticky="ew", padx=10, pady=2
+        )
+
+        ttk.Label(win, text="Adres nadawcy:").grid(
+            row=6, column=0, sticky="w", padx=10, pady=2
+        )
+        ttk.Entry(win, textvariable=sender_var).grid(
+            row=6, column=1, sticky="ew", padx=10, pady=2
+        )
+
+        ttk.Label(win, text="Temat (prefix):").grid(
+            row=7, column=0, sticky="w", padx=10, pady=2
+        )
+        ttk.Entry(win, textvariable=subject_var).grid(
+            row=7, column=1, sticky="ew", padx=10, pady=2
+        )
+
+        ttk.Label(win, text="Timeout [s]:").grid(
+            row=8, column=0, sticky="w", padx=10, pady=2
+        )
+        ttk.Entry(win, textvariable=timeout_var, width=10).grid(
+            row=8, column=1, sticky="w", padx=10, pady=2
+        )
+
+        ttk.Label(
+            win,
+            text="Odbiorcy (jeden adres w linii, albo rozdzielone przecinkiem):",
+        ).grid(row=9, column=0, columnspan=2, sticky="w", padx=10, pady=(8, 2))
+        recipients_box = tk.Text(win, height=6, width=46)
+        recipients_box.grid(row=10, column=0, columnspan=2, sticky="ew", padx=10, pady=2)
+        recipients_box.insert("1.0", mailer.recipients_to_text(cfg["recipients"]))
+
+        btns = ttk.Frame(win)
+        btns.grid(row=11, column=0, columnspan=2, sticky="ew", padx=10, pady=(8, 10))
+        btns.columnconfigure(0, weight=1)
+        btns.columnconfigure(1, weight=1)
+        btns.columnconfigure(2, weight=1)
+        btns.columnconfigure(3, weight=1)
+
+        def collect(strict=False, require_recipients=False):
+            recipients_value = recipients_box.get("1.0", "end").strip()
+            return self._mail_settings_from_inputs(
+                enabled=enabled_var.get(),
+                smtp_host=host_var.get(),
+                smtp_port=port_var.get(),
+                smtp_security=security_var.get(),
+                username=username_var.get(),
+                password=password_var.get(),
+                sender=sender_var.get(),
+                recipients_text=recipients_value,
+                subject_prefix=subject_var.get(),
+                timeout_seconds=timeout_var.get(),
+                strict=strict,
+                require_recipients=require_recipients,
+            )
+
+        def save_only():
+            new_cfg = collect(strict=False, require_recipients=False)
+            if not new_cfg:
+                return
+            self.mail_config = new_cfg
+            messagebox.showinfo(
+                "E-mail",
+                "Zapisano ustawienia e-mail. "
+                "Użyj 'Zapisz konfigurację', aby zapisać je do pliku config.json.",
+            )
+
+        def test_connection():
+            test_cfg = collect(strict=True, require_recipients=False)
+            if not test_cfg:
+                return
+            self._run_mail_action_async(
+                test_cfg,
+                mailer.test_smtp_connection,
+                "Połączenie SMTP działa poprawnie.",
+                "Testowanie połączenia SMTP...",
+                "Połączenie SMTP OK",
+                "Test połączenia SMTP nie powiódł się",
+            )
+
+        def send_test_message():
+            test_cfg = collect(strict=True, require_recipients=True)
+            if not test_cfg:
+                return
+            self._run_mail_action_async(
+                test_cfg,
+                mailer.send_test_email,
+                "Wysłano testową wiadomość.",
+                "Wysyłanie testowej wiadomości...",
+                "Wysłano testową wiadomość",
+                "Wysyłka testowej wiadomości nie powiodła się",
+            )
+
+        def close():
+            self.mail_settings_win = None
+            win.destroy()
+
+        ttk.Button(btns, text="Test połączenia", command=test_connection).grid(
+            row=0, column=0, sticky="ew"
+        )
+        ttk.Button(btns, text="Wyślij testową wiadomość", command=send_test_message).grid(
+            row=0, column=1, sticky="ew", padx=(6, 0)
+        )
+        ttk.Button(btns, text="Zapisz", command=save_only).grid(
+            row=0, column=2, sticky="ew", padx=(6, 0)
+        )
+        ttk.Button(btns, text="Zamknij", command=close).grid(
+            row=0, column=3, sticky="ew", padx=(6, 0)
+        )
+
+        win.protocol("WM_DELETE_WINDOW", close)
+
+    def on_generation_complete(self, report):
+        self.last_generation_report = deepcopy(report)
+        cfg = mailer.normalize_mail_config(getattr(self, "mail_config", {}))
+        if not cfg.get("enabled"):
+            return
+        try:
+            cfg = mailer.validate_mail_config(cfg, require_recipients=True)
+        except ValueError as exc:
+            logger.warning("Mail config is invalid, skipping report: %s", exc)
+            messagebox.showwarning(
+                "E-mail",
+                f"Nie wysłano raportu e-mail: {exc}",
+            )
+            return
+
+        self.set_status("Wysyłanie raportu e-mail...")
+
+        def worker():
+            try:
+                mailer.send_generation_report(cfg, report)
+            except Exception as exc:
+                logger.exception("Failed to send generation report email")
+                self.ui_call(
+                    messagebox.showwarning,
+                    "E-mail",
+                    f"Nie udało się wysłać raportu: {exc}",
+                )
+                self.ui_call(self.set_status, "Błąd wysyłki e-mail")
+                return
+            self.ui_call(self.set_status, "Wysłano raport e-mail")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def toggle_static(self, name, state):
         if state:

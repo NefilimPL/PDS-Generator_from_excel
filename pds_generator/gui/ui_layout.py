@@ -145,7 +145,11 @@ def setup_ui(app):
     app.tracking_btn = ttk.Button(
         right_frame, text="Śledzenie zmian", command=app.open_tracking_settings
     )
-    app.tracking_btn.pack(fill="x", pady=(5, 10))
+    app.tracking_btn.pack(fill="x", pady=(5, 5))
+    app.mail_settings_btn = ttk.Button(
+        right_frame, text="Konfiguracja e-mail", command=app.open_mail_settings
+    )
+    app.mail_settings_btn.pack(fill="x", pady=(0, 10))
 
     # Image directories
     ttk.Label(right_frame, text="Foldery obrazów:").pack(anchor="w")
@@ -253,6 +257,7 @@ def setup_ui(app):
         app.tooltip.bind(center_v_btn, text="Wyśrodkuj element w pionie")
         app.tooltip.bind(app.layer_entry, text="Warstwa elementu (wyższa = na wierzchu)")
         app.tooltip.bind(app.tracking_btn, text="Wybierz kolumny do śledzenia zmian")
+        app.tooltip.bind(app.mail_settings_btn, text="Ustaw SMTP i odbiorców raportów")
         app.tooltip.bind(add_img_btn, text="Dodaj katalog z obrazami")
         app.tooltip.bind(remove_img_btn, text="Usuń zaznaczony katalog z listy")
         app.tooltip.bind(app.add_static_btn, text="Dodaj nowe pole statyczne")
