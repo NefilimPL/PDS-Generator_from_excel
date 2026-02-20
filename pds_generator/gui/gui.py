@@ -687,6 +687,7 @@ class PDSGeneratorGUI(tk.Tk):
 
     def _mail_settings_from_inputs(
         self,
+        transport,
         enabled,
         smtp_host,
         smtp_port,
@@ -694,6 +695,9 @@ class PDSGeneratorGUI(tk.Tk):
         username,
         password,
         sender,
+        entra_token,
+        entra_sender,
+        entra_endpoint,
         recipients_text,
         subject_prefix,
         timeout_seconds,
@@ -713,6 +717,7 @@ class PDSGeneratorGUI(tk.Tk):
 
         cfg = mailer.normalize_mail_config(
             {
+                "transport": transport,
                 "enabled": bool(enabled),
                 "smtp_host": smtp_host,
                 "smtp_port": port,
@@ -720,6 +725,9 @@ class PDSGeneratorGUI(tk.Tk):
                 "username": username,
                 "password": password,
                 "sender": sender,
+                "entra_token": entra_token,
+                "entra_sender": entra_sender,
+                "entra_endpoint": entra_endpoint,
                 "recipients": recipients_text,
                 "subject_prefix": subject_prefix,
                 "timeout_seconds": timeout,
@@ -777,12 +785,15 @@ class PDSGeneratorGUI(tk.Tk):
         win.columnconfigure(1, weight=1)
 
         enabled_var = tk.BooleanVar(value=cfg["enabled"])
+        transport_var = tk.StringVar(value=cfg["transport"])
         host_var = tk.StringVar(value=cfg["smtp_host"])
         port_var = tk.StringVar(value=str(cfg["smtp_port"]))
         security_var = tk.StringVar(value=cfg["smtp_security"])
         username_var = tk.StringVar(value=cfg["username"])
         password_var = tk.StringVar(value=cfg["password"])
         sender_var = tk.StringVar(value=cfg["sender"])
+        entra_sender_var = tk.StringVar(value=cfg["entra_sender"])
+        entra_endpoint_var = tk.StringVar(value=cfg["entra_endpoint"])
         subject_var = tk.StringVar(value=cfg["subject_prefix"])
         timeout_var = tk.StringVar(value=str(cfg["timeout_seconds"]))
 
@@ -792,76 +803,123 @@ class PDSGeneratorGUI(tk.Tk):
             variable=enabled_var,
         ).grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 8))
 
-        ttk.Label(win, text="Serwer SMTP:").grid(
+        ttk.Label(win, text="Metoda wysyłki:").grid(
             row=1, column=0, sticky="w", padx=10, pady=2
         )
-        ttk.Entry(win, textvariable=host_var).grid(
-            row=1, column=1, sticky="ew", padx=10, pady=2
+        transport_frame = ttk.Frame(win)
+        transport_frame.grid(row=1, column=1, sticky="w", padx=10, pady=2)
+        ttk.Radiobutton(
+            transport_frame,
+            text="SMTP",
+            value=mailer.TRANSPORT_SMTP,
+            variable=transport_var,
+        ).pack(side="left")
+        ttk.Radiobutton(
+            transport_frame,
+            text="Microsoft Entra API (token)",
+            value=mailer.TRANSPORT_ENTRA_API,
+            variable=transport_var,
+        ).pack(side="left", padx=(8, 0))
+
+        smtp_frame = ttk.LabelFrame(win, text="Ustawienia SMTP")
+        smtp_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(6, 2))
+        smtp_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(smtp_frame, text="Serwer SMTP:").grid(
+            row=0, column=0, sticky="w", padx=8, pady=2
+        )
+        ttk.Entry(smtp_frame, textvariable=host_var).grid(
+            row=0, column=1, sticky="ew", padx=8, pady=2
         )
 
-        ttk.Label(win, text="Port SMTP:").grid(
-            row=2, column=0, sticky="w", padx=10, pady=2
+        ttk.Label(smtp_frame, text="Port SMTP:").grid(
+            row=1, column=0, sticky="w", padx=8, pady=2
         )
-        ttk.Entry(win, textvariable=port_var, width=10).grid(
-            row=2, column=1, sticky="w", padx=10, pady=2
+        ttk.Entry(smtp_frame, textvariable=port_var, width=10).grid(
+            row=1, column=1, sticky="w", padx=8, pady=2
         )
 
-        ttk.Label(win, text="Zabezpieczenie:").grid(
-            row=3, column=0, sticky="w", padx=10, pady=2
+        ttk.Label(smtp_frame, text="Zabezpieczenie:").grid(
+            row=2, column=0, sticky="w", padx=8, pady=2
         )
         security_box = ttk.Combobox(
-            win,
+            smtp_frame,
             textvariable=security_var,
             values=(mailer.SECURITY_STARTTLS, mailer.SECURITY_SSL, mailer.SECURITY_NONE),
             state="readonly",
         )
-        security_box.grid(row=3, column=1, sticky="w", padx=10, pady=2)
+        security_box.grid(row=2, column=1, sticky="w", padx=8, pady=2)
 
-        ttk.Label(win, text="Login SMTP:").grid(
-            row=4, column=0, sticky="w", padx=10, pady=2
+        ttk.Label(smtp_frame, text="Login SMTP:").grid(
+            row=3, column=0, sticky="w", padx=8, pady=2
         )
-        ttk.Entry(win, textvariable=username_var).grid(
-            row=4, column=1, sticky="ew", padx=10, pady=2
-        )
-
-        ttk.Label(win, text="Hasło SMTP:").grid(
-            row=5, column=0, sticky="w", padx=10, pady=2
-        )
-        ttk.Entry(win, textvariable=password_var, show="*").grid(
-            row=5, column=1, sticky="ew", padx=10, pady=2
+        ttk.Entry(smtp_frame, textvariable=username_var).grid(
+            row=3, column=1, sticky="ew", padx=8, pady=2
         )
 
-        ttk.Label(win, text="Adres nadawcy:").grid(
-            row=6, column=0, sticky="w", padx=10, pady=2
+        ttk.Label(smtp_frame, text="Hasło SMTP:").grid(
+            row=4, column=0, sticky="w", padx=8, pady=2
         )
-        ttk.Entry(win, textvariable=sender_var).grid(
-            row=6, column=1, sticky="ew", padx=10, pady=2
+        ttk.Entry(smtp_frame, textvariable=password_var, show="*").grid(
+            row=4, column=1, sticky="ew", padx=8, pady=2
+        )
+
+        ttk.Label(smtp_frame, text="Adres nadawcy:").grid(
+            row=5, column=0, sticky="w", padx=8, pady=2
+        )
+        ttk.Entry(smtp_frame, textvariable=sender_var).grid(
+            row=5, column=1, sticky="ew", padx=8, pady=2
+        )
+
+        api_frame = ttk.LabelFrame(win, text="Microsoft Entra API")
+        api_frame.grid(row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=(6, 2))
+        api_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(api_frame, text="Token Bearer:").grid(
+            row=0, column=0, sticky="nw", padx=8, pady=2
+        )
+        token_box = tk.Text(api_frame, height=4, width=46)
+        token_box.grid(row=0, column=1, sticky="ew", padx=8, pady=2)
+        token_box.insert("1.0", cfg["entra_token"])
+
+        ttk.Label(api_frame, text="Nadawca (UPN/ID):").grid(
+            row=1, column=0, sticky="w", padx=8, pady=2
+        )
+        ttk.Entry(api_frame, textvariable=entra_sender_var).grid(
+            row=1, column=1, sticky="ew", padx=8, pady=2
+        )
+
+        ttk.Label(api_frame, text="Endpoint (opcjonalnie):").grid(
+            row=2, column=0, sticky="w", padx=8, pady=2
+        )
+        ttk.Entry(api_frame, textvariable=entra_endpoint_var).grid(
+            row=2, column=1, sticky="ew", padx=8, pady=2
         )
 
         ttk.Label(win, text="Temat (prefix):").grid(
-            row=7, column=0, sticky="w", padx=10, pady=2
+            row=4, column=0, sticky="w", padx=10, pady=2
         )
         ttk.Entry(win, textvariable=subject_var).grid(
-            row=7, column=1, sticky="ew", padx=10, pady=2
+            row=4, column=1, sticky="ew", padx=10, pady=2
         )
 
         ttk.Label(win, text="Timeout [s]:").grid(
-            row=8, column=0, sticky="w", padx=10, pady=2
+            row=5, column=0, sticky="w", padx=10, pady=2
         )
         ttk.Entry(win, textvariable=timeout_var, width=10).grid(
-            row=8, column=1, sticky="w", padx=10, pady=2
+            row=5, column=1, sticky="w", padx=10, pady=2
         )
 
         ttk.Label(
             win,
             text="Odbiorcy (jeden adres w linii, albo rozdzielone przecinkiem):",
-        ).grid(row=9, column=0, columnspan=2, sticky="w", padx=10, pady=(8, 2))
+        ).grid(row=6, column=0, columnspan=2, sticky="w", padx=10, pady=(8, 2))
         recipients_box = tk.Text(win, height=6, width=46)
-        recipients_box.grid(row=10, column=0, columnspan=2, sticky="ew", padx=10, pady=2)
+        recipients_box.grid(row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=2)
         recipients_box.insert("1.0", mailer.recipients_to_text(cfg["recipients"]))
 
         btns = ttk.Frame(win)
-        btns.grid(row=11, column=0, columnspan=2, sticky="ew", padx=10, pady=(8, 10))
+        btns.grid(row=8, column=0, columnspan=2, sticky="ew", padx=10, pady=(8, 10))
         btns.columnconfigure(0, weight=1)
         btns.columnconfigure(1, weight=1)
         btns.columnconfigure(2, weight=1)
@@ -869,7 +927,9 @@ class PDSGeneratorGUI(tk.Tk):
 
         def collect(strict=False, require_recipients=False):
             recipients_value = recipients_box.get("1.0", "end").strip()
+            token_value = token_box.get("1.0", "end").strip()
             return self._mail_settings_from_inputs(
+                transport=transport_var.get(),
                 enabled=enabled_var.get(),
                 smtp_host=host_var.get(),
                 smtp_port=port_var.get(),
@@ -877,6 +937,9 @@ class PDSGeneratorGUI(tk.Tk):
                 username=username_var.get(),
                 password=password_var.get(),
                 sender=sender_var.get(),
+                entra_token=token_value,
+                entra_sender=entra_sender_var.get(),
+                entra_endpoint=entra_endpoint_var.get(),
                 recipients_text=recipients_value,
                 subject_prefix=subject_var.get(),
                 timeout_seconds=timeout_var.get(),
@@ -901,11 +964,11 @@ class PDSGeneratorGUI(tk.Tk):
                 return
             self._run_mail_action_async(
                 test_cfg,
-                mailer.test_smtp_connection,
-                "Połączenie SMTP działa poprawnie.",
-                "Testowanie połączenia SMTP...",
-                "Połączenie SMTP OK",
-                "Test połączenia SMTP nie powiódł się",
+                mailer.test_connection,
+                "Połączenie działa poprawnie.",
+                "Testowanie połączenia...",
+                "Połączenie OK",
+                "Test połączenia nie powiódł się",
             )
 
         def send_test_message():

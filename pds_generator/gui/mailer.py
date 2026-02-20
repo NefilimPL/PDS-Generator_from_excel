@@ -4,16 +4,23 @@ import os
 import re
 import smtplib
 import ssl
+from urllib.parse import quote
 from contextlib import suppress
 from email.message import EmailMessage
 
+import requests
+
 logger = logging.getLogger(__name__)
+
+TRANSPORT_SMTP = "smtp"
+TRANSPORT_ENTRA_API = "entra_api"
 
 SECURITY_STARTTLS = "starttls"
 SECURITY_SSL = "ssl"
 SECURITY_NONE = "none"
 
 DEFAULT_MAIL_CONFIG = {
+    "transport": TRANSPORT_SMTP,
     "enabled": False,
     "smtp_host": "",
     "smtp_port": 587,
@@ -24,6 +31,9 @@ DEFAULT_MAIL_CONFIG = {
     "recipients": [],
     "subject_prefix": "Raport PDS",
     "timeout_seconds": 20,
+    "entra_token": "",
+    "entra_sender": "",
+    "entra_endpoint": "",
 }
 
 _STATUS_LABELS = {
@@ -72,6 +82,11 @@ def normalize_mail_config(config):
             if key in config:
                 cfg[key] = config[key]
 
+    transport = str(cfg.get("transport", TRANSPORT_SMTP) or "").lower().strip()
+    if transport not in {TRANSPORT_SMTP, TRANSPORT_ENTRA_API}:
+        transport = TRANSPORT_SMTP
+    cfg["transport"] = transport
+
     cfg["enabled"] = bool(cfg.get("enabled", False))
     cfg["smtp_host"] = str(cfg.get("smtp_host", "") or "").strip()
 
@@ -101,6 +116,13 @@ def normalize_mail_config(config):
     if cfg["timeout_seconds"] <= 0:
         cfg["timeout_seconds"] = DEFAULT_MAIL_CONFIG["timeout_seconds"]
 
+    token = str(cfg.get("entra_token", "") or "").strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    cfg["entra_token"] = token
+    cfg["entra_sender"] = str(cfg.get("entra_sender", "") or "").strip()
+    cfg["entra_endpoint"] = str(cfg.get("entra_endpoint", "") or "").strip()
+
     return cfg
 
 
@@ -117,16 +139,25 @@ def _resolve_sender(cfg):
 def validate_mail_config(config, require_recipients=True):
     cfg = normalize_mail_config(config)
 
-    if not cfg["smtp_host"]:
-        raise ValueError("Podaj adres serwera SMTP.")
-    if cfg["smtp_port"] <= 0:
-        raise ValueError("Port SMTP musi być dodatni.")
+    if cfg["transport"] == TRANSPORT_SMTP:
+        if not cfg["smtp_host"]:
+            raise ValueError("Podaj adres serwera SMTP.")
+        if cfg["smtp_port"] <= 0:
+            raise ValueError("Port SMTP musi być dodatni.")
+        sender = _resolve_sender(cfg)
+        if not sender:
+            raise ValueError("Podaj adres nadawcy albo login SMTP.")
+    else:
+        if not cfg["entra_token"]:
+            raise ValueError("Podaj token Microsoft Entra API.")
+        sender = cfg.get("entra_sender", "").strip() or _resolve_sender(cfg)
+        endpoint = cfg.get("entra_endpoint", "").strip()
+        if not endpoint and not sender:
+            raise ValueError(
+                "Podaj nadawcę Entra (UPN/ID) albo pełny endpoint API."
+            )
 
-    sender = _resolve_sender(cfg)
-    if not sender:
-        raise ValueError("Podaj adres nadawcy albo login SMTP.")
-
-    if require_recipients and not cfg["recipients"]:
+    if require_recipients and not cfg.get("recipients"):
         raise ValueError("Dodaj co najmniej jeden adres odbiorcy.")
 
     return cfg
@@ -158,6 +189,48 @@ def _open_smtp_client(cfg):
     return client
 
 
+def _resolve_entra_endpoint(cfg):
+    endpoint = cfg.get("entra_endpoint", "").strip()
+    if endpoint:
+        return endpoint
+    sender = cfg.get("entra_sender", "").strip() or _resolve_sender(cfg)
+    sender = quote(sender, safe="@._-")
+    return f"https://graph.microsoft.com/v1.0/users/{sender}/sendMail"
+
+
+def _entra_headers(cfg):
+    return {
+        "Authorization": f"Bearer {cfg['entra_token']}",
+        "Content-Type": "application/json",
+    }
+
+
+def _send_entra_email(cfg, subject, body, recipients):
+    payload = {
+        "message": {
+            "subject": subject,
+            "body": {"contentType": "Text", "content": body},
+            "toRecipients": [
+                {"emailAddress": {"address": recipient}} for recipient in recipients
+            ],
+        },
+        "saveToSentItems": True,
+    }
+    response = requests.post(
+        _resolve_entra_endpoint(cfg),
+        headers=_entra_headers(cfg),
+        json=payload,
+        timeout=cfg["timeout_seconds"],
+    )
+    if response.status_code not in (200, 201, 202):
+        details = response.text.strip().replace("\n", " ")
+        if len(details) > 300:
+            details = details[:300] + "..."
+        raise RuntimeError(
+            f"Microsoft Entra API zwróciło HTTP {response.status_code}: {details}"
+        )
+
+
 def test_smtp_connection(config):
     cfg = validate_mail_config(config, require_recipients=False)
     client = _open_smtp_client(cfg)
@@ -166,6 +239,45 @@ def test_smtp_connection(config):
     finally:
         with suppress(Exception):
             client.quit()
+
+
+def _test_entra_connection(cfg):
+    # No recipient is required here; a deliberately invalid payload should return 400
+    # when token+endpoint are valid, while auth issues return 401/403.
+    payload = {
+        "message": {
+            "subject": "PDS connection check",
+            "body": {"contentType": "Text", "content": "Connection check"},
+            "toRecipients": [],
+        },
+        "saveToSentItems": False,
+    }
+    response = requests.post(
+        _resolve_entra_endpoint(cfg),
+        headers=_entra_headers(cfg),
+        json=payload,
+        timeout=cfg["timeout_seconds"],
+    )
+    if response.status_code in (401, 403):
+        raise RuntimeError(
+            "Brak autoryzacji (token nieprawidłowy albo brak uprawnień Mail.Send)."
+        )
+    if response.status_code in (404, 405):
+        raise RuntimeError(
+            "Nieprawidłowy endpoint Entra API lub błędny nadawca."
+        )
+    if response.status_code >= 500:
+        raise RuntimeError(
+            f"Usługa Microsoft Graph niedostępna (HTTP {response.status_code})."
+        )
+    return True
+
+
+def test_connection(config):
+    cfg = validate_mail_config(config, require_recipients=False)
+    if cfg["transport"] == TRANSPORT_ENTRA_API:
+        return _test_entra_connection(cfg)
+    return test_smtp_connection(cfg)
 
 
 def _build_report_subject(cfg, report):
@@ -245,6 +357,10 @@ def _build_generation_body(report):
 
 
 def _send_email(cfg, subject, body, recipients):
+    if cfg["transport"] == TRANSPORT_ENTRA_API:
+        _send_entra_email(cfg, subject, body, recipients)
+        return
+
     sender = _resolve_sender(cfg)
     msg = EmailMessage()
     msg["Subject"] = subject
