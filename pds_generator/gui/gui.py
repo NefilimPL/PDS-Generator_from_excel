@@ -696,6 +696,9 @@ class PDSGeneratorGUI(tk.Tk):
         password,
         sender,
         entra_token,
+        entra_tenant_id,
+        entra_client_id,
+        entra_client_secret,
         entra_sender,
         entra_endpoint,
         recipients_text,
@@ -704,11 +707,18 @@ class PDSGeneratorGUI(tk.Tk):
         strict=False,
         require_recipients=False,
     ):
-        try:
-            port = int(str(smtp_port).strip())
-        except (TypeError, ValueError):
-            messagebox.showerror("E-mail", "Port SMTP musi być liczbą całkowitą.")
-            return None
+        transport_value = str(transport or "").strip().lower()
+        if transport_value == mailer.TRANSPORT_SMTP:
+            try:
+                port = int(str(smtp_port).strip())
+            except (TypeError, ValueError):
+                messagebox.showerror("E-mail", "Port SMTP musi być liczbą całkowitą.")
+                return None
+        else:
+            try:
+                port = int(str(smtp_port).strip())
+            except (TypeError, ValueError):
+                port = mailer.DEFAULT_MAIL_CONFIG["smtp_port"]
         try:
             timeout = int(str(timeout_seconds).strip())
         except (TypeError, ValueError):
@@ -726,6 +736,9 @@ class PDSGeneratorGUI(tk.Tk):
                 "password": password,
                 "sender": sender,
                 "entra_token": entra_token,
+                "entra_tenant_id": entra_tenant_id,
+                "entra_client_id": entra_client_id,
+                "entra_client_secret": entra_client_secret,
                 "entra_sender": entra_sender,
                 "entra_endpoint": entra_endpoint,
                 "recipients": recipients_text,
@@ -792,6 +805,9 @@ class PDSGeneratorGUI(tk.Tk):
         username_var = tk.StringVar(value=cfg["username"])
         password_var = tk.StringVar(value=cfg["password"])
         sender_var = tk.StringVar(value=cfg["sender"])
+        entra_tenant_var = tk.StringVar(value=cfg["entra_tenant_id"])
+        entra_client_var = tk.StringVar(value=cfg["entra_client_id"])
+        entra_client_secret_var = tk.StringVar(value=cfg["entra_client_secret"])
         entra_sender_var = tk.StringVar(value=cfg["entra_sender"])
         entra_endpoint_var = tk.StringVar(value=cfg["entra_endpoint"])
         subject_var = tk.StringVar(value=cfg["subject_prefix"])
@@ -828,14 +844,16 @@ class PDSGeneratorGUI(tk.Tk):
         ttk.Label(smtp_frame, text="Serwer SMTP:").grid(
             row=0, column=0, sticky="w", padx=8, pady=2
         )
-        ttk.Entry(smtp_frame, textvariable=host_var).grid(
+        host_entry = ttk.Entry(smtp_frame, textvariable=host_var)
+        host_entry.grid(
             row=0, column=1, sticky="ew", padx=8, pady=2
         )
 
         ttk.Label(smtp_frame, text="Port SMTP:").grid(
             row=1, column=0, sticky="w", padx=8, pady=2
         )
-        ttk.Entry(smtp_frame, textvariable=port_var, width=10).grid(
+        port_entry = ttk.Entry(smtp_frame, textvariable=port_var, width=10)
+        port_entry.grid(
             row=1, column=1, sticky="w", padx=8, pady=2
         )
 
@@ -853,21 +871,24 @@ class PDSGeneratorGUI(tk.Tk):
         ttk.Label(smtp_frame, text="Login SMTP:").grid(
             row=3, column=0, sticky="w", padx=8, pady=2
         )
-        ttk.Entry(smtp_frame, textvariable=username_var).grid(
+        username_entry = ttk.Entry(smtp_frame, textvariable=username_var)
+        username_entry.grid(
             row=3, column=1, sticky="ew", padx=8, pady=2
         )
 
         ttk.Label(smtp_frame, text="Hasło SMTP:").grid(
             row=4, column=0, sticky="w", padx=8, pady=2
         )
-        ttk.Entry(smtp_frame, textvariable=password_var, show="*").grid(
+        password_entry = ttk.Entry(smtp_frame, textvariable=password_var, show="*")
+        password_entry.grid(
             row=4, column=1, sticky="ew", padx=8, pady=2
         )
 
         ttk.Label(smtp_frame, text="Adres nadawcy:").grid(
             row=5, column=0, sticky="w", padx=8, pady=2
         )
-        ttk.Entry(smtp_frame, textvariable=sender_var).grid(
+        sender_entry = ttk.Entry(smtp_frame, textvariable=sender_var)
+        sender_entry.grid(
             row=5, column=1, sticky="ew", padx=8, pady=2
         )
 
@@ -875,26 +896,69 @@ class PDSGeneratorGUI(tk.Tk):
         api_frame.grid(row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=(6, 2))
         api_frame.columnconfigure(1, weight=1)
 
+        ttk.Label(
+            api_frame,
+            text=(
+                "Uwierzytelnianie: użyj gotowego tokenu Bearer ALBO danych aplikacji.\n"
+                "Mapowanie: Aplikacja(klient)=Client ID, Dzierżawa=Tenant ID, "
+                "Wartość klucza=Secret Value.\n"
+                "Identyfikator obiektu i Identyfikator wpisu tajnego nie są wymagane."
+            ),
+            justify="left",
+            wraplength=620,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(2, 6))
+
         ttk.Label(api_frame, text="Token Bearer:").grid(
-            row=0, column=0, sticky="nw", padx=8, pady=2
+            row=1, column=0, sticky="nw", padx=8, pady=2
         )
         token_box = tk.Text(api_frame, height=4, width=46)
-        token_box.grid(row=0, column=1, sticky="ew", padx=8, pady=2)
+        token_box.grid(row=1, column=1, sticky="ew", padx=8, pady=2)
         token_box.insert("1.0", cfg["entra_token"])
 
-        ttk.Label(api_frame, text="Nadawca (UPN/ID):").grid(
-            row=1, column=0, sticky="w", padx=8, pady=2
+        ttk.Label(api_frame, text="Tenant ID (dzierżawy):").grid(
+            row=2, column=0, sticky="w", padx=8, pady=2
         )
-        ttk.Entry(api_frame, textvariable=entra_sender_var).grid(
-            row=1, column=1, sticky="ew", padx=8, pady=2
+        entra_tenant_entry = ttk.Entry(api_frame, textvariable=entra_tenant_var)
+        entra_tenant_entry.grid(
+            row=2, column=1, sticky="ew", padx=8, pady=2
+        )
+
+        ttk.Label(api_frame, text="Client ID (aplikacji):").grid(
+            row=3, column=0, sticky="w", padx=8, pady=2
+        )
+        entra_client_entry = ttk.Entry(api_frame, textvariable=entra_client_var)
+        entra_client_entry.grid(
+            row=3, column=1, sticky="ew", padx=8, pady=2
+        )
+
+        ttk.Label(api_frame, text="Secret Value (wartość klucza):").grid(
+            row=4, column=0, sticky="w", padx=8, pady=2
+        )
+        entra_client_secret_entry = ttk.Entry(
+            api_frame, textvariable=entra_client_secret_var, show="*"
+        )
+        entra_client_secret_entry.grid(
+            row=4, column=1, sticky="ew", padx=8, pady=2
+        )
+
+        ttk.Label(api_frame, text="Nadawca (UPN/ID):").grid(
+            row=5, column=0, sticky="w", padx=8, pady=2
+        )
+        entra_sender_entry = ttk.Entry(api_frame, textvariable=entra_sender_var)
+        entra_sender_entry.grid(
+            row=5, column=1, sticky="ew", padx=8, pady=2
         )
 
         ttk.Label(api_frame, text="Endpoint (opcjonalnie):").grid(
-            row=2, column=0, sticky="w", padx=8, pady=2
+            row=6, column=0, sticky="w", padx=8, pady=2
         )
-        ttk.Entry(api_frame, textvariable=entra_endpoint_var).grid(
-            row=2, column=1, sticky="ew", padx=8, pady=2
+        entra_endpoint_entry = ttk.Entry(api_frame, textvariable=entra_endpoint_var)
+        entra_endpoint_entry.grid(
+            row=6, column=1, sticky="ew", padx=8, pady=2
         )
+
+        fetch_token_btn = ttk.Button(api_frame, text="Pobierz token", command=lambda: None)
+        fetch_token_btn.grid(row=7, column=1, sticky="w", padx=8, pady=(4, 2))
 
         ttk.Label(win, text="Temat (prefix):").grid(
             row=4, column=0, sticky="w", padx=10, pady=2
@@ -925,6 +989,50 @@ class PDSGeneratorGUI(tk.Tk):
         btns.columnconfigure(2, weight=1)
         btns.columnconfigure(3, weight=1)
 
+        smtp_controls = [
+            host_entry,
+            port_entry,
+            security_box,
+            username_entry,
+            password_entry,
+            sender_entry,
+        ]
+        api_controls = [
+            token_box,
+            entra_tenant_entry,
+            entra_client_entry,
+            entra_client_secret_entry,
+            entra_sender_entry,
+            entra_endpoint_entry,
+            fetch_token_btn,
+        ]
+
+        def set_controls_state(controls, enabled_state):
+            for control in controls:
+                if isinstance(control, tk.Text):
+                    control.configure(state="normal" if enabled_state else "disabled")
+                    continue
+                try:
+                    if enabled_state:
+                        control.state(["!disabled"])
+                    else:
+                        control.state(["disabled"])
+                except Exception:
+                    try:
+                        control.configure(
+                            state=("normal" if enabled_state else "disabled")
+                        )
+                    except Exception:
+                        pass
+
+        def apply_transport_state(*_args):
+            use_smtp = transport_var.get() == mailer.TRANSPORT_SMTP
+            set_controls_state(smtp_controls, use_smtp)
+            set_controls_state(api_controls, not use_smtp)
+
+        transport_var.trace_add("write", apply_transport_state)
+        apply_transport_state()
+
         def collect(strict=False, require_recipients=False):
             recipients_value = recipients_box.get("1.0", "end").strip()
             token_value = token_box.get("1.0", "end").strip()
@@ -938,6 +1046,9 @@ class PDSGeneratorGUI(tk.Tk):
                 password=password_var.get(),
                 sender=sender_var.get(),
                 entra_token=token_value,
+                entra_tenant_id=entra_tenant_var.get(),
+                entra_client_id=entra_client_var.get(),
+                entra_client_secret=entra_client_secret_var.get(),
                 entra_sender=entra_sender_var.get(),
                 entra_endpoint=entra_endpoint_var.get(),
                 recipients_text=recipients_value,
@@ -946,6 +1057,42 @@ class PDSGeneratorGUI(tk.Tk):
                 strict=strict,
                 require_recipients=require_recipients,
             )
+
+        def fetch_token():
+            cfg_for_token = collect(strict=False, require_recipients=False)
+            if not cfg_for_token:
+                return
+            self.set_status("Pobieranie tokenu Entra...")
+
+            def worker():
+                try:
+                    token = mailer.request_entra_token(cfg_for_token)
+                except Exception as exc:
+                    logger.exception("Failed to fetch Entra token")
+                    self.ui_call(
+                        messagebox.showerror,
+                        "E-mail",
+                        f"Nie udało się pobrać tokenu Entra: {exc}",
+                    )
+                    self.ui_call(self.set_status, "Błąd pobierania tokenu")
+                    return
+
+                def on_success():
+                    token_box.configure(state="normal")
+                    token_box.delete("1.0", "end")
+                    token_box.insert("1.0", token)
+                    apply_transport_state()
+                    self.set_status("Pobrano token Entra")
+                    messagebox.showinfo(
+                        "E-mail",
+                        "Pobrano token Entra API i wstawiono do pola Token Bearer.",
+                    )
+
+                self.ui_call(on_success)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        fetch_token_btn.configure(command=fetch_token)
 
         def save_only():
             new_cfg = collect(strict=False, require_recipients=False)

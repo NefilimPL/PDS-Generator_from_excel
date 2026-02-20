@@ -32,6 +32,9 @@ DEFAULT_MAIL_CONFIG = {
     "subject_prefix": "Raport PDS",
     "timeout_seconds": 20,
     "entra_token": "",
+    "entra_tenant_id": "",
+    "entra_client_id": "",
+    "entra_client_secret": "",
     "entra_sender": "",
     "entra_endpoint": "",
 }
@@ -120,6 +123,9 @@ def normalize_mail_config(config):
     if token.lower().startswith("bearer "):
         token = token[7:].strip()
     cfg["entra_token"] = token
+    cfg["entra_tenant_id"] = str(cfg.get("entra_tenant_id", "") or "").strip()
+    cfg["entra_client_id"] = str(cfg.get("entra_client_id", "") or "").strip()
+    cfg["entra_client_secret"] = str(cfg.get("entra_client_secret", "") or "")
     cfg["entra_sender"] = str(cfg.get("entra_sender", "") or "").strip()
     cfg["entra_endpoint"] = str(cfg.get("entra_endpoint", "") or "").strip()
 
@@ -148,8 +154,16 @@ def validate_mail_config(config, require_recipients=True):
         if not sender:
             raise ValueError("Podaj adres nadawcy albo login SMTP.")
     else:
-        if not cfg["entra_token"]:
-            raise ValueError("Podaj token Microsoft Entra API.")
+        has_token = bool(cfg.get("entra_token", "").strip())
+        has_creds = bool(
+            cfg.get("entra_tenant_id", "").strip()
+            and cfg.get("entra_client_id", "").strip()
+            and cfg.get("entra_client_secret", "")
+        )
+        if not has_token and not has_creds:
+            raise ValueError(
+                "Podaj token Entra API albo komplet danych: Tenant ID + Client ID + Secret Value."
+            )
         sender = cfg.get("entra_sender", "").strip() or _resolve_sender(cfg)
         endpoint = cfg.get("entra_endpoint", "").strip()
         if not endpoint and not sender:
@@ -198,9 +212,82 @@ def _resolve_entra_endpoint(cfg):
     return f"https://graph.microsoft.com/v1.0/users/{sender}/sendMail"
 
 
+def _parse_error_response(response):
+    details = response.text.strip().replace("\n", " ")
+    if len(details) > 300:
+        details = details[:300] + "..."
+    return details
+
+
+def _fetch_entra_token_from_client_credentials(cfg):
+    tenant_id = cfg.get("entra_tenant_id", "").strip()
+    client_id = cfg.get("entra_client_id", "").strip()
+    client_secret = cfg.get("entra_client_secret", "")
+    if not (tenant_id and client_id and client_secret):
+        raise ValueError(
+            "Do pobrania tokenu podaj: Tenant ID, Client ID i Secret Value."
+        )
+
+    token_url = (
+        f"https://login.microsoftonline.com/{quote(tenant_id, safe='')}"
+        "/oauth2/v2.0/token"
+    )
+    response = requests.post(
+        token_url,
+        data={
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "scope": "https://graph.microsoft.com/.default",
+        },
+        timeout=cfg["timeout_seconds"],
+    )
+    if response.status_code != 200:
+        details = _parse_error_response(response)
+        raise RuntimeError(
+            f"Nie udało się pobrać tokenu z Entra (HTTP {response.status_code}): {details}"
+        )
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Entra zwróciło nieprawidłową odpowiedź JSON.") from exc
+
+    token = str(payload.get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError("Entra nie zwróciło access_token.")
+    return token
+
+
+def get_entra_access_token(config):
+    cfg = normalize_mail_config(config)
+    token = cfg.get("entra_token", "").strip()
+    if token:
+        return token
+    return _fetch_entra_token_from_client_credentials(cfg)
+
+
+def request_entra_token(config):
+    cfg = normalize_mail_config(config)
+    return _fetch_entra_token_from_client_credentials(cfg)
+
+
+def _resolve_entra_access_token(cfg):
+    cached = cfg.get("_entra_cached_token", "")
+    if cached:
+        return cached
+    token = str(cfg.get("entra_token", "") or "").strip()
+    if token:
+        cfg["_entra_cached_token"] = token
+        return token
+    token = _fetch_entra_token_from_client_credentials(cfg)
+    cfg["_entra_cached_token"] = token
+    return token
+
+
 def _entra_headers(cfg):
     return {
-        "Authorization": f"Bearer {cfg['entra_token']}",
+        "Authorization": f"Bearer {_resolve_entra_access_token(cfg)}",
         "Content-Type": "application/json",
     }
 
@@ -223,9 +310,7 @@ def _send_entra_email(cfg, subject, body, recipients):
         timeout=cfg["timeout_seconds"],
     )
     if response.status_code not in (200, 201, 202):
-        details = response.text.strip().replace("\n", " ")
-        if len(details) > 300:
-            details = details[:300] + "..."
+        details = _parse_error_response(response)
         raise RuntimeError(
             f"Microsoft Entra API zwróciło HTTP {response.status_code}: {details}"
         )
