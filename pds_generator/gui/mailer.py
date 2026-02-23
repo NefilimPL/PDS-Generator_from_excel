@@ -49,6 +49,24 @@ _STATUS_LABELS = {
 }
 
 
+def _report_status_text(report):
+    status_code = report.get("status") or "unknown"
+    warnings = list(report.get("warnings") or [])
+    if status_code == "success" and warnings:
+        return "Sukces z ostrzeżeniami"
+    if status_code == "no_changes" and warnings:
+        return "Brak zmian PDF, ale są ostrzeżenia"
+    return _STATUS_LABELS.get(status_code, status_code)
+
+
+def _report_subject_tag(report):
+    status_code = report.get("status") or "unknown"
+    warnings = list(report.get("warnings") or [])
+    if status_code in {"success", "no_changes"} and warnings:
+        return "OSTRZEŻENIE"
+    return _STATUS_LABELS.get(status_code, status_code)
+
+
 def parse_recipients(value):
     if value is None:
         return []
@@ -366,7 +384,7 @@ def test_connection(config):
 
 
 def _build_report_subject(cfg, report):
-    status = _STATUS_LABELS.get(report.get("status"), report.get("status") or "Status")
+    status = _report_subject_tag(report)
     prefix = cfg.get("subject_prefix", "Raport PDS")
     stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return f"{prefix} [{status}] {stamp}"
@@ -379,8 +397,7 @@ def _short_path(path):
 
 
 def _build_generation_body(report):
-    status_code = report.get("status") or "unknown"
-    status_text = _STATUS_LABELS.get(status_code, status_code)
+    status_text = _report_status_text(report)
     excel_path = _short_path(report.get("excel_path"))
     output_dir = _short_path(report.get("output_dir"))
 

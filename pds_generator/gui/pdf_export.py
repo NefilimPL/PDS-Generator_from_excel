@@ -108,11 +108,11 @@ def _cell_marked_red(cell):
     return False
 
 
-def _collect_red_nonpositive_issues(app, tasks, sheet_fields_all):
-    if not tasks or not sheet_fields_all:
+def _collect_red_nonpositive_issues(app, row_indices, sheet_fields_all):
+    if not row_indices or not sheet_fields_all:
         return []
 
-    task_rows = sorted({task.get("idx") for task in tasks if isinstance(task.get("idx"), int)})
+    task_rows = sorted({idx for idx in row_indices if isinstance(idx, int) and idx >= 0})
     if not task_rows:
         return []
 
@@ -187,26 +187,38 @@ def _check_remote_image_exists(url, timeout=3):
                 response.close()
 
 
-def _collect_missing_image_issues(app, tasks):
+def _collect_missing_image_issues(app, row_indices):
     image_fields = set(getattr(app, "image_fields", set()) or [])
-    if not tasks or not image_fields:
+    if not row_indices or not image_fields:
+        return []
+
+    data_rows = sorted({idx for idx in row_indices if isinstance(idx, int) and idx >= 0})
+    if not data_rows:
         return []
 
     issues = set()
     remote_cache = {}
     max_remote_checks = 30
 
-    for task in tasks:
-        row_idx = task.get("idx", -1)
-        row_no = row_idx + 1 if isinstance(row_idx, int) and row_idx >= 0 else "?"
-        row_values = task.get("row_values", {}) or {}
+    dynamic_fields = []
+    for field in image_fields:
+        if ":" not in field:
+            continue
+        sheet, col = field.split(":", 1)
+        dynamic_fields.append((field, sheet, col))
 
-        for field in image_fields:
-            if ":" not in field:
+    for row_idx in data_rows:
+        row_no = row_idx + 1
+        for field, sheet, col in dynamic_fields:
+            df = app.dataframes.get(sheet)
+            if df is None or row_idx >= len(df):
                 continue
-            if field not in row_values:
-                continue
-            value = row_values.get(field)
+            value = df.iloc[row_idx].get(col)
+            try:
+                if pd.isna(value):
+                    continue
+            except Exception:
+                pass
             text = str(value or "").strip()
             if not text:
                 continue
@@ -1028,20 +1040,11 @@ def generate_pds(app):
             }
         )
 
-    if not tasks:
-        report["total_tasks"] = 0
-        report["skipped_rows"] = total_rows
-        messagebox.showinfo(
-            "Info", "Brak zmian - wszystkie pliki PDF są aktualne."
-        )
-        _ui_counts(app, total_rows=total_rows, total_tasks=0, processed=0, skipped=total_rows)
-        finish_now("Brak zmian", "no_changes")
-        return False
-
     validation_warnings = []
+    validation_row_indices = list(range(total_rows))
     try:
         validation_warnings.extend(
-            _collect_red_nonpositive_issues(app, tasks, sheet_fields_all)
+            _collect_red_nonpositive_issues(app, validation_row_indices, sheet_fields_all)
         )
     except Exception:
         logger.exception("Failed while validating red-marked numeric fields")
@@ -1049,7 +1052,7 @@ def generate_pds(app):
             "Nie udało się sprawdzić pól oznaczonych na czerwono."
         )
     try:
-        validation_warnings.extend(_collect_missing_image_issues(app, tasks))
+        validation_warnings.extend(_collect_missing_image_issues(app, validation_row_indices))
     except Exception:
         logger.exception("Failed while validating image references")
         validation_warnings.append(
@@ -1065,6 +1068,22 @@ def generate_pds(app):
         )
         for warning_text in report["warnings"][:200]:
             logger.warning("Data warning: %s", warning_text)
+
+    if not tasks:
+        report["total_tasks"] = 0
+        report["skipped_rows"] = total_rows
+        messagebox.showinfo(
+            "Info", "Brak zmian - wszystkie pliki PDF są aktualne."
+        )
+        if report["warnings"]:
+            messagebox.showwarning(
+                "Uwaga",
+                "Brak zmian w PDF, ale wykryto ostrzeżenia jakości danych: "
+                f"{len(report['warnings'])}.",
+            )
+        _ui_counts(app, total_rows=total_rows, total_tasks=0, processed=0, skipped=total_rows)
+        finish_now("Brak zmian", "no_changes")
+        return False
 
     skipped_rows = total_rows - len(tasks) if changed_rows is not None else 0
     report["total_tasks"] = len(tasks)

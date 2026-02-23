@@ -1152,6 +1152,9 @@ class PDSGeneratorGUI(tk.Tk):
 
     def on_generation_complete(self, report):
         self.last_generation_report = deepcopy(report)
+        if report.get("status") == "no_changes" and not report.get("warnings"):
+            logger.info("Skipping report email: no PDF changes detected.")
+            return
         cfg = mailer.normalize_mail_config(getattr(self, "mail_config", {}))
         if not cfg.get("enabled"):
             return

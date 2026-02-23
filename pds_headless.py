@@ -165,6 +165,9 @@ class HeadlessApp:
                 bool(self.mail_config.get("enabled")),
                 report.get("status"),
             )
+            if report.get("status") == "no_changes" and not report.get("warnings"):
+                logging.info("Skipping report email: no PDF changes detected.")
+                return
             if not self.mail_config.get("enabled"):
                 return
             cfg = mailer.validate_mail_config(self.mail_config, require_recipients=True)
