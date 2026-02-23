@@ -1,0 +1,19 @@
+2026-02-20 15:41:02,553 | INFO | root | Headless run started. Log: C:\_GitHub_\PDS-Generator_from_excel\logs\pds_headless_20260220_154102.txt
+2026-02-20 15:41:02,553 | INFO | root | Config: C:\Users\k.bober\.pds_generator\config.json
+2026-02-20 15:41:02,554 | INFO | root | Excel: C:/TEST/PDS_GENERATOR/LISTA_DANYCH_PDS.xlsx
+2026-02-20 15:41:02,751 | INFO | root | Counts: rows=9 tasks=None processed=None skipped=None
+2026-02-20 15:41:02,872 | INFO | pds_generator.gui.excel_tracking | Tracking cache changed columns (sample): PDS_DANE:PIC_COLOR_4_TEXT
+2026-02-20 15:41:03,249 | INFO | pds_generator.gui.pdf_export | Tracking mode=excel; tracked_columns=57; cache_rows=1; excel_rows=1; changed_rows=1/9
+2026-02-20 15:41:03,255 | INFO | root | Counts: rows=9 tasks=1 processed=0 skipped=8
+2026-02-20 15:41:03,256 | DEBUG | root | Progress indeterminate: False
+2026-02-20 15:41:03,256 | INFO | root | Status: Generowanie PDF...
+2026-02-20 15:41:03,256 | INFO | root | Generation started. Waiting for completion...
+2026-02-20 15:41:10,779 | INFO | root | Counts: rows=None tasks=1 processed=1 skipped=None
+2026-02-20 15:41:10,859 | INFO | root | Finished: Zakończono
+2026-02-20 15:41:10,859 | INFO | root | INFO: Zakończono - Pliki zapisane w C:/TEST/PDS_GENERATOR\PDS
+2026-02-20 15:41:10,859 | INFO | root | Generation completion callback reached. Mail enabled=True status=success
+2026-02-20 15:41:10,862 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-20 15:41:11,423 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "POST /v1.0/users/k.bober@vivaldimeble.pl/sendMail HTTP/1.1" 202 0
+2026-02-20 15:41:11,425 | INFO | pds_generator.gui.mailer | Generation report email sent to k.bober@wipmeb.pl
+2026-02-20 15:41:11,425 | INFO | root | Mail report sent.
+2026-02-20 15:41:11,425 | INFO | root | Finished without errors.

@@ -3,6 +3,7 @@ import os
 import sys
 import webbrowser
 import threading
+from copy import deepcopy
 
 import pandas as pd
 import tkinter as tk
@@ -23,6 +24,7 @@ from .config_io import (
     save_config as save_config_func,
     load_config as load_config_func,
 )
+from . import mailer
 from .excel_tracking import is_tracking_column
 from ..excel_io import read_excel_data, detect_formula_columns, collect_formula_samples
 from . import locks
@@ -115,6 +117,9 @@ class PDSGeneratorGUI(tk.Tk):
         self.generation_in_progress = False
         self.cancel_event = None
         self.tracking_excluded = set()
+        self.mail_config = mailer.normalize_mail_config({})
+        self.mail_settings_win = None
+        self.last_generation_report = None
         self.formula_map = {}
         self.column_rows = {}
         self.column_indicators = {}
@@ -679,6 +684,507 @@ class PDSGeneratorGUI(tk.Tk):
         ttk.Button(btns, text="Zaznacz wszystkie", command=select_all).pack(side="left")
         ttk.Button(btns, text="Wyczyść", command=clear_all).pack(side="left", padx=5)
         ttk.Button(btns, text="Zapisz", command=save).pack(side="right")
+
+    def _mail_settings_from_inputs(
+        self,
+        transport,
+        enabled,
+        smtp_host,
+        smtp_port,
+        smtp_security,
+        username,
+        password,
+        sender,
+        entra_token,
+        entra_tenant_id,
+        entra_client_id,
+        entra_client_secret,
+        entra_sender,
+        entra_endpoint,
+        recipients_text,
+        subject_prefix,
+        timeout_seconds,
+        strict=False,
+        require_recipients=False,
+    ):
+        transport_value = str(transport or "").strip().lower()
+        if transport_value == mailer.TRANSPORT_SMTP:
+            try:
+                port = int(str(smtp_port).strip())
+            except (TypeError, ValueError):
+                messagebox.showerror("E-mail", "Port SMTP musi być liczbą całkowitą.")
+                return None
+        else:
+            try:
+                port = int(str(smtp_port).strip())
+            except (TypeError, ValueError):
+                port = mailer.DEFAULT_MAIL_CONFIG["smtp_port"]
+        try:
+            timeout = int(str(timeout_seconds).strip())
+        except (TypeError, ValueError):
+            messagebox.showerror("E-mail", "Timeout musi być liczbą całkowitą.")
+            return None
+
+        cfg = mailer.normalize_mail_config(
+            {
+                "transport": transport,
+                "enabled": bool(enabled),
+                "smtp_host": smtp_host,
+                "smtp_port": port,
+                "smtp_security": smtp_security,
+                "username": username,
+                "password": password,
+                "sender": sender,
+                "entra_token": entra_token,
+                "entra_tenant_id": entra_tenant_id,
+                "entra_client_id": entra_client_id,
+                "entra_client_secret": entra_client_secret,
+                "entra_sender": entra_sender,
+                "entra_endpoint": entra_endpoint,
+                "recipients": recipients_text,
+                "subject_prefix": subject_prefix,
+                "timeout_seconds": timeout,
+            }
+        )
+        if strict:
+            try:
+                cfg = mailer.validate_mail_config(
+                    cfg, require_recipients=require_recipients
+                )
+            except ValueError as exc:
+                messagebox.showerror("E-mail", str(exc))
+                return None
+        return cfg
+
+    def _run_mail_action_async(
+        self,
+        config,
+        action,
+        success_message,
+        start_status,
+        success_status,
+        error_prefix,
+    ):
+        self.set_status(start_status)
+
+        def worker():
+            try:
+                action(config)
+            except Exception as exc:
+                logger.exception("%s failed", error_prefix)
+                self.ui_call(
+                    messagebox.showerror,
+                    "E-mail",
+                    f"{error_prefix}: {exc}",
+                )
+                self.ui_call(self.set_status, "Błąd e-mail")
+                return
+            self.ui_call(messagebox.showinfo, "E-mail", success_message)
+            self.ui_call(self.set_status, success_status)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def open_mail_settings(self):
+        if self.mail_settings_win and self.mail_settings_win.winfo_exists():
+            self.mail_settings_win.lift()
+            self.mail_settings_win.focus_force()
+            return
+
+        cfg = mailer.normalize_mail_config(getattr(self, "mail_config", {}))
+
+        win = tk.Toplevel(self)
+        self.mail_settings_win = win
+        win.title("Konfiguracja e-mail")
+        win.columnconfigure(1, weight=1)
+
+        enabled_var = tk.BooleanVar(value=cfg["enabled"])
+        transport_var = tk.StringVar(value=cfg["transport"])
+        host_var = tk.StringVar(value=cfg["smtp_host"])
+        port_var = tk.StringVar(value=str(cfg["smtp_port"]))
+        security_var = tk.StringVar(value=cfg["smtp_security"])
+        username_var = tk.StringVar(value=cfg["username"])
+        password_var = tk.StringVar(value=cfg["password"])
+        sender_var = tk.StringVar(value=cfg["sender"])
+        entra_tenant_var = tk.StringVar(value=cfg["entra_tenant_id"])
+        entra_client_var = tk.StringVar(value=cfg["entra_client_id"])
+        entra_client_secret_var = tk.StringVar(value=cfg["entra_client_secret"])
+        entra_sender_var = tk.StringVar(value=cfg["entra_sender"])
+        entra_endpoint_var = tk.StringVar(value=cfg["entra_endpoint"])
+        subject_var = tk.StringVar(value=cfg["subject_prefix"])
+        timeout_var = tk.StringVar(value=str(cfg["timeout_seconds"]))
+
+        ttk.Checkbutton(
+            win,
+            text="Włącz wysyłkę raportów po generowaniu PDF",
+            variable=enabled_var,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 8))
+
+        ttk.Label(win, text="Metoda wysyłki:").grid(
+            row=1, column=0, sticky="w", padx=10, pady=2
+        )
+        transport_frame = ttk.Frame(win)
+        transport_frame.grid(row=1, column=1, sticky="w", padx=10, pady=2)
+        ttk.Radiobutton(
+            transport_frame,
+            text="SMTP",
+            value=mailer.TRANSPORT_SMTP,
+            variable=transport_var,
+        ).pack(side="left")
+        ttk.Radiobutton(
+            transport_frame,
+            text="Microsoft Entra API (token)",
+            value=mailer.TRANSPORT_ENTRA_API,
+            variable=transport_var,
+        ).pack(side="left", padx=(8, 0))
+
+        smtp_frame = ttk.LabelFrame(win, text="Ustawienia SMTP")
+        smtp_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(6, 2))
+        smtp_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(smtp_frame, text="Serwer SMTP:").grid(
+            row=0, column=0, sticky="w", padx=8, pady=2
+        )
+        host_entry = ttk.Entry(smtp_frame, textvariable=host_var)
+        host_entry.grid(
+            row=0, column=1, sticky="ew", padx=8, pady=2
+        )
+
+        ttk.Label(smtp_frame, text="Port SMTP:").grid(
+            row=1, column=0, sticky="w", padx=8, pady=2
+        )
+        port_entry = ttk.Entry(smtp_frame, textvariable=port_var, width=10)
+        port_entry.grid(
+            row=1, column=1, sticky="w", padx=8, pady=2
+        )
+
+        ttk.Label(smtp_frame, text="Zabezpieczenie:").grid(
+            row=2, column=0, sticky="w", padx=8, pady=2
+        )
+        security_box = ttk.Combobox(
+            smtp_frame,
+            textvariable=security_var,
+            values=(mailer.SECURITY_STARTTLS, mailer.SECURITY_SSL, mailer.SECURITY_NONE),
+            state="readonly",
+        )
+        security_box.grid(row=2, column=1, sticky="w", padx=8, pady=2)
+
+        ttk.Label(smtp_frame, text="Login SMTP:").grid(
+            row=3, column=0, sticky="w", padx=8, pady=2
+        )
+        username_entry = ttk.Entry(smtp_frame, textvariable=username_var)
+        username_entry.grid(
+            row=3, column=1, sticky="ew", padx=8, pady=2
+        )
+
+        ttk.Label(smtp_frame, text="Hasło SMTP:").grid(
+            row=4, column=0, sticky="w", padx=8, pady=2
+        )
+        password_entry = ttk.Entry(smtp_frame, textvariable=password_var, show="*")
+        password_entry.grid(
+            row=4, column=1, sticky="ew", padx=8, pady=2
+        )
+
+        ttk.Label(smtp_frame, text="Adres nadawcy:").grid(
+            row=5, column=0, sticky="w", padx=8, pady=2
+        )
+        sender_entry = ttk.Entry(smtp_frame, textvariable=sender_var)
+        sender_entry.grid(
+            row=5, column=1, sticky="ew", padx=8, pady=2
+        )
+
+        api_frame = ttk.LabelFrame(win, text="Microsoft Entra API")
+        api_frame.grid(row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=(6, 2))
+        api_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            api_frame,
+            text=(
+                "Uwierzytelnianie: użyj gotowego tokenu Bearer ALBO danych aplikacji.\n"
+                "Mapowanie: Aplikacja(klient)=Client ID, Dzierżawa=Tenant ID, "
+                "Wartość klucza=Secret Value.\n"
+                "Identyfikator obiektu i Identyfikator wpisu tajnego nie są wymagane."
+            ),
+            justify="left",
+            wraplength=620,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(2, 6))
+
+        ttk.Label(api_frame, text="Token Bearer:").grid(
+            row=1, column=0, sticky="nw", padx=8, pady=2
+        )
+        token_box = tk.Text(api_frame, height=4, width=46)
+        token_box.grid(row=1, column=1, sticky="ew", padx=8, pady=2)
+        token_box.insert("1.0", cfg["entra_token"])
+
+        ttk.Label(api_frame, text="Tenant ID (dzierżawy):").grid(
+            row=2, column=0, sticky="w", padx=8, pady=2
+        )
+        entra_tenant_entry = ttk.Entry(api_frame, textvariable=entra_tenant_var)
+        entra_tenant_entry.grid(
+            row=2, column=1, sticky="ew", padx=8, pady=2
+        )
+
+        ttk.Label(api_frame, text="Client ID (aplikacji):").grid(
+            row=3, column=0, sticky="w", padx=8, pady=2
+        )
+        entra_client_entry = ttk.Entry(api_frame, textvariable=entra_client_var)
+        entra_client_entry.grid(
+            row=3, column=1, sticky="ew", padx=8, pady=2
+        )
+
+        ttk.Label(api_frame, text="Secret Value (wartość klucza):").grid(
+            row=4, column=0, sticky="w", padx=8, pady=2
+        )
+        entra_client_secret_entry = ttk.Entry(
+            api_frame, textvariable=entra_client_secret_var, show="*"
+        )
+        entra_client_secret_entry.grid(
+            row=4, column=1, sticky="ew", padx=8, pady=2
+        )
+
+        ttk.Label(api_frame, text="Nadawca (UPN/ID):").grid(
+            row=5, column=0, sticky="w", padx=8, pady=2
+        )
+        entra_sender_entry = ttk.Entry(api_frame, textvariable=entra_sender_var)
+        entra_sender_entry.grid(
+            row=5, column=1, sticky="ew", padx=8, pady=2
+        )
+
+        ttk.Label(api_frame, text="Endpoint (opcjonalnie):").grid(
+            row=6, column=0, sticky="w", padx=8, pady=2
+        )
+        entra_endpoint_entry = ttk.Entry(api_frame, textvariable=entra_endpoint_var)
+        entra_endpoint_entry.grid(
+            row=6, column=1, sticky="ew", padx=8, pady=2
+        )
+
+        fetch_token_btn = ttk.Button(api_frame, text="Pobierz token", command=lambda: None)
+        fetch_token_btn.grid(row=7, column=1, sticky="w", padx=8, pady=(4, 2))
+
+        ttk.Label(win, text="Temat (prefix):").grid(
+            row=4, column=0, sticky="w", padx=10, pady=2
+        )
+        ttk.Entry(win, textvariable=subject_var).grid(
+            row=4, column=1, sticky="ew", padx=10, pady=2
+        )
+
+        ttk.Label(win, text="Timeout [s]:").grid(
+            row=5, column=0, sticky="w", padx=10, pady=2
+        )
+        ttk.Entry(win, textvariable=timeout_var, width=10).grid(
+            row=5, column=1, sticky="w", padx=10, pady=2
+        )
+
+        ttk.Label(
+            win,
+            text="Odbiorcy (jeden adres w linii, albo rozdzielone przecinkiem):",
+        ).grid(row=6, column=0, columnspan=2, sticky="w", padx=10, pady=(8, 2))
+        recipients_box = tk.Text(win, height=6, width=46)
+        recipients_box.grid(row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=2)
+        recipients_box.insert("1.0", mailer.recipients_to_text(cfg["recipients"]))
+
+        btns = ttk.Frame(win)
+        btns.grid(row=8, column=0, columnspan=2, sticky="ew", padx=10, pady=(8, 10))
+        btns.columnconfigure(0, weight=1)
+        btns.columnconfigure(1, weight=1)
+        btns.columnconfigure(2, weight=1)
+        btns.columnconfigure(3, weight=1)
+
+        smtp_controls = [
+            host_entry,
+            port_entry,
+            security_box,
+            username_entry,
+            password_entry,
+            sender_entry,
+        ]
+        api_controls = [
+            token_box,
+            entra_tenant_entry,
+            entra_client_entry,
+            entra_client_secret_entry,
+            entra_sender_entry,
+            entra_endpoint_entry,
+            fetch_token_btn,
+        ]
+
+        def set_controls_state(controls, enabled_state):
+            for control in controls:
+                if isinstance(control, tk.Text):
+                    control.configure(state="normal" if enabled_state else "disabled")
+                    continue
+                try:
+                    if enabled_state:
+                        control.state(["!disabled"])
+                    else:
+                        control.state(["disabled"])
+                except Exception:
+                    try:
+                        control.configure(
+                            state=("normal" if enabled_state else "disabled")
+                        )
+                    except Exception:
+                        pass
+
+        def apply_transport_state(*_args):
+            use_smtp = transport_var.get() == mailer.TRANSPORT_SMTP
+            set_controls_state(smtp_controls, use_smtp)
+            set_controls_state(api_controls, not use_smtp)
+
+        transport_var.trace_add("write", apply_transport_state)
+        apply_transport_state()
+
+        def collect(strict=False, require_recipients=False):
+            recipients_value = recipients_box.get("1.0", "end").strip()
+            token_value = token_box.get("1.0", "end").strip()
+            return self._mail_settings_from_inputs(
+                transport=transport_var.get(),
+                enabled=enabled_var.get(),
+                smtp_host=host_var.get(),
+                smtp_port=port_var.get(),
+                smtp_security=security_var.get(),
+                username=username_var.get(),
+                password=password_var.get(),
+                sender=sender_var.get(),
+                entra_token=token_value,
+                entra_tenant_id=entra_tenant_var.get(),
+                entra_client_id=entra_client_var.get(),
+                entra_client_secret=entra_client_secret_var.get(),
+                entra_sender=entra_sender_var.get(),
+                entra_endpoint=entra_endpoint_var.get(),
+                recipients_text=recipients_value,
+                subject_prefix=subject_var.get(),
+                timeout_seconds=timeout_var.get(),
+                strict=strict,
+                require_recipients=require_recipients,
+            )
+
+        def fetch_token():
+            cfg_for_token = collect(strict=False, require_recipients=False)
+            if not cfg_for_token:
+                return
+            self.set_status("Pobieranie tokenu Entra...")
+
+            def worker():
+                try:
+                    token = mailer.request_entra_token(cfg_for_token)
+                except Exception as exc:
+                    logger.exception("Failed to fetch Entra token")
+                    self.ui_call(
+                        messagebox.showerror,
+                        "E-mail",
+                        f"Nie udało się pobrać tokenu Entra: {exc}",
+                    )
+                    self.ui_call(self.set_status, "Błąd pobierania tokenu")
+                    return
+
+                def on_success():
+                    token_box.configure(state="normal")
+                    token_box.delete("1.0", "end")
+                    token_box.insert("1.0", token)
+                    apply_transport_state()
+                    self.set_status("Pobrano token Entra")
+                    messagebox.showinfo(
+                        "E-mail",
+                        "Pobrano token Entra API i wstawiono do pola Token Bearer.",
+                    )
+
+                self.ui_call(on_success)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        fetch_token_btn.configure(command=fetch_token)
+
+        def save_only():
+            new_cfg = collect(strict=False, require_recipients=False)
+            if not new_cfg:
+                return
+            self.mail_config = new_cfg
+            messagebox.showinfo(
+                "E-mail",
+                "Zapisano ustawienia e-mail. "
+                "Użyj 'Zapisz konfigurację', aby zapisać je do pliku config.json.",
+            )
+
+        def test_connection():
+            test_cfg = collect(strict=True, require_recipients=False)
+            if not test_cfg:
+                return
+            self._run_mail_action_async(
+                test_cfg,
+                mailer.test_connection,
+                "Połączenie działa poprawnie.",
+                "Testowanie połączenia...",
+                "Połączenie OK",
+                "Test połączenia nie powiódł się",
+            )
+
+        def send_test_message():
+            test_cfg = collect(strict=True, require_recipients=True)
+            if not test_cfg:
+                return
+            self._run_mail_action_async(
+                test_cfg,
+                mailer.send_test_email,
+                "Wysłano testową wiadomość.",
+                "Wysyłanie testowej wiadomości...",
+                "Wysłano testową wiadomość",
+                "Wysyłka testowej wiadomości nie powiodła się",
+            )
+
+        def close():
+            self.mail_settings_win = None
+            win.destroy()
+
+        ttk.Button(btns, text="Test połączenia", command=test_connection).grid(
+            row=0, column=0, sticky="ew"
+        )
+        ttk.Button(btns, text="Wyślij testową wiadomość", command=send_test_message).grid(
+            row=0, column=1, sticky="ew", padx=(6, 0)
+        )
+        ttk.Button(btns, text="Zapisz", command=save_only).grid(
+            row=0, column=2, sticky="ew", padx=(6, 0)
+        )
+        ttk.Button(btns, text="Zamknij", command=close).grid(
+            row=0, column=3, sticky="ew", padx=(6, 0)
+        )
+
+        win.protocol("WM_DELETE_WINDOW", close)
+
+    def on_generation_complete(self, report):
+        self.last_generation_report = deepcopy(report)
+        if report.get("status") == "no_changes" and not report.get("warnings"):
+            logger.info("Skipping report email: no PDF changes detected.")
+            return
+        cfg = mailer.normalize_mail_config(getattr(self, "mail_config", {}))
+        if not cfg.get("enabled"):
+            return
+        try:
+            cfg = mailer.validate_mail_config(cfg, require_recipients=True)
+        except ValueError as exc:
+            logger.warning("Mail config is invalid, skipping report: %s", exc)
+            messagebox.showwarning(
+                "E-mail",
+                f"Nie wysłano raportu e-mail: {exc}",
+            )
+            return
+
+        self.set_status("Wysyłanie raportu e-mail...")
+
+        def worker():
+            try:
+                mailer.send_generation_report(cfg, report)
+            except Exception as exc:
+                logger.exception("Failed to send generation report email")
+                self.ui_call(
+                    messagebox.showwarning,
+                    "E-mail",
+                    f"Nie udało się wysłać raportu: {exc}",
+                )
+                self.ui_call(self.set_status, "Błąd wysyłki e-mail")
+                return
+            self.ui_call(self.set_status, "Wysłano raport e-mail")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def toggle_static(self, name, state):
         if state:

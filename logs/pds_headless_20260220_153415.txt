@@ -1,0 +1,14 @@
+2026-02-20 15:34:15,923 | INFO | root | Headless run started. Log: C:\_GitHub_\PDS-Generator_from_excel\logs\pds_headless_20260220_153415.txt
+2026-02-20 15:34:15,923 | INFO | root | Config: C:\Users\k.bober\.pds_generator\config.json
+2026-02-20 15:34:15,927 | INFO | root | Excel: C:/TEST/PDS_GENERATOR/LISTA_DANYCH_PDS.xlsx
+2026-02-20 15:34:16,107 | INFO | root | Counts: rows=9 tasks=None processed=None skipped=None
+2026-02-20 15:34:16,211 | INFO | pds_generator.gui.excel_tracking | Tracking cache changed columns (sample): PDS_DANE:PIC_COLOR_3_TEXT
+2026-02-20 15:34:16,475 | INFO | pds_generator.gui.pdf_export | Tracking mode=excel; tracked_columns=57; cache_rows=1; excel_rows=1; changed_rows=1/9
+2026-02-20 15:34:16,483 | INFO | root | Counts: rows=9 tasks=1 processed=0 skipped=8
+2026-02-20 15:34:16,483 | DEBUG | root | Progress indeterminate: False
+2026-02-20 15:34:16,483 | INFO | root | Status: Generowanie PDF...
+2026-02-20 15:34:16,484 | INFO | root | Generation started. Waiting for completion...
+2026-02-20 15:34:23,798 | INFO | root | Counts: rows=None tasks=1 processed=1 skipped=None
+2026-02-20 15:34:23,906 | INFO | root | Finished: Zakończono
+2026-02-20 15:34:23,906 | INFO | root | INFO: Zakończono - Pliki zapisane w C:/TEST/PDS_GENERATOR\PDS
+2026-02-20 15:34:23,906 | INFO | root | Finished without errors.

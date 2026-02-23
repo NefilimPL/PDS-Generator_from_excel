@@ -7,6 +7,7 @@ from tkinter import messagebox
 from ..elements import DraggableElement
 from ..groups import GroupArea
 from . import locks
+from . import mailer
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".pds_generator")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -55,6 +56,7 @@ def save_config(app):
         "tracking_excluded": sorted(getattr(app, "tracking_excluded", set())),
         "ignore_updates": getattr(app, "ignore_updates", False),
         "update_test": getattr(app, "update_test", False),
+        "mail": mailer.normalize_mail_config(getattr(app, "mail_config", {})),
     }
     cfg_path = _excel_config_path(app.excel_path)
     if not cfg_path:
@@ -146,6 +148,7 @@ def load_config(app, startup=False, path=None):
     app.ignore_updates = config.get("ignore_updates", False)
     app.update_test = config.get("update_test", False)
     app.tracking_excluded = set(config.get("tracking_excluded", []))
+    app.mail_config = mailer.normalize_mail_config(config.get("mail", {}))
     app.image_fields = set(config.get("image_fields", []))
     app.image_dirs = list(config.get("image_dirs", []))
     if hasattr(app, "refresh_image_dir_list"):

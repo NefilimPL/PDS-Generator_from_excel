@@ -3,6 +3,7 @@ import os
 import time
 import threading
 import re
+import math
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import suppress
 from io import BytesIO
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 import pandas as pd
 import requests
 from PIL import Image
+from openpyxl import load_workbook
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.lib import colors
@@ -38,6 +40,227 @@ IMAGE_EXTENSIONS = (
     ".webp",
     ".ico",
 )
+
+
+def _to_float(value):
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+            return None
+        return float(value)
+    text = str(value).strip().replace("\u00a0", "").replace(" ", "")
+    if not text:
+        return None
+    text = text.replace(",", ".")
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _extract_rgb(color_obj):
+    if not color_obj:
+        return None
+    rgb = getattr(color_obj, "rgb", None)
+    if not rgb:
+        return None
+    rgb = str(rgb).strip().lstrip("#")
+    if len(rgb) == 8:
+        rgb = rgb[2:]
+    if len(rgb) != 6:
+        return None
+    try:
+        int(rgb, 16)
+    except ValueError:
+        return None
+    return rgb.upper()
+
+
+def _is_red_color(color_obj):
+    rgb = _extract_rgb(color_obj)
+    if rgb:
+        r = int(rgb[0:2], 16)
+        g = int(rgb[2:4], 16)
+        b = int(rgb[4:6], 16)
+        return r >= 170 and g <= 110 and b <= 110
+    indexed = getattr(color_obj, "indexed", None)
+    return indexed in {10}
+
+
+def _cell_marked_red(cell):
+    fill = getattr(cell, "fill", None)
+    if fill and getattr(fill, "patternType", None) not in (None, "none"):
+        if _is_red_color(getattr(fill, "fgColor", None)) or _is_red_color(
+            getattr(fill, "start_color", None)
+        ):
+            return True
+    font = getattr(cell, "font", None)
+    if font and _is_red_color(getattr(font, "color", None)):
+        return True
+    return False
+
+
+def _collect_red_nonpositive_issues(app, row_indices, sheet_fields_all):
+    if not row_indices or not sheet_fields_all:
+        return []
+
+    task_rows = sorted({idx for idx in row_indices if isinstance(idx, int) and idx >= 0})
+    if not task_rows:
+        return []
+
+    issues = set()
+    try:
+        wb = load_workbook(app.excel_path, data_only=False, read_only=True)
+    except Exception:
+        logger.exception("Failed to open workbook for red-cell validation")
+        return ["Nie udało się sprawdzić pól oznaczonych na czerwono w Excelu."]
+
+    for sheet_name, columns in sheet_fields_all.items():
+        if sheet_name not in wb.sheetnames:
+            continue
+        df = app.dataframes.get(sheet_name)
+        if df is None or df.empty:
+            continue
+        ws = wb[sheet_name]
+        try:
+            header_row = next(ws.iter_rows(min_row=1, max_row=1))
+        except StopIteration:
+            continue
+        header_indices = {}
+        for col_idx, header_cell in enumerate(header_row, start=1):
+            header_value = header_cell.value
+            if header_value is None:
+                continue
+            header_indices[str(header_value)] = col_idx
+
+        for col_name in columns:
+            col_idx = header_indices.get(col_name)
+            if not col_idx:
+                continue
+            for row_idx in task_rows:
+                if row_idx < 0 or row_idx >= len(df):
+                    continue
+                excel_row = row_idx + 2
+                cell = ws.cell(row=excel_row, column=col_idx)
+                if not _cell_marked_red(cell):
+                    continue
+                value = df.iloc[row_idx].get(col_name)
+                number = _to_float(value)
+                if number is None or number > 0:
+                    continue
+                shown = round_numeric_value(value)
+                issues.add(
+                    f"Wiersz {row_idx + 1}: {sheet_name}:{col_name} ma wartość {shown} (<= 0) i jest oznaczone na czerwono."
+                )
+    return sorted(issues)
+
+
+def _is_http_value(value):
+    text = str(value or "").strip().lower()
+    return text.startswith("http://") or text.startswith("https://")
+
+
+def _check_remote_image_exists(url, timeout=3):
+    response = None
+    try:
+        response = requests.head(url, allow_redirects=True, timeout=timeout)
+        status = response.status_code
+        if status in {405} or status >= 400:
+            with suppress(Exception):
+                response.close()
+            response = requests.get(url, stream=True, timeout=timeout)
+            status = response.status_code
+        return 200 <= status < 400
+    except requests.RequestException:
+        return False
+    finally:
+        if response is not None:
+            with suppress(Exception):
+                response.close()
+
+
+def _collect_missing_image_issues(app, row_indices):
+    image_fields = set(getattr(app, "image_fields", set()) or [])
+    if not row_indices or not image_fields:
+        return []
+
+    data_rows = sorted({idx for idx in row_indices if isinstance(idx, int) and idx >= 0})
+    if not data_rows:
+        return []
+
+    issues = set()
+    remote_cache = {}
+    max_remote_checks = 30
+
+    dynamic_fields = []
+    for field in image_fields:
+        if ":" not in field:
+            continue
+        sheet, col = field.split(":", 1)
+        dynamic_fields.append((field, sheet, col))
+
+    for row_idx in data_rows:
+        row_no = row_idx + 1
+        for field, sheet, col in dynamic_fields:
+            df = app.dataframes.get(sheet)
+            if df is None or row_idx >= len(df):
+                continue
+            value = df.iloc[row_idx].get(col)
+            try:
+                if pd.isna(value):
+                    continue
+            except Exception:
+                pass
+            text = str(value or "").strip()
+            if not text:
+                continue
+            if _is_http_value(text):
+                if text not in remote_cache and len(remote_cache) < max_remote_checks:
+                    remote_cache[text] = _check_remote_image_exists(text)
+                if text in remote_cache and not remote_cache[text]:
+                    issues.add(
+                        f"Wiersz {row_no}: nie można pobrać obrazu z URL dla pola {field}: {text}"
+                    )
+                continue
+            if not app.find_local_image(text):
+                issues.add(
+                    f"Wiersz {row_no}: nie znaleziono pliku obrazu dla pola {field}: {text}"
+                )
+
+    static_entries = _collect_static_entries(app)
+    for field in image_fields:
+        if ":" in field:
+            continue
+        value = static_entries.get(field, "")
+        text = str(value or "").strip()
+        if not text:
+            continue
+        if _is_http_value(text):
+            if text not in remote_cache and len(remote_cache) < max_remote_checks:
+                remote_cache[text] = _check_remote_image_exists(text)
+            if text in remote_cache and not remote_cache[text]:
+                issues.add(
+                    f"Pole statyczne {field}: nie można pobrać obrazu z URL: {text}"
+                )
+            continue
+        if not app.find_local_image(text):
+            issues.add(
+                f"Pole statyczne {field}: nie znaleziono pliku obrazu: {text}"
+            )
+
+    if len(remote_cache) >= max_remote_checks:
+        issues.add(
+            "Pominięto część zdalnych sprawdzeń URL obrazów (limit 30 unikalnych linków na uruchomienie)."
+        )
+    return sorted(issues)
 
 
 def _ui_call(app, func, *args, **kwargs):
@@ -75,6 +298,11 @@ def _ui_progress_mode(app, indeterminate):
 def _ui_finish(app, status):
     if hasattr(app, "finish_generation_ui"):
         _ui_call(app, app.finish_generation_ui, status)
+
+
+def _notify_generation_complete(app, report):
+    if hasattr(app, "on_generation_complete"):
+        _ui_call(app, app.on_generation_complete, report)
 
 
 def _is_cancelled(app):
@@ -587,22 +815,40 @@ def render_single_pdf(task):
 
 
 def generate_pds(app):
-    def finish_now(status):
+    report = {
+        "status": "started",
+        "excel_path": getattr(app, "excel_path", ""),
+        "output_dir": "",
+        "total_rows": 0,
+        "total_tasks": 0,
+        "processed_rows": 0,
+        "skipped_rows": 0,
+        "new_pdfs": [],
+        "updated_pdfs": [],
+        "errors": [],
+        "warnings": [],
+    }
+
+    def finish_now(status_label, status_code):
         if hasattr(app, "finish_generation_ui"):
-            app.finish_generation_ui(status)
+            app.finish_generation_ui(status_label)
         else:
-            _ui_finish(app, status)
+            _ui_finish(app, status_label)
+        report["status"] = status_code
+        _notify_generation_complete(app, report)
 
     if not app.excel_path or not app.dataframes:
+        report["errors"].append("Brak danych do generowania.")
         messagebox.showerror("Błąd", "Brak danych do generowania")
-        finish_now("Brak danych")
+        finish_now("Brak danych", "no_data")
         return False
 
     _, first_df = next(iter(app.dataframes.items()))
     total_rows = len(first_df)
+    report["total_rows"] = total_rows
     if total_rows == 0:
         messagebox.showinfo("Info", "Brak wierszy w pliku Excel")
-        finish_now("Brak wierszy")
+        finish_now("Brak wierszy", "no_rows")
         return False
 
     _ui_counts(app, total_rows=total_rows)
@@ -652,6 +898,9 @@ def generate_pds(app):
         )
     except Exception:
         logger.exception("Failed to update tracking cache")
+        report["errors"].append(
+            "Nie udało się zaktualizować lokalnego cache śledzenia zmian."
+        )
         cache_rows = None
         cache_changed_cols = {}
 
@@ -662,6 +911,9 @@ def generate_pds(app):
         tracking_mode = "excel"
     except Exception:
         logger.exception("Failed to update tracking column")
+        report["errors"].append(
+            "Nie udało się zaktualizować kolumny kontrolnej w Excelu."
+        )
         if cache_rows is None:
             messagebox.showwarning(
                 "Uwaga",
@@ -731,6 +983,7 @@ def generate_pds(app):
 
     output_dir = os.path.join(os.path.dirname(app.excel_path), "PDS")
     os.makedirs(output_dir, exist_ok=True)
+    report["output_dir"] = output_dir
 
     page_width = app.page_width
     page_height = app.page_height
@@ -755,7 +1008,8 @@ def generate_pds(app):
         else:
             unique_name = filename
         pdf_path = os.path.join(output_dir, f"{unique_name}.pdf")
-        if os.path.exists(pdf_path) and changed_rows is not None and idx not in changed_rows:
+        existed_before = os.path.exists(pdf_path)
+        if existed_before and changed_rows is not None and idx not in changed_rows:
             continue
         row_values = {}
         for sheet, columns in sheet_fields_all.items():
@@ -782,18 +1036,58 @@ def generate_pds(app):
                 "pdf_path": pdf_path,
                 "name": unique_name,
                 "row_values": row_values,
+                "existed_before": existed_before,
             }
         )
 
+    validation_warnings = []
+    validation_row_indices = list(range(total_rows))
+    try:
+        validation_warnings.extend(
+            _collect_red_nonpositive_issues(app, validation_row_indices, sheet_fields_all)
+        )
+    except Exception:
+        logger.exception("Failed while validating red-marked numeric fields")
+        validation_warnings.append(
+            "Nie udało się sprawdzić pól oznaczonych na czerwono."
+        )
+    try:
+        validation_warnings.extend(_collect_missing_image_issues(app, validation_row_indices))
+    except Exception:
+        logger.exception("Failed while validating image references")
+        validation_warnings.append(
+            "Nie udało się sprawdzić ścieżek i linków obrazów."
+        )
+    if validation_warnings:
+        report["warnings"] = sorted(set(validation_warnings))
+        sample = ", ".join(report["warnings"][:3])
+        logger.warning(
+            "Detected data quality warnings: %s (sample: %s)",
+            len(report["warnings"]),
+            sample,
+        )
+        for warning_text in report["warnings"][:200]:
+            logger.warning("Data warning: %s", warning_text)
+
     if not tasks:
+        report["total_tasks"] = 0
+        report["skipped_rows"] = total_rows
         messagebox.showinfo(
             "Info", "Brak zmian - wszystkie pliki PDF są aktualne."
         )
+        if report["warnings"]:
+            messagebox.showwarning(
+                "Uwaga",
+                "Brak zmian w PDF, ale wykryto ostrzeżenia jakości danych: "
+                f"{len(report['warnings'])}.",
+            )
         _ui_counts(app, total_rows=total_rows, total_tasks=0, processed=0, skipped=total_rows)
-        finish_now("Brak zmian")
+        finish_now("Brak zmian", "no_changes")
         return False
 
     skipped_rows = total_rows - len(tasks) if changed_rows is not None else 0
+    report["total_tasks"] = len(tasks)
+    report["skipped_rows"] = skipped_rows
     _ui_counts(
         app,
         total_rows=total_rows,
@@ -805,7 +1099,7 @@ def generate_pds(app):
     _ui_status(app, "Generowanie PDF...")
 
     if _is_cancelled(app):
-        finish_now("Anulowano")
+        finish_now("Anulowano", "cancelled")
         return False
 
     worker_payload = {
@@ -848,6 +1142,8 @@ def generate_pds(app):
         failures = []
         completed = 0
         cancelled = False
+        new_files = []
+        updated_files = []
         max_workers = max(1, min(len(tasks_local), os.cpu_count() or 1))
 
         executor = None
@@ -867,7 +1163,12 @@ def generate_pds(app):
                     break
                 task = future_map[future]
                 try:
-                    future.result()
+                    result = future.result()
+                    final_pdf = result.get("pdf_path", task["pdf_path"])
+                    if task.get("existed_before"):
+                        updated_files.append(final_pdf)
+                    else:
+                        new_files.append(final_pdf)
                 except Exception as exc:  # pragma: no cover - defensive logging
                     failures.append((task["idx"], task.get("name", ""), str(exc)))
                     logger.exception(
@@ -909,14 +1210,32 @@ def generate_pds(app):
                             executor.shutdown()
                 else:
                     executor.shutdown()
+
             def finish():
+                report["processed_rows"] = completed
+                report["new_pdfs"] = sorted(new_files)
+                report["updated_pdfs"] = sorted(updated_files)
+                for idx, name, err in failures:
+                    if idx >= 0:
+                        if name:
+                            report["errors"].append(
+                                f"Wiersz {idx + 1} ({name}): {err}"
+                            )
+                        else:
+                            report["errors"].append(f"Wiersz {idx + 1}: {err}")
+                    else:
+                        report["errors"].append(f"Błąd wykonawcy: {err}")
+
                 if cancelled:
+                    report["status"] = "cancelled"
                     if hasattr(app, "finish_generation_ui"):
                         app.finish_generation_ui("Anulowano")
                     else:
                         _ui_finish(app, "Anulowano")
+                    _notify_generation_complete(app, report)
                     return
                 if failures:
+                    report["status"] = "error"
                     if hasattr(app, "finish_generation_ui"):
                         app.finish_generation_ui("Błąd")
                     else:
@@ -932,6 +1251,7 @@ def generate_pds(app):
                         message = "Wystąpił błąd podczas generowania plików PDF. Sprawdź logi."
                     messagebox.showerror("Błąd", message)
                 else:
+                    report["status"] = "success"
                     if hasattr(app, "finish_generation_ui"):
                         app.finish_generation_ui("Zakończono")
                     else:
@@ -939,6 +1259,14 @@ def generate_pds(app):
                     messagebox.showinfo(
                         "Zakończono", f"Pliki zapisane w {payload['output_dir']}"
                     )
+                    if report["warnings"]:
+                        messagebox.showwarning(
+                            "Uwaga",
+                            "Wykryto ostrzeżenia jakości danych: "
+                            f"{len(report['warnings'])}. "
+                            "Szczegóły są dostępne w raporcie e-mail i logach.",
+                        )
+                _notify_generation_complete(app, report)
 
             app.after(0, finish)
 
