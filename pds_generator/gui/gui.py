@@ -1115,8 +1115,34 @@ class PDSGeneratorGUI(tk.Tk):
                 require_recipients=require_recipients,
             )
 
+        def collect_entra(strict=False):
+            recipients_value = recipients_box.get("1.0", "end").strip()
+            token_value = entra_token_var.get().strip()
+            return self._mail_settings_from_inputs(
+                transport=mailer.TRANSPORT_ENTRA_API,
+                enabled=enabled_var.get(),
+                smtp_host=host_var.get(),
+                smtp_port=port_var.get(),
+                smtp_security=security_var.get(),
+                username=username_var.get(),
+                password=password_var.get(),
+                sender=sender_var.get(),
+                entra_token=token_value,
+                entra_tenant_id=entra_tenant_var.get(),
+                entra_client_id=entra_client_var.get(),
+                entra_client_secret=entra_client_secret_var.get(),
+                entra_sender=entra_sender_var.get(),
+                entra_endpoint=entra_endpoint_var.get(),
+                secret_key_id=secret_key_id_var.get(),
+                recipients_text=recipients_value,
+                subject_prefix=subject_var.get(),
+                timeout_seconds=timeout_var.get(),
+                strict=strict,
+                require_recipients=False,
+            )
+
         def fetch_token():
-            cfg_for_token = collect(strict=False, require_recipients=False)
+            cfg_for_token = collect_entra(strict=False)
             if not cfg_for_token:
                 return
             self.set_status("Pobieranie tokenu Entra...")
@@ -1148,37 +1174,62 @@ class PDSGeneratorGUI(tk.Tk):
             threading.Thread(target=worker, daemon=True).start()
 
         def generate_certificate():
-            cfg_for_cert = collect(strict=False, require_recipients=False)
+            cfg_for_cert = collect_entra(strict=True)
             if not cfg_for_cert:
                 return
             # Always derive certificate ID from current Tenant+Client inputs.
             cfg_for_cert["secret_key_id"] = ""
-            try:
-                key_id, cert_path, created = mailer.generate_secret_certificate(
-                    cfg_for_cert
-                )
-            except Exception as exc:
-                logger.exception("Failed to generate mail secret certificate")
-                messagebox.showerror(
-                    "E-mail",
-                    f"Nie udało się wygenerować certyfikatu: {exc}",
-                )
-                self.set_status("Błąd generowania certyfikatu")
-                return
-            secret_key_id_var.set(key_id)
-            self.set_status("Certyfikat szyfrowania gotowy")
-            if created:
-                messagebox.showinfo(
-                    "E-mail",
-                    "Wygenerowano certyfikat szyfrowania.\n"
-                    f"Plik: {cert_path}",
-                )
-            else:
-                messagebox.showinfo(
-                    "E-mail",
-                    "Certyfikat już istnieje i zostanie użyty.\n"
-                    f"Plik: {cert_path}",
-                )
+            self.set_status("Testowanie Entra przed generowaniem certyfikatu...")
+
+            def worker():
+                try:
+                    mailer.test_connection(cfg_for_cert)
+                except Exception as exc:
+                    logger.exception(
+                        "Connection test failed before certificate generation"
+                    )
+                    self.ui_call(
+                        messagebox.showerror,
+                        "E-mail",
+                        "Nie można wygenerować certyfikatu, ponieważ test połączenia "
+                        f"Entra zakończył się błędem:\n{exc}",
+                    )
+                    self.ui_call(self.set_status, "Błąd testu Entra")
+                    return
+
+                try:
+                    key_id, cert_path, created = mailer.generate_secret_certificate(
+                        cfg_for_cert
+                    )
+                except Exception as exc:
+                    logger.exception("Failed to generate mail secret certificate")
+                    self.ui_call(
+                        messagebox.showerror,
+                        "E-mail",
+                        f"Nie udało się wygenerować certyfikatu: {exc}",
+                    )
+                    self.ui_call(self.set_status, "Błąd generowania certyfikatu")
+                    return
+
+                def on_success():
+                    secret_key_id_var.set(key_id)
+                    self.set_status("Certyfikat szyfrowania gotowy")
+                    if created:
+                        messagebox.showinfo(
+                            "E-mail",
+                            "Wygenerowano certyfikat szyfrowania.\n"
+                            f"Plik: {cert_path}",
+                        )
+                    else:
+                        messagebox.showinfo(
+                            "E-mail",
+                            "Certyfikat już istnieje i zostanie użyty.\n"
+                            f"Plik: {cert_path}",
+                        )
+
+                self.ui_call(on_success)
+
+            threading.Thread(target=worker, daemon=True).start()
 
         fetch_token_btn.configure(command=fetch_token)
         generate_cert_btn.configure(command=generate_certificate)

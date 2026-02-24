@@ -372,16 +372,55 @@ def _get_storage_fernet(config):
     return _get_env_fernet()
 
 
+def _iter_secret_key_files():
+    secret_dir = _secret_store_dir()
+    try:
+        names = sorted(os.listdir(secret_dir))
+    except OSError:
+        return []
+    paths = []
+    for name in names:
+        if not str(name).lower().endswith(".key"):
+            continue
+        path = os.path.join(secret_dir, name)
+        if os.path.isfile(path):
+            paths.append(path)
+    return paths
+
+
 def _get_decrypt_fernets(raw_config):
     cfg = normalize_mail_config(raw_config)
     candidates = []
-    from_file = _load_fernet_from_key_file(_resolve_secret_key_path(cfg))
-    if from_file:
-        candidates.append(from_file)
+
+    seen_paths = set()
+
+    def add_key(path):
+        if not path:
+            return
+        key = os.path.normcase(os.path.abspath(path))
+        if key in seen_paths:
+            return
+        seen_paths.add(key)
+        fernet = _load_fernet_from_key_file(path)
+        if fernet:
+            candidates.append(fernet)
+
+    add_key(_resolve_secret_key_path(cfg))
+    for key_path in _iter_secret_key_files():
+        add_key(key_path)
+
     from_env = _get_env_fernet()
     if from_env:
         candidates.append(from_env)
     return candidates
+
+
+def _shared_key_is_configured(cfg):
+    if str(os.getenv(_SECRET_KEY_FILE_ENV, "") or "").strip():
+        return True
+    if _normalize_secret_key_id(cfg.get("secret_key_id", "")):
+        return True
+    return False
 
 
 def _shared_encrypt(plaintext, config=None):
@@ -526,11 +565,22 @@ def load_mail_config(config):
 def sanitize_mail_config_for_storage(config):
     source_cfg = normalize_mail_config(config)
     cfg = dict(source_cfg)
+    storage_fernet = _get_storage_fernet(source_cfg)
+    if _shared_key_is_configured(source_cfg) and not storage_fernet:
+        path = _resolve_secret_key_path(source_cfg) or "<brak>"
+        raise RuntimeError(
+            "Nie znaleziono certyfikatu/klucza szyfrowania dla konfiguracji Entra.\n"
+            f"Oczekiwana lokalizacja: {path}\n"
+            "Skopiuj plik .key na ten komputer albo ustaw PDS_SECRET_KEY_FILE."
+        )
     for key in SENSITIVE_MAIL_FIELDS:
         value = str(source_cfg.get(key, "") or "")
         encrypted_key = SECRET_STORAGE_MAP[key]
         if value:
-            shared_value = _shared_encrypt(value, config=source_cfg)
+            shared_value = ""
+            if storage_fernet:
+                token = storage_fernet.encrypt(value.encode("utf-8")).decode("ascii")
+                shared_value = _SHARED_PREFIX + token
             if shared_value:
                 cfg[encrypted_key] = shared_value
             elif os.name == "nt":
@@ -786,8 +836,10 @@ def _test_entra_connection(cfg):
         timeout=cfg["timeout_seconds"],
     )
     if response.status_code in (401, 403):
+        details = _parse_error_response(response)
         raise RuntimeError(
-            "Brak autoryzacji (token nieprawidłowy albo brak uprawnień Mail.Send)."
+            "Brak autoryzacji (token nieprawidłowy albo brak uprawnień Mail.Send). "
+            f"Szczegóły: {details}"
         )
     if response.status_code in (404, 405):
         raise RuntimeError(

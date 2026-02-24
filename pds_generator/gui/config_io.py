@@ -39,9 +39,32 @@ def _release_lock(path):
         logger.exception("Failed to remove lock %s", path)
 
 
+def _normalize_path(path):
+    if not path:
+        return ""
+    return os.path.normcase(os.path.abspath(os.path.normpath(str(path))))
+
+
+def _same_path(path_a, path_b):
+    if not path_a or not path_b:
+        return False
+    return _normalize_path(path_a) == _normalize_path(path_b)
+
+
 def save_config(app):
     if not app.excel_path:
         messagebox.showerror("Błąd", "Najpierw wybierz plik Excel")
+        return
+    try:
+        mail_cfg = mailer.sanitize_mail_config_for_storage(
+            getattr(app, "mail_config", {})
+        )
+    except Exception as exc:
+        logger.exception("Failed to sanitize mail config for storage")
+        messagebox.showerror(
+            "Błąd",
+            f"Nie można zapisać konfiguracji e-mail: {exc}",
+        )
         return
     config = {
         "excel_path": app.excel_path,
@@ -56,9 +79,7 @@ def save_config(app):
         "tracking_excluded": sorted(getattr(app, "tracking_excluded", set())),
         "ignore_updates": getattr(app, "ignore_updates", False),
         "update_test": getattr(app, "update_test", False),
-        "mail": mailer.sanitize_mail_config_for_storage(
-            getattr(app, "mail_config", {})
-        ),
+        "mail": mail_cfg,
     }
     cfg_path = _excel_config_path(app.excel_path)
     if not cfg_path:
@@ -147,6 +168,23 @@ def load_config(app, startup=False, path=None):
         except OSError:
             logger.exception("Failed to update backup config from %s", cfg_path)
 
+    excel_cfg = config.get("excel_path")
+    if path and excel_cfg and not _same_path(excel_cfg, path):
+        logger.info(
+            "Skipping config load due to excel path mismatch: selected=%s config=%s",
+            path,
+            excel_cfg,
+        )
+        _release_lock(lock)
+        app.config_lock_path = None
+        if loaded_from_backup:
+            messagebox.showwarning(
+                "Kopia zapasowa",
+                "Nie znaleziono config.json dla wybranego pliku Excel.\n"
+                "Dostępna kopia zapasowa dotyczy innego pliku, więc nie została załadowana.",
+            )
+        return
+
     app.ignore_updates = config.get("ignore_updates", False)
     app.update_test = config.get("update_test", False)
     app.tracking_excluded = set(config.get("tracking_excluded", []))
@@ -155,17 +193,16 @@ def load_config(app, startup=False, path=None):
     app.image_dirs = list(config.get("image_dirs", []))
     if hasattr(app, "refresh_image_dir_list"):
         app.refresh_image_dir_list()
-    excel_cfg = config.get("excel_path")
     if startup and excel_cfg and os.path.exists(excel_cfg):
         if not getattr(app, "excel_lock_path", None):
             if not app.acquire_excel_lock(excel_cfg):
+                _release_lock(lock)
+                app.config_lock_path = None
                 return
         app.excel_path = excel_cfg
         app.image_cache = {}
         app.path_var.set(excel_cfg)
         app.load_excel(excel_cfg)
-    if path and excel_cfg and excel_cfg != path:
-        return
     if loaded_from_backup:
         messagebox.showwarning(
             "Kopia zapasowa",
