@@ -25,6 +25,7 @@ from .config_io import (
     load_config as load_config_func,
 )
 from . import mailer
+from . import windows_auth
 from .excel_tracking import is_tracking_column
 from ..excel_io import read_excel_data, detect_formula_columns, collect_formula_samples
 from . import locks
@@ -118,6 +119,10 @@ class PDSGeneratorGUI(tk.Tk):
         self.cancel_event = None
         self.tracking_excluded = set()
         self.mail_config = mailer.normalize_mail_config({})
+        self.require_admin_for_mail_settings = (
+            str(os.getenv("PDS_REQUIRE_ADMIN_MAIL_SETTINGS", "1")).strip().lower()
+            not in {"0", "false", "no"}
+        )
         self.mail_settings_win = None
         self.last_generation_report = None
         self.formula_map = {}
@@ -701,6 +706,7 @@ class PDSGeneratorGUI(tk.Tk):
         entra_client_secret,
         entra_sender,
         entra_endpoint,
+        secret_key_id,
         recipients_text,
         subject_prefix,
         timeout_seconds,
@@ -741,6 +747,7 @@ class PDSGeneratorGUI(tk.Tk):
                 "entra_client_secret": entra_client_secret,
                 "entra_sender": entra_sender,
                 "entra_endpoint": entra_endpoint,
+                "secret_key_id": secret_key_id,
                 "recipients": recipients_text,
                 "subject_prefix": subject_prefix,
                 "timeout_seconds": timeout,
@@ -790,6 +797,20 @@ class PDSGeneratorGUI(tk.Tk):
             self.mail_settings_win.focus_force()
             return
 
+        if self.require_admin_for_mail_settings and os.name == "nt":
+            ok, err = windows_auth.prompt_admin_credentials(
+                parent_hwnd=self.winfo_id(),
+                caption="Autoryzacja administratora",
+                message=(
+                    "Aby otworzyć konfigurację e-mail, zaloguj się kontem administratora."
+                ),
+            )
+            if not ok:
+                if err and err != "cancelled":
+                    messagebox.showerror("Uprawnienia", err)
+                self.set_status("Odmowa dostępu do konfiguracji e-mail")
+                return
+
         cfg = mailer.normalize_mail_config(getattr(self, "mail_config", {}))
 
         win = tk.Toplevel(self)
@@ -805,13 +826,16 @@ class PDSGeneratorGUI(tk.Tk):
         username_var = tk.StringVar(value=cfg["username"])
         password_var = tk.StringVar(value=cfg["password"])
         sender_var = tk.StringVar(value=cfg["sender"])
+        entra_token_var = tk.StringVar(value=cfg["entra_token"])
         entra_tenant_var = tk.StringVar(value=cfg["entra_tenant_id"])
         entra_client_var = tk.StringVar(value=cfg["entra_client_id"])
         entra_client_secret_var = tk.StringVar(value=cfg["entra_client_secret"])
         entra_sender_var = tk.StringVar(value=cfg["entra_sender"])
         entra_endpoint_var = tk.StringVar(value=cfg["entra_endpoint"])
+        secret_key_id_var = tk.StringVar(value=cfg.get("secret_key_id", ""))
         subject_var = tk.StringVar(value=cfg["subject_prefix"])
         timeout_var = tk.StringVar(value=str(cfg["timeout_seconds"]))
+        show_sensitive_var = tk.BooleanVar(value=False)
 
         ttk.Checkbutton(
             win,
@@ -909,11 +933,10 @@ class PDSGeneratorGUI(tk.Tk):
         ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(2, 6))
 
         ttk.Label(api_frame, text="Token Bearer:").grid(
-            row=1, column=0, sticky="nw", padx=8, pady=2
+            row=1, column=0, sticky="w", padx=8, pady=2
         )
-        token_box = tk.Text(api_frame, height=4, width=46)
-        token_box.grid(row=1, column=1, sticky="ew", padx=8, pady=2)
-        token_box.insert("1.0", cfg["entra_token"])
+        token_entry = ttk.Entry(api_frame, textvariable=entra_token_var, show="*")
+        token_entry.grid(row=1, column=1, sticky="ew", padx=8, pady=2)
 
         ttk.Label(api_frame, text="Tenant ID (dzierżawy):").grid(
             row=2, column=0, sticky="w", padx=8, pady=2
@@ -957,8 +980,31 @@ class PDSGeneratorGUI(tk.Tk):
             row=6, column=1, sticky="ew", padx=8, pady=2
         )
 
-        fetch_token_btn = ttk.Button(api_frame, text="Pobierz token", command=lambda: None)
-        fetch_token_btn.grid(row=7, column=1, sticky="w", padx=8, pady=(4, 2))
+        ttk.Label(api_frame, text="Certyfikat (ID):").grid(
+            row=7, column=0, sticky="w", padx=8, pady=2
+        )
+        secret_key_id_entry = ttk.Entry(
+            api_frame, textvariable=secret_key_id_var, state="readonly"
+        )
+        secret_key_id_entry.grid(row=7, column=1, sticky="ew", padx=8, pady=2)
+
+        cert_btns = ttk.Frame(api_frame)
+        cert_btns.grid(row=8, column=1, sticky="w", padx=8, pady=(2, 2))
+        generate_cert_btn = ttk.Button(
+            cert_btns, text="Generuj certyfikat", command=lambda: None
+        )
+        generate_cert_btn.pack(side="left")
+
+        fetch_token_btn = ttk.Button(
+            api_frame, text="Pobierz token", command=lambda: None
+        )
+        fetch_token_btn.grid(row=9, column=1, sticky="w", padx=8, pady=(4, 2))
+
+        ttk.Checkbutton(
+            api_frame,
+            text="Pokaż pola wrażliwe (hasła/tokeny)",
+            variable=show_sensitive_var,
+        ).grid(row=10, column=1, sticky="w", padx=8, pady=(0, 2))
 
         ttk.Label(win, text="Temat (prefix):").grid(
             row=4, column=0, sticky="w", padx=10, pady=2
@@ -998,14 +1044,22 @@ class PDSGeneratorGUI(tk.Tk):
             sender_entry,
         ]
         api_controls = [
-            token_box,
+            token_entry,
             entra_tenant_entry,
             entra_client_entry,
             entra_client_secret_entry,
             entra_sender_entry,
             entra_endpoint_entry,
+            secret_key_id_entry,
+            generate_cert_btn,
             fetch_token_btn,
         ]
+
+        def apply_sensitive_visibility(*_args):
+            mask = "" if show_sensitive_var.get() else "*"
+            password_entry.configure(show=mask)
+            token_entry.configure(show=mask)
+            entra_client_secret_entry.configure(show=mask)
 
         def set_controls_state(controls, enabled_state):
             for control in controls:
@@ -1032,10 +1086,12 @@ class PDSGeneratorGUI(tk.Tk):
 
         transport_var.trace_add("write", apply_transport_state)
         apply_transport_state()
+        show_sensitive_var.trace_add("write", apply_sensitive_visibility)
+        apply_sensitive_visibility()
 
         def collect(strict=False, require_recipients=False):
             recipients_value = recipients_box.get("1.0", "end").strip()
-            token_value = token_box.get("1.0", "end").strip()
+            token_value = entra_token_var.get().strip()
             return self._mail_settings_from_inputs(
                 transport=transport_var.get(),
                 enabled=enabled_var.get(),
@@ -1051,6 +1107,7 @@ class PDSGeneratorGUI(tk.Tk):
                 entra_client_secret=entra_client_secret_var.get(),
                 entra_sender=entra_sender_var.get(),
                 entra_endpoint=entra_endpoint_var.get(),
+                secret_key_id=secret_key_id_var.get(),
                 recipients_text=recipients_value,
                 subject_prefix=subject_var.get(),
                 timeout_seconds=timeout_var.get(),
@@ -1078,9 +1135,7 @@ class PDSGeneratorGUI(tk.Tk):
                     return
 
                 def on_success():
-                    token_box.configure(state="normal")
-                    token_box.delete("1.0", "end")
-                    token_box.insert("1.0", token)
+                    entra_token_var.set(token)
                     apply_transport_state()
                     self.set_status("Pobrano token Entra")
                     messagebox.showinfo(
@@ -1092,7 +1147,41 @@ class PDSGeneratorGUI(tk.Tk):
 
             threading.Thread(target=worker, daemon=True).start()
 
+        def generate_certificate():
+            cfg_for_cert = collect(strict=False, require_recipients=False)
+            if not cfg_for_cert:
+                return
+            # Always derive certificate ID from current Tenant+Client inputs.
+            cfg_for_cert["secret_key_id"] = ""
+            try:
+                key_id, cert_path, created = mailer.generate_secret_certificate(
+                    cfg_for_cert
+                )
+            except Exception as exc:
+                logger.exception("Failed to generate mail secret certificate")
+                messagebox.showerror(
+                    "E-mail",
+                    f"Nie udało się wygenerować certyfikatu: {exc}",
+                )
+                self.set_status("Błąd generowania certyfikatu")
+                return
+            secret_key_id_var.set(key_id)
+            self.set_status("Certyfikat szyfrowania gotowy")
+            if created:
+                messagebox.showinfo(
+                    "E-mail",
+                    "Wygenerowano certyfikat szyfrowania.\n"
+                    f"Plik: {cert_path}",
+                )
+            else:
+                messagebox.showinfo(
+                    "E-mail",
+                    "Certyfikat już istnieje i zostanie użyty.\n"
+                    f"Plik: {cert_path}",
+                )
+
         fetch_token_btn.configure(command=fetch_token)
+        generate_cert_btn.configure(command=generate_certificate)
 
         def save_only():
             new_cfg = collect(strict=False, require_recipients=False)

@@ -1,4 +1,6 @@
+import base64
 import datetime as dt
+import hashlib
 import logging
 import os
 import re
@@ -9,6 +11,15 @@ from contextlib import suppress
 from email.message import EmailMessage
 
 import requests
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+except Exception:  # pragma: no cover - optional dependency at runtime
+    Fernet = None
+    InvalidToken = Exception
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +48,67 @@ DEFAULT_MAIL_CONFIG = {
     "entra_client_secret": "",
     "entra_sender": "",
     "entra_endpoint": "",
+    "secret_key_id": "",
 }
+
+SENSITIVE_MAIL_FIELDS = (
+    "password",
+    "entra_token",
+    "entra_client_secret",
+)
+
+SECRET_ENV_MAP = {
+    "password": ("PDS_SMTP_PASSWORD",),
+    "entra_token": ("PDS_ENTRA_TOKEN",),
+    "entra_client_secret": ("PDS_ENTRA_CLIENT_SECRET",),
+}
+
+SECRET_STORAGE_MAP = {
+    "password": "password_enc",
+    "entra_token": "entra_token_enc",
+    "entra_client_secret": "entra_client_secret_enc",
+}
+
+_DPAPI_PREFIX = "dpapi:"
+_DPAPI_ADDITIONAL_ENTROPY = b"PDS-Generator-Mail-Secrets-v1"
+_DPAPI_UI_FORBIDDEN = 0x01
+_SHARED_PREFIX = "fernet:"
+_SHARED_SECRET_ENV = "PDS_SHARED_SECRET_KEY"
+_SECRET_KEY_FILE_ENV = "PDS_SECRET_KEY_FILE"
+_SECRET_KEY_DIR_NAME = "secrets"
+_SHARED_CRYPTO_WARNED = False
+
+if os.name == "nt":
+    class _DATA_BLOB(ctypes.Structure):
+        _fields_ = [
+            ("cbData", wintypes.DWORD),
+            ("pbData", ctypes.POINTER(ctypes.c_byte)),
+        ]
+
+    _crypt32 = ctypes.windll.crypt32
+    _kernel32 = ctypes.windll.kernel32
+    _crypt32.CryptProtectData.argtypes = [
+        ctypes.POINTER(_DATA_BLOB),
+        wintypes.LPCWSTR,
+        ctypes.POINTER(_DATA_BLOB),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(_DATA_BLOB),
+    ]
+    _crypt32.CryptProtectData.restype = wintypes.BOOL
+    _crypt32.CryptUnprotectData.argtypes = [
+        ctypes.POINTER(_DATA_BLOB),
+        ctypes.POINTER(wintypes.LPWSTR),
+        ctypes.POINTER(_DATA_BLOB),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(_DATA_BLOB),
+    ]
+    _crypt32.CryptUnprotectData.restype = wintypes.BOOL
+    _kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    _kernel32.LocalFree.restype = ctypes.c_void_p
 
 _STATUS_LABELS = {
     "success": "Sukces",
@@ -146,7 +217,360 @@ def normalize_mail_config(config):
     cfg["entra_client_secret"] = str(cfg.get("entra_client_secret", "") or "")
     cfg["entra_sender"] = str(cfg.get("entra_sender", "") or "").strip()
     cfg["entra_endpoint"] = str(cfg.get("entra_endpoint", "") or "").strip()
+    cfg["secret_key_id"] = _normalize_secret_key_id(cfg.get("secret_key_id", ""))
 
+    return cfg
+
+
+def _blob_from_bytes(data):
+    if not data:
+        return _DATA_BLOB(0, None), None
+    buffer = ctypes.create_string_buffer(data, len(data))
+    blob = _DATA_BLOB(
+        len(data),
+        ctypes.cast(buffer, ctypes.POINTER(ctypes.c_byte)),
+    )
+    return blob, buffer
+
+
+def _blob_to_bytes(blob):
+    if not blob.cbData or not blob.pbData:
+        return b""
+    return ctypes.string_at(blob.pbData, blob.cbData)
+
+
+def _secret_store_dir():
+    if os.name == "nt":
+        appdata = (
+            str(os.getenv("APPDATA", "") or "").strip()
+            or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+        )
+        return os.path.join(appdata, "PDS Generator", _SECRET_KEY_DIR_NAME)
+    return os.path.join(os.path.expanduser("~"), ".pds_generator", _SECRET_KEY_DIR_NAME)
+
+
+def get_secret_store_dir():
+    return _secret_store_dir()
+
+
+def _normalize_secret_key_id(value):
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    text = re.sub(r"[^a-z0-9._-]+", "-", text).strip("-.")
+    return text[:80]
+
+
+def _build_secret_key_id(cfg):
+    tenant = str(cfg.get("entra_tenant_id", "") or "").strip().lower()
+    client = str(cfg.get("entra_client_id", "") or "").strip().lower()
+    if not (tenant and client):
+        raise ValueError(
+            "Aby wygenerować certyfikat podaj Tenant ID i Client ID."
+        )
+    fingerprint = hashlib.sha256(f"{tenant}|{client}".encode("utf-8")).hexdigest()[:20]
+    return f"entra-{fingerprint}"
+
+
+def _secret_key_path_from_id(key_id):
+    return os.path.join(_secret_store_dir(), f"{key_id}.key")
+
+
+def _resolve_secret_key_path(cfg):
+    env_path = str(os.getenv(_SECRET_KEY_FILE_ENV, "") or "").strip()
+    if env_path:
+        return os.path.abspath(os.path.expanduser(env_path))
+    key_id = _normalize_secret_key_id(cfg.get("secret_key_id", ""))
+    if not key_id:
+        try:
+            key_id = _build_secret_key_id(cfg)
+        except ValueError:
+            return ""
+    return _secret_key_path_from_id(key_id)
+
+
+def _load_fernet_from_key_file(path):
+    if Fernet is None:
+        return None
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            key = fh.read().strip()
+    except OSError:
+        return None
+    if not key:
+        return None
+    try:
+        return Fernet(key)
+    except Exception:
+        logger.warning("Invalid secret key file format: %s", path)
+        return None
+
+
+def generate_secret_certificate(config):
+    cfg = normalize_mail_config(config)
+    if Fernet is None:
+        raise RuntimeError(
+            "Brakuje biblioteki 'cryptography'. Zainstaluj wymagane zależności."
+        )
+    key_id = _normalize_secret_key_id(cfg.get("secret_key_id", ""))
+    if not key_id:
+        key_id = _build_secret_key_id(cfg)
+    path = _secret_key_path_from_id(key_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    created = False
+    if not os.path.exists(path):
+        with open(path, "wb") as fh:
+            fh.write(Fernet.generate_key() + b"\n")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        created = True
+    elif _load_fernet_from_key_file(path) is None:
+        raise RuntimeError(
+            "Istniejący plik certyfikatu ma nieprawidłowy format."
+        )
+    return key_id, path, created
+
+
+def get_secret_certificate_path(config):
+    cfg = normalize_mail_config(config)
+    return _resolve_secret_key_path(cfg)
+
+
+def _get_env_fernet():
+    global _SHARED_CRYPTO_WARNED
+    key = str(os.getenv(_SHARED_SECRET_ENV, "") or "").strip()
+    if not key:
+        return None
+    if Fernet is None:
+        if not _SHARED_CRYPTO_WARNED:
+            logger.warning(
+                "Shared secret key is set but package 'cryptography' is not available."
+            )
+            _SHARED_CRYPTO_WARNED = True
+        return None
+    try:
+        return Fernet(key.encode("ascii"))
+    except Exception:
+        if not _SHARED_CRYPTO_WARNED:
+            logger.warning(
+                "Invalid %s format. Use a Fernet key (urlsafe base64, 32-byte key).",
+                _SHARED_SECRET_ENV,
+            )
+            _SHARED_CRYPTO_WARNED = True
+        return None
+
+
+def _get_storage_fernet(config):
+    cfg = normalize_mail_config(config)
+    from_file = _load_fernet_from_key_file(_resolve_secret_key_path(cfg))
+    if from_file:
+        return from_file
+    return _get_env_fernet()
+
+
+def _get_decrypt_fernets(raw_config):
+    cfg = normalize_mail_config(raw_config)
+    candidates = []
+    from_file = _load_fernet_from_key_file(_resolve_secret_key_path(cfg))
+    if from_file:
+        candidates.append(from_file)
+    from_env = _get_env_fernet()
+    if from_env:
+        candidates.append(from_env)
+    return candidates
+
+
+def _shared_encrypt(plaintext, config=None):
+    if not plaintext:
+        return ""
+    fernet = _get_storage_fernet(config or {})
+    if not fernet:
+        return ""
+    token = fernet.encrypt(plaintext.encode("utf-8")).decode("ascii")
+    return _SHARED_PREFIX + token
+
+
+def _shared_decrypt(ciphertext, raw_config=None):
+    token = str(ciphertext or "").strip()
+    if not token:
+        return ""
+    if not token.startswith(_SHARED_PREFIX):
+        return ""
+    payload = token[len(_SHARED_PREFIX) :]
+    for fernet in _get_decrypt_fernets(raw_config or {}):
+        try:
+            return fernet.decrypt(payload.encode("ascii")).decode("utf-8")
+        except InvalidToken:
+            continue
+        except Exception:
+            continue
+    logger.warning("Failed to decrypt shared-encrypted secret from config.")
+    return ""
+
+
+def _dpapi_encrypt(plaintext):
+    if os.name != "nt":
+        return ""
+    data = plaintext.encode("utf-8")
+    if not data:
+        return ""
+    in_blob, in_buffer = _blob_from_bytes(data)
+    entropy_blob, entropy_buffer = _blob_from_bytes(_DPAPI_ADDITIONAL_ENTROPY)
+    out_blob = _DATA_BLOB()
+    ok = _crypt32.CryptProtectData(
+        ctypes.byref(in_blob),
+        "PDS Generator secret",
+        ctypes.byref(entropy_blob),
+        None,
+        None,
+        _DPAPI_UI_FORBIDDEN,
+        ctypes.byref(out_blob),
+    )
+    if not ok:
+        raise ctypes.WinError()
+    del in_buffer
+    del entropy_buffer
+    try:
+        encrypted = _blob_to_bytes(out_blob)
+    finally:
+        if out_blob.pbData:
+            _kernel32.LocalFree(ctypes.cast(out_blob.pbData, ctypes.c_void_p))
+    if not encrypted:
+        return ""
+    return _DPAPI_PREFIX + base64.b64encode(encrypted).decode("ascii")
+
+
+def _dpapi_decrypt(ciphertext):
+    if os.name != "nt":
+        return ""
+    token = str(ciphertext or "").strip()
+    if not token:
+        return ""
+    if not token.startswith(_DPAPI_PREFIX):
+        return token
+    encoded = token[len(_DPAPI_PREFIX) :]
+    try:
+        encrypted = base64.b64decode(encoded.encode("ascii"))
+    except Exception:
+        logger.warning("Failed to decode encrypted secret from config.")
+        return ""
+    in_blob, in_buffer = _blob_from_bytes(encrypted)
+    entropy_blob, entropy_buffer = _blob_from_bytes(_DPAPI_ADDITIONAL_ENTROPY)
+    out_blob = _DATA_BLOB()
+    description = wintypes.LPWSTR()
+    ok = _crypt32.CryptUnprotectData(
+        ctypes.byref(in_blob),
+        ctypes.byref(description),
+        ctypes.byref(entropy_blob),
+        None,
+        None,
+        _DPAPI_UI_FORBIDDEN,
+        ctypes.byref(out_blob),
+    )
+    if not ok:
+        logger.warning("Failed to decrypt secret from config with DPAPI.")
+        return ""
+    del in_buffer
+    del entropy_buffer
+    try:
+        secret = _blob_to_bytes(out_blob).decode("utf-8")
+    except Exception:
+        logger.warning("Failed to decode decrypted secret payload.")
+        secret = ""
+    finally:
+        if out_blob.pbData:
+            _kernel32.LocalFree(ctypes.cast(out_blob.pbData, ctypes.c_void_p))
+        if description:
+            _kernel32.LocalFree(ctypes.cast(description, ctypes.c_void_p))
+    return secret
+
+
+def _secret_from_storage(raw_config, key):
+    if not isinstance(raw_config, dict):
+        return ""
+    enc_key = SECRET_STORAGE_MAP.get(key)
+    if not enc_key:
+        return ""
+    encrypted = str(raw_config.get(enc_key, "") or "").strip()
+    if not encrypted:
+        return ""
+    if encrypted.startswith(_SHARED_PREFIX):
+        value = _shared_decrypt(encrypted, raw_config=raw_config)
+    elif encrypted.startswith(_DPAPI_PREFIX):
+        value = _dpapi_decrypt(encrypted) if os.name == "nt" else ""
+    else:
+        # Legacy/plain fallback from older configs.
+        value = encrypted
+    if key == "password":
+        return value
+    return str(value or "").strip()
+
+
+def load_mail_config(config):
+    raw_config = config if isinstance(config, dict) else {}
+    cfg = normalize_mail_config(raw_config)
+    for key in SENSITIVE_MAIL_FIELDS:
+        existing = str(cfg.get(key, "") or "")
+        if existing.strip():
+            continue
+        restored = _secret_from_storage(raw_config, key)
+        if restored:
+            cfg[key] = restored
+    return cfg
+
+
+def sanitize_mail_config_for_storage(config):
+    source_cfg = normalize_mail_config(config)
+    cfg = dict(source_cfg)
+    for key in SENSITIVE_MAIL_FIELDS:
+        value = str(source_cfg.get(key, "") or "")
+        encrypted_key = SECRET_STORAGE_MAP[key]
+        if value:
+            shared_value = _shared_encrypt(value, config=source_cfg)
+            if shared_value:
+                cfg[encrypted_key] = shared_value
+            elif os.name == "nt":
+                try:
+                    cfg[encrypted_key] = _dpapi_encrypt(value)
+                except Exception:
+                    logger.exception("Failed to encrypt %s for config storage", key)
+                    cfg[encrypted_key] = ""
+            else:
+                cfg[encrypted_key] = ""
+        else:
+            cfg[encrypted_key] = ""
+        cfg[key] = ""
+    return cfg
+
+
+def _first_non_empty_env(env_names):
+    for env_name in env_names:
+        value = os.getenv(env_name)
+        if value is None:
+            continue
+        text = str(value)
+        if text.strip():
+            return text
+    return ""
+
+
+def resolve_mail_config_secrets(config):
+    cfg = load_mail_config(config)
+    for key, env_names in SECRET_ENV_MAP.items():
+        existing = str(cfg.get(key, "") or "")
+        if existing.strip():
+            continue
+        value = _first_non_empty_env(env_names)
+        if not value:
+            continue
+        if key == "password":
+            cfg[key] = value
+        else:
+            cfg[key] = value.strip()
     return cfg
 
 
@@ -161,7 +585,7 @@ def _resolve_sender(cfg):
 
 
 def validate_mail_config(config, require_recipients=True):
-    cfg = normalize_mail_config(config)
+    cfg = resolve_mail_config_secrets(config)
 
     if cfg["transport"] == TRANSPORT_SMTP:
         if not cfg["smtp_host"]:
@@ -278,7 +702,7 @@ def _fetch_entra_token_from_client_credentials(cfg):
 
 
 def get_entra_access_token(config):
-    cfg = normalize_mail_config(config)
+    cfg = resolve_mail_config_secrets(config)
     token = cfg.get("entra_token", "").strip()
     if token:
         return token
@@ -286,7 +710,7 @@ def get_entra_access_token(config):
 
 
 def request_entra_token(config):
-    cfg = normalize_mail_config(config)
+    cfg = resolve_mail_config_secrets(config)
     return _fetch_entra_token_from_client_credentials(cfg)
 
 
