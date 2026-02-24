@@ -191,6 +191,9 @@ def load_config(app, startup=False, path=None):
     app.mail_config = mailer.load_mail_config(config.get("mail", {}))
     app.image_fields = set(config.get("image_fields", []))
     app.image_dirs = list(config.get("image_dirs", []))
+    app.image_cache = {}
+    if hasattr(app, "_invalidate_image_index"):
+        app._invalidate_image_index()
     if hasattr(app, "refresh_image_dir_list"):
         app.refresh_image_dir_list()
     if startup and excel_cfg and os.path.exists(excel_cfg):

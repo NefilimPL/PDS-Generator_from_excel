@@ -4,6 +4,7 @@ import time
 import threading
 import re
 import math
+import hashlib
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import suppress
 from io import BytesIO
@@ -13,6 +14,31 @@ import pandas as pd
 import requests
 from PIL import Image
 from openpyxl import load_workbook
+
+
+def _patch_md5_usedforsecurity_compat():
+    """Compatibility shim for Python builds without hashlib `usedforsecurity` kwarg."""
+    md5_func = getattr(hashlib, "md5", None)
+    if md5_func is None:
+        return
+    try:
+        md5_func(b"", usedforsecurity=False)
+        return
+    except TypeError as exc:
+        if "usedforsecurity" not in str(exc):
+            return
+    except Exception:
+        return
+
+    def _md5_compat(data=b"", *args, **kwargs):
+        kwargs.pop("usedforsecurity", None)
+        return md5_func(data, *args, **kwargs)
+
+    hashlib.md5 = _md5_compat
+
+
+_patch_md5_usedforsecurity_compat()
+
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.lib import colors
@@ -20,6 +46,7 @@ from reportlab.pdfbase import pdfmetrics
 from tkinter import messagebox
 
 from ..number_format import round_numeric_value
+from .. import image_index as image_index_utils
 
 from .excel_tracking import (
     TRACKING_COLUMN,
@@ -509,11 +536,18 @@ _render_proxy = None
 
 
 class RenderAppProxy:
-    def __init__(self, scale, excel_dir, image_dirs=None):
+    def __init__(self, scale, excel_dir, image_dirs=None, image_index_path=""):
         self.scale = scale
         self.excel_dir = excel_dir or ""
         self.image_dirs = list(image_dirs or [])
         self._image_cache = {}
+        self._image_index_data = None
+        roots = image_index_utils.normalize_roots([self.excel_dir] + self.image_dirs)
+        if roots:
+            self._image_index_data = image_index_utils.load_index_for_roots(
+                roots,
+                index_path=image_index_path or None,
+            )
 
     def find_local_image(self, filename):
         if not filename:
@@ -575,7 +609,9 @@ class RenderAppProxy:
                             break
                     if path:
                         break
-        if path is None and stem:
+        if path is None and self._image_index_data:
+            path = image_index_utils.find_in_index(self._image_index_data, name)
+        if path is None and stem and not self._image_index_data:
             target_name = os.path.basename(name).lower()
             for root in search_roots:
                 for current_root, _dirs, files in os.walk(root):
@@ -603,6 +639,7 @@ def _init_render_context(context):
         context["scale"],
         context["excel_dir"],
         context.get("image_dirs", []),
+        context.get("image_index_path", ""),
     )
 
 
@@ -1040,35 +1077,6 @@ def generate_pds(app):
             }
         )
 
-    validation_warnings = []
-    validation_row_indices = list(range(total_rows))
-    try:
-        validation_warnings.extend(
-            _collect_red_nonpositive_issues(app, validation_row_indices, sheet_fields_all)
-        )
-    except Exception:
-        logger.exception("Failed while validating red-marked numeric fields")
-        validation_warnings.append(
-            "Nie udało się sprawdzić pól oznaczonych na czerwono."
-        )
-    try:
-        validation_warnings.extend(_collect_missing_image_issues(app, validation_row_indices))
-    except Exception:
-        logger.exception("Failed while validating image references")
-        validation_warnings.append(
-            "Nie udało się sprawdzić ścieżek i linków obrazów."
-        )
-    if validation_warnings:
-        report["warnings"] = sorted(set(validation_warnings))
-        sample = ", ".join(report["warnings"][:3])
-        logger.warning(
-            "Detected data quality warnings: %s (sample: %s)",
-            len(report["warnings"]),
-            sample,
-        )
-        for warning_text in report["warnings"][:200]:
-            logger.warning("Data warning: %s", warning_text)
-
     if not tasks:
         report["total_tasks"] = 0
         report["skipped_rows"] = total_rows
@@ -1096,7 +1104,7 @@ def generate_pds(app):
         skipped=skipped_rows,
     )
     _ui_progress_mode(app, False)
-    _ui_status(app, "Generowanie PDF...")
+    _ui_status(app, "Sprawdzanie danych i generowanie PDF...")
 
     if _is_cancelled(app):
         finish_now("Anulowano", "cancelled")
@@ -1119,10 +1127,27 @@ def generate_pds(app):
         "total_tasks": len(tasks),
         "total_rows": total_rows,
         "skipped_rows": skipped_rows,
+        "image_index_path": image_index_utils.get_default_index_path(),
     }
 
     def worker(payload):
         start_time = time.time()
+        roots = image_index_utils.normalize_roots(
+            [payload["excel_dir"]] + list(payload.get("image_dirs", []))
+        )
+        if roots:
+            _ui_status(app, "Aktualizacja indeksu obrazów...")
+            try:
+                image_index_utils.ensure_index(
+                    roots,
+                    index_path=payload.get("image_index_path") or None,
+                    max_age_hours=24,
+                    force_rebuild=False,
+                )
+            except Exception:
+                logger.exception("Failed to build/load image index for generation")
+            _ui_status(app, "Sprawdzanie danych i generowanie PDF...")
+
         context = {
             "scale": payload["scale"],
             "page_width": payload["page_width"],
@@ -1135,6 +1160,7 @@ def generate_pds(app):
             "excel_dir": payload["excel_dir"],
             "image_fields": payload.get("image_fields", []),
             "image_dirs": payload.get("image_dirs", []),
+            "image_index_path": payload.get("image_index_path", ""),
         }
 
         tasks_local = payload["tasks"]
@@ -1145,6 +1171,35 @@ def generate_pds(app):
         new_files = []
         updated_files = []
         max_workers = max(1, min(len(tasks_local), os.cpu_count() or 1))
+
+        validation_warnings = []
+        validation_row_indices = [task.get("idx") for task in tasks_local]
+        try:
+            validation_warnings.extend(
+                _collect_red_nonpositive_issues(app, validation_row_indices, sheet_fields_all)
+            )
+        except Exception:
+            logger.exception("Failed while validating red-marked numeric fields")
+            validation_warnings.append(
+                "Nie udało się sprawdzić pól oznaczonych na czerwono."
+            )
+        try:
+            validation_warnings.extend(_collect_missing_image_issues(app, validation_row_indices))
+        except Exception:
+            logger.exception("Failed while validating image references")
+            validation_warnings.append(
+                "Nie udało się sprawdzić ścieżek i linków obrazów."
+            )
+        if validation_warnings:
+            report["warnings"] = sorted(set(validation_warnings))
+            sample = ", ".join(report["warnings"][:3])
+            logger.warning(
+                "Detected data quality warnings: %s (sample: %s)",
+                len(report["warnings"]),
+                sample,
+            )
+            for warning_text in report["warnings"][:200]:
+                logger.warning("Data warning: %s", warning_text)
 
         executor = None
         future_map = {}

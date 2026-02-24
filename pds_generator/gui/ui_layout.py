@@ -165,6 +165,17 @@ def setup_ui(app):
     remove_img_btn.pack(
         side="left", fill="x", expand=True, padx=5
     )
+    app.image_index_btn = ttk.Button(
+        right_frame,
+        text="Aktualizuj indeks obrazów",
+        command=app.rebuild_image_index,
+    )
+    app.image_index_btn.pack(fill="x", pady=(0, 2))
+    app.image_index_status_var = tk.StringVar(value="")
+    app.image_index_status_label = ttk.Label(
+        right_frame, textvariable=app.image_index_status_var, anchor="w"
+    )
+    app.image_index_status_label.pack(fill="x", pady=(0, 10))
 
     # Static field checkboxes
     ttk.Label(right_frame, text="Pola statyczne:").pack(anchor="w", pady=(10, 0))
@@ -183,9 +194,16 @@ def setup_ui(app):
     preview_frame.pack(fill="x", pady=(10, 0))
     ttk.Label(preview_frame, text="Numer wiersza:").pack(side="left")
     app.row_var = tk.StringVar(value="1")
-    ttk.Entry(preview_frame, textvariable=app.row_var, width=6).pack(side="left")
-    preview_btn = ttk.Button(preview_frame, text="Podgląd", command=app.preview_row)
-    preview_btn.pack(side="left", padx=5)
+    row_entry = ttk.Entry(preview_frame, textvariable=app.row_var, width=6)
+    row_entry.pack(side="left")
+    row_entry.bind("<Return>", lambda e: app.preview_row())
+    app.preview_btn = ttk.Button(preview_frame, text="Podgląd", command=app.preview_row)
+    app.preview_btn.pack(side="left", padx=5)
+    app.preview_status_var = tk.StringVar(value="")
+    app.preview_status_label = ttk.Label(
+        preview_frame, textvariable=app.preview_status_var
+    )
+    app.preview_status_label.pack(side="left")
 
     # Group list
     ttk.Label(right_frame, text="Grupy:").pack(anchor="w", pady=(10, 0))
@@ -260,8 +278,9 @@ def setup_ui(app):
         app.tooltip.bind(app.mail_settings_btn, text="Ustaw SMTP i odbiorców raportów")
         app.tooltip.bind(add_img_btn, text="Dodaj katalog z obrazami")
         app.tooltip.bind(remove_img_btn, text="Usuń zaznaczony katalog z listy")
+        app.tooltip.bind(app.image_index_btn, text="Przeskanuj katalogi i odśwież indeks obrazów")
         app.tooltip.bind(app.add_static_btn, text="Dodaj nowe pole statyczne")
-        app.tooltip.bind(preview_btn, text="Podgląd wiersza z Excela")
+        app.tooltip.bind(app.preview_btn, text="Podgląd wiersza z Excela")
         app.tooltip.bind(remove_group_btn, text="Usuń wybraną grupę")
         app.tooltip.bind(save_btn, text="Zapisz konfigurację do pliku")
         app.tooltip.bind(conditions_btn, text="Edytuj warunki widoczności")

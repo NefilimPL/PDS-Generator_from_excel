@@ -23,6 +23,7 @@ except ImportError as exc:  # pragma: no cover - runtime guard
 
 from pds_generator.gui import mailer, pdf_export
 from pds_generator.excel_io import read_excel_data, detect_formula_columns
+from pds_generator import image_index as image_index_utils
 
 LOG_PREFIX = "pds_headless_"
 CONFIG_DIR = Path.home() / ".pds_generator"
@@ -115,6 +116,7 @@ class HeadlessApp:
         self.mail_config = mailer.load_mail_config(config.get("mail", {}))
         self.image_fields = set(config.get("image_fields", []))
         self.image_dirs = list(config.get("image_dirs", []))
+        self.image_index_data = None
         self.elements = _build_elements(config.get("elements", []), self.image_fields)
         self.groups = _build_groups(config.get("groups", []))
         self.static_entries = {
@@ -128,6 +130,19 @@ class HeadlessApp:
 
         self._done_event = threading.Event()
         self.status = None
+
+        roots = image_index_utils.normalize_roots(
+            [os.path.dirname(self.excel_path)] + list(self.image_dirs or [])
+        )
+        if roots:
+            try:
+                self.image_index_data = image_index_utils.ensure_index(
+                    roots,
+                    max_age_hours=24,
+                    force_rebuild=False,
+                )
+            except Exception:
+                logging.exception("Failed to load/build image index in headless mode")
 
     def after(self, _delay_ms, func):
         func()
@@ -240,7 +255,9 @@ class HeadlessApp:
                             break
                     if path:
                         break
-        if path is None and stem:
+        if path is None and self.image_index_data:
+            path = image_index_utils.find_in_index(self.image_index_data, name)
+        if path is None and stem and not self.image_index_data:
             target_name = os.path.basename(name).lower()
             for root in search_roots:
                 for current_root, _dirs, files in os.walk(root):

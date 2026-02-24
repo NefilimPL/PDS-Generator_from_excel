@@ -39,6 +39,7 @@ from ..github_utils import (
     pull_updates,
     get_version,
 )
+from .. import image_index as image_index_utils
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,9 @@ class PDSGeneratorGUI(tk.Tk):
         self.image_fields = set()
         self.image_vars = {}
         self.image_dirs = []
+        self.image_index_data = None
+        self.image_index_roots = ()
+        self.image_index_lock = threading.Lock()
         self.excel_lock_path = None
         self.config_lock_path = None
         self.selected_elements = []
@@ -123,6 +127,9 @@ class PDSGeneratorGUI(tk.Tk):
             str(os.getenv("PDS_REQUIRE_ADMIN_MAIL_SETTINGS", "1")).strip().lower()
             not in {"0", "false", "no"}
         )
+        self.preview_in_progress = False
+        self.preview_animation_after = None
+        self.preview_animation_step = 0
         self.mail_settings_win = None
         self.last_generation_report = None
         self.formula_map = {}
@@ -304,10 +311,12 @@ class PDSGeneratorGUI(tk.Tk):
             self.path_var.set(path)
             self.excel_path = path
             self.image_cache = {}
+            self._invalidate_image_index()
             self.load_excel(path)
             self.load_config(path=path)
 
     def load_excel(self, path):
+        self._invalidate_image_index()
         try:
             self.dataframes = read_excel_data(path)
         except (OSError, ValueError) as e:
@@ -413,6 +422,92 @@ class PDSGeneratorGUI(tk.Tk):
         self.update_field_highlights()
 
     # ------------------------------------------------------------------
+    def _image_search_roots(self):
+        base_dir = os.path.dirname(self.excel_path) if self.excel_path else ""
+        roots = [base_dir] + list(getattr(self, "image_dirs", []) or [])
+        return image_index_utils.normalize_roots(roots)
+
+    def _invalidate_image_index(self):
+        with self.image_index_lock:
+            self.image_index_data = None
+            self.image_index_roots = ()
+
+    def _ensure_image_index(self, force_rebuild=False, max_age_hours=24):
+        roots = self._image_search_roots()
+        roots_key = tuple(roots)
+        with self.image_index_lock:
+            cached = self.image_index_data
+            cached_roots = self.image_index_roots
+        if (
+            cached
+            and not force_rebuild
+            and cached_roots == roots_key
+        ):
+            return cached
+        index_data = image_index_utils.ensure_index(
+            roots,
+            force_rebuild=force_rebuild,
+            max_age_hours=max_age_hours,
+        )
+        with self.image_index_lock:
+            self.image_index_data = index_data
+            self.image_index_roots = roots_key
+        return index_data
+
+    def rebuild_image_index(self):
+        roots = self._image_search_roots()
+        if not roots:
+            messagebox.showinfo(
+                "Indeks obrazów",
+                "Brak katalogów obrazów do zindeksowania.",
+            )
+            return
+
+        if hasattr(self, "image_index_btn") and self.image_index_btn:
+            self.image_index_btn.state(["disabled"])
+        if hasattr(self, "image_index_status_var") and self.image_index_status_var is not None:
+            self.image_index_status_var.set("Indeksowanie...")
+        self.set_status("Budowanie indeksu obrazów...")
+
+        def worker():
+            try:
+                started = time.time()
+                index_data = self._ensure_image_index(
+                    force_rebuild=True,
+                    max_age_hours=0,
+                )
+                elapsed = max(0.0, time.time() - started)
+                count = int(index_data.get("file_count", 0))
+
+                def on_success():
+                    if hasattr(self, "image_index_btn") and self.image_index_btn:
+                        self.image_index_btn.state(["!disabled"])
+                    if hasattr(self, "image_index_status_var") and self.image_index_status_var is not None:
+                        self.image_index_status_var.set(
+                            f"Indeks: {count} plików ({elapsed:.1f}s)"
+                        )
+                    self.set_status("Indeks obrazów gotowy")
+
+                self.ui_call(on_success)
+            except Exception as exc:
+                logger.exception("Failed to rebuild image index")
+
+                def on_error():
+                    if hasattr(self, "image_index_btn") and self.image_index_btn:
+                        self.image_index_btn.state(["!disabled"])
+                    if hasattr(self, "image_index_status_var") and self.image_index_status_var is not None:
+                        self.image_index_status_var.set("Błąd indeksu")
+                    self.set_status("Błąd indeksu obrazów")
+                    messagebox.showerror(
+                        "Indeks obrazów",
+                        f"Nie udało się zbudować indeksu: {exc}",
+                    )
+
+                self.ui_call(on_error)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ------------------------------------------------------------------
     def find_local_image(self, filename):
         """Search for an image file relative to the Excel file directory."""
         if not filename:
@@ -425,17 +520,8 @@ class PDSGeneratorGUI(tk.Tk):
         key = name.lower()
         if key in self.image_cache:
             return self.image_cache[key]
-        base_dir = os.path.dirname(self.excel_path)
-        roots = [base_dir] + list(getattr(self, "image_dirs", []) or [])
-        seen = set()
-        search_roots = []
-        for root in roots:
-            if not root:
-                continue
-            root = os.path.abspath(root)
-            if root not in seen:
-                seen.add(root)
-                search_roots.append(root)
+
+        search_roots = self._image_search_roots()
 
         stem, _ext = os.path.splitext(os.path.basename(name))
         stem_lower = stem.lower()
@@ -474,7 +560,18 @@ class PDSGeneratorGUI(tk.Tk):
                             break
                     if path:
                         break
-        if path is None and stem:
+
+        if path is None:
+            try:
+                index_data = self._ensure_image_index(force_rebuild=False, max_age_hours=24)
+            except Exception:
+                logger.exception("Failed to load/build image index")
+                index_data = None
+            indexed_path = image_index_utils.find_in_index(index_data, name)
+            if indexed_path:
+                path = indexed_path
+
+        if path is None and stem and not self.image_index_data:
             target_name = os.path.basename(name).lower()
             for root in search_roots:
                 for current_root, _dirs, files in os.walk(root):
@@ -600,6 +697,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.image_dirs.append(path)
         self.refresh_image_dir_list()
         self.image_cache = {}
+        self._invalidate_image_index()
         self.push_history()
 
     def remove_image_dir(self):
@@ -613,6 +711,7 @@ class PDSGeneratorGUI(tk.Tk):
                 self.image_dirs.pop(idx)
         self.refresh_image_dir_list()
         self.image_cache = {}
+        self._invalidate_image_index()
         self.push_history()
 
     def refresh_image_dir_list(self):
@@ -1717,50 +1816,125 @@ class PDSGeneratorGUI(tk.Tk):
         render_pdf_element(self, c, element, value, x, y)
 
     # ------------------------------------------------------------------
+    def _set_preview_status(self, text):
+        if hasattr(self, "preview_status_var") and self.preview_status_var is not None:
+            self.preview_status_var.set(text)
+
+    def _preview_animation_tick(self):
+        if not self.preview_in_progress:
+            return
+        dots = "." * (self.preview_animation_step % 4)
+        self._set_preview_status(f"Ładowanie{dots}")
+        self.preview_animation_step += 1
+        self.preview_animation_after = self.after(220, self._preview_animation_tick)
+
+    def _start_preview_animation(self):
+        if self.preview_in_progress:
+            return
+        self.preview_in_progress = True
+        self.preview_animation_step = 0
+        if hasattr(self, "preview_btn") and self.preview_btn:
+            self.preview_btn.state(["disabled"])
+        self._preview_animation_tick()
+
+    def _clear_preview_status(self):
+        if not self.preview_in_progress:
+            self._set_preview_status("")
+
+    def _finish_preview_animation(self, status_text=""):
+        self.preview_in_progress = False
+        if self.preview_animation_after is not None:
+            try:
+                self.after_cancel(self.preview_animation_after)
+            except Exception:
+                pass
+            self.preview_animation_after = None
+        if hasattr(self, "preview_btn") and self.preview_btn:
+            self.preview_btn.state(["!disabled"])
+        self._set_preview_status(status_text)
+        if status_text:
+            self.after(1500, self._clear_preview_status)
+
+    # ------------------------------------------------------------------
     def preview_row(self):
         if not self.dataframes:
+            return
+        if self.preview_in_progress:
             return
         try:
             idx = int(self.row_var.get()) - 1
         except ValueError:
             messagebox.showerror("Błąd", "Nieprawidłowy numer wiersza")
             return
-        values = {}
-        for name in self.elements.keys():
-            if ":" in name:
-                sheet, col = name.split(":", 1)
-                df = self.dataframes.get(sheet)
-                value = ""
-                if df is not None and 0 <= idx < len(df):
-                    value = df.iloc[idx].get(col)
-                    value = round_numeric_value(value)
-            else:
-                value = self.static_entries[name].get() if name in getattr(self, "static_entries", {}) else name
-            try:
-                if pd.isna(value):
-                    value = ""
-            except TypeError:
-                if value is None:
-                    value = ""
-            values[name] = value
+        self._start_preview_animation()
 
-        hidden = set()
-        for src, tgt in self.conditions:
-            if src not in values:
-                continue
-            src_val = values.get(src, "")
+        def worker():
             try:
-                empty = pd.isna(src_val) or src_val == ""
-            except TypeError:
-                empty = src_val == ""
-            if empty:
-                hidden.add(tgt)
+                values = {}
+                for name in self.elements.keys():
+                    if ":" in name:
+                        sheet, col = name.split(":", 1)
+                        df = self.dataframes.get(sheet)
+                        value = ""
+                        if df is not None and 0 <= idx < len(df):
+                            value = df.iloc[idx].get(col)
+                            value = round_numeric_value(value)
+                    else:
+                        if name in getattr(self, "static_entries", {}):
+                            value = self.static_entries[name].get()
+                        else:
+                            value = name
+                    try:
+                        if pd.isna(value):
+                            value = ""
+                    except TypeError:
+                        if value is None:
+                            value = ""
+                    values[name] = value
 
-        for name, element in sorted(self.elements.items(), key=lambda kv: kv[1].layer):
-            value = values.get(name, "")
-            if name in hidden:
-                value = ""
-            element.update_value(value)
+                hidden = set()
+                for src, tgt in self.conditions:
+                    if src not in values:
+                        continue
+                    src_val = values.get(src, "")
+                    try:
+                        empty = pd.isna(src_val) or src_val == ""
+                    except TypeError:
+                        empty = src_val == ""
+                    if empty:
+                        hidden.add(tgt)
+                ordered = sorted(self.elements.items(), key=lambda kv: kv[1].layer)
+            except Exception as exc:
+                logger.exception("Failed to prepare preview row")
+
+                def on_error():
+                    self._finish_preview_animation("")
+                    messagebox.showerror("Błąd", f"Nie udało się przygotować podglądu: {exc}")
+
+                self.ui_call(on_error)
+                return
+
+            def apply_batch(start=0):
+                if not self.preview_in_progress:
+                    return
+                batch_size = 16
+                end = min(start + batch_size, len(ordered))
+                for name, element in ordered[start:end]:
+                    value = values.get(name, "")
+                    if name in hidden:
+                        value = ""
+                    try:
+                        element.update_value(value)
+                    except Exception:
+                        logger.exception("Failed to update preview element %s", name)
+                if end < len(ordered):
+                    self.after(1, lambda: apply_batch(end))
+                else:
+                    self._finish_preview_animation("Podgląd gotowy")
+
+            self.ui_call(apply_batch)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------------------------------------------
     def save_config(self):
@@ -2344,8 +2518,13 @@ class PDSGeneratorGUI(tk.Tk):
         setattr(self, attr, None)
 
     def on_close(self):
+        self.preview_in_progress = False
+        if self.preview_animation_after is not None:
+            try:
+                self.after_cancel(self.preview_animation_after)
+            except Exception:
+                pass
+            self.preview_animation_after = None
         self.release_lock("excel_lock_path")
         self.release_lock("config_lock_path")
         self.destroy()
-
-
