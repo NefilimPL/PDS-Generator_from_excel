@@ -112,7 +112,7 @@ class HeadlessApp:
         self.scale = 1.0
         self.conditions = config.get("conditions", [])
         self.tracking_excluded = set(config.get("tracking_excluded", []))
-        self.mail_config = mailer.normalize_mail_config(config.get("mail", {}))
+        self.mail_config = mailer.load_mail_config(config.get("mail", {}))
         self.image_fields = set(config.get("image_fields", []))
         self.image_dirs = list(config.get("image_dirs", []))
         self.elements = _build_elements(config.get("elements", []), self.image_fields)
