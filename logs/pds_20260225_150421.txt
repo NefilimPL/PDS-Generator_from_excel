@@ -1,0 +1,34 @@
+2026-02-25 15:04:24,587 | DEBUG | PIL.PngImagePlugin | STREAM b'IHDR' 16 13
+2026-02-25 15:04:24,588 | DEBUG | PIL.PngImagePlugin | STREAM b'pHYs' 41 9
+2026-02-25 15:04:24,588 | DEBUG | PIL.PngImagePlugin | STREAM b'sRGB' 62 1
+2026-02-25 15:04:24,588 | DEBUG | PIL.PngImagePlugin | STREAM b'gAMA' 75 4
+2026-02-25 15:04:24,588 | DEBUG | PIL.PngImagePlugin | STREAM b'IDAT' 91 6286
+2026-02-25 15:04:25,181 | WARNING | pds_generator.gui.mailer | Failed to decrypt shared-encrypted secret from config.
+2026-02-25 15:04:25,182 | WARNING | pds_generator.gui.mailer | Failed to decrypt shared-encrypted secret from config.
+2026-02-25 15:04:27,362 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): api.github.com:443
+2026-02-25 15:04:28,213 | DEBUG | urllib3.connectionpool | https://api.github.com:443 "GET /repos/NefilimPL/PDS-Generator_from_excel/commits/MAIN HTTP/1.1" 200 1823
+2026-02-25 15:04:28,217 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): raw.githubusercontent.com:443
+2026-02-25 15:04:28,855 | DEBUG | urllib3.connectionpool | https://raw.githubusercontent.com:443 "GET /NefilimPL/PDS-Generator_from_excel/MAIN/VERSION HTTP/1.1" 200 27
+2026-02-25 15:04:57,853 | ERROR | pds_generator.gui.gui | Failed to fetch Entra token
+Traceback (most recent call last):
+  File "C:\_GitHub_\PDS-Generator_from_excel\pds_generator\gui\gui.py", line 1303, in worker
+    token = mailer.request_entra_token(cfg_for_token)
+  File "C:\_GitHub_\PDS-Generator_from_excel\pds_generator\gui\mailer.py", line 996, in request_entra_token
+    return _fetch_entra_token_from_client_credentials(cfg)
+  File "C:\_GitHub_\PDS-Generator_from_excel\pds_generator\gui\mailer.py", line 951, in _fetch_entra_token_from_client_credentials
+    raise ValueError(
+        "Do pobrania tokenu podaj: Tenant ID, Client ID i Secret Value."
+    )
+ValueError: Do pobrania tokenu podaj: Tenant ID, Client ID i Secret Value.
+2026-02-25 15:07:11,239 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): login.microsoftonline.com:443
+2026-02-25 15:07:12,118 | DEBUG | urllib3.connectionpool | https://login.microsoftonline.com:443 "POST /2f91b825-8750-460f-baf9-6529335a23a8/oauth2/v2.0/token HTTP/1.1" 200 2052
+2026-02-25 15:07:21,527 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-25 15:07:22,350 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "POST /v1.0/users/k.bober@vivaldimeble.pl/sendMail HTTP/1.1" 400 None
+2026-02-25 15:07:28,862 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-25 15:07:29,761 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "POST /v1.0/users/k.bober@vivaldimeble.pl/sendMail HTTP/1.1" 400 None
+2026-02-25 15:08:40,173 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-25 15:08:40,177 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-25 15:08:40,179 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-25 15:08:42,558 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "GET /img/5904804578428_08.jpg HTTP/1.1" 200 1930660
+2026-02-25 15:08:42,564 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "GET /img/5904804578428_15.jpg HTTP/1.1" 200 167213
+2026-02-25 15:08:42,565 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "GET /img/5904804578428_03.jpg HTTP/1.1" 200 513057

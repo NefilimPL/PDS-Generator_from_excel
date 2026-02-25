@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import time
 import webbrowser
 import threading
 from copy import deepcopy
@@ -491,6 +492,7 @@ class PDSGeneratorGUI(tk.Tk):
                 self.ui_call(on_success)
             except Exception as exc:
                 logger.exception("Failed to rebuild image index")
+                error_message = str(exc)
 
                 def on_error():
                     if hasattr(self, "image_index_btn") and self.image_index_btn:
@@ -500,7 +502,7 @@ class PDSGeneratorGUI(tk.Tk):
                     self.set_status("Błąd indeksu obrazów")
                     messagebox.showerror(
                         "Indeks obrazów",
-                        f"Nie udało się zbudować indeksu: {exc}",
+                        f"Nie udało się zbudować indeksu: {error_message}",
                     )
 
                 self.ui_call(on_error)
@@ -932,6 +934,7 @@ class PDSGeneratorGUI(tk.Tk):
         entra_sender_var = tk.StringVar(value=cfg["entra_sender"])
         entra_endpoint_var = tk.StringVar(value=cfg["entra_endpoint"])
         secret_key_id_var = tk.StringVar(value=cfg.get("secret_key_id", ""))
+        secret_key_status_var = tk.StringVar(value="")
         subject_var = tk.StringVar(value=cfg["subject_prefix"])
         timeout_var = tk.StringVar(value=str(cfg["timeout_seconds"]))
         show_sensitive_var = tk.BooleanVar(value=False)
@@ -1086,9 +1089,23 @@ class PDSGeneratorGUI(tk.Tk):
             api_frame, textvariable=secret_key_id_var, state="readonly"
         )
         secret_key_id_entry.grid(row=7, column=1, sticky="ew", padx=8, pady=2)
+        secret_key_status_label = ttk.Label(
+            api_frame,
+            textvariable=secret_key_status_var,
+            justify="left",
+            wraplength=620,
+        )
+        secret_key_status_label.grid(
+            row=8,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            padx=8,
+            pady=(0, 2),
+        )
 
         cert_btns = ttk.Frame(api_frame)
-        cert_btns.grid(row=8, column=1, sticky="w", padx=8, pady=(2, 2))
+        cert_btns.grid(row=9, column=1, sticky="w", padx=8, pady=(2, 2))
         generate_cert_btn = ttk.Button(
             cert_btns, text="Generuj certyfikat", command=lambda: None
         )
@@ -1097,13 +1114,13 @@ class PDSGeneratorGUI(tk.Tk):
         fetch_token_btn = ttk.Button(
             api_frame, text="Pobierz token", command=lambda: None
         )
-        fetch_token_btn.grid(row=9, column=1, sticky="w", padx=8, pady=(4, 2))
+        fetch_token_btn.grid(row=10, column=1, sticky="w", padx=8, pady=(4, 2))
 
         ttk.Checkbutton(
             api_frame,
             text="Pokaż pola wrażliwe (hasła/tokeny)",
             variable=show_sensitive_var,
-        ).grid(row=10, column=1, sticky="w", padx=8, pady=(0, 2))
+        ).grid(row=11, column=1, sticky="w", padx=8, pady=(0, 2))
 
         ttk.Label(win, text="Temat (prefix):").grid(
             row=4, column=0, sticky="w", padx=10, pady=2
@@ -1160,6 +1177,37 @@ class PDSGeneratorGUI(tk.Tk):
             token_entry.configure(show=mask)
             entra_client_secret_entry.configure(show=mask)
 
+        def refresh_secret_key_status(*_args):
+            key_state = mailer.describe_secret_key_state(
+                {
+                    "secret_key_id": secret_key_id_var.get(),
+                    "entra_tenant_id": entra_tenant_var.get(),
+                    "entra_client_id": entra_client_var.get(),
+                }
+            )
+            lines = [key_state.get("message", "")]
+            created_at = key_state.get("created_at", "")
+            created_by = key_state.get("created_by", "")
+            meta_parts = []
+            if created_at:
+                meta_parts.append(f"Utworzono: {created_at}")
+            if created_by:
+                meta_parts.append(f"Autor: {created_by}")
+            if meta_parts:
+                lines.append(", ".join(meta_parts))
+            key_path = key_state.get("key_path", "")
+            if key_path:
+                lines.append(f"Plik: {key_path}")
+            secret_key_status_var.set("\n".join(line for line in lines if line))
+            level = key_state.get("level")
+            if level == "ok":
+                color = "#1f6f43"
+            elif level == "warning":
+                color = "#9a5d00"
+            else:
+                color = "#4a4a4a"
+            secret_key_status_label.configure(foreground=color)
+
         def set_controls_state(controls, enabled_state):
             for control in controls:
                 if isinstance(control, tk.Text):
@@ -1187,6 +1235,10 @@ class PDSGeneratorGUI(tk.Tk):
         apply_transport_state()
         show_sensitive_var.trace_add("write", apply_sensitive_visibility)
         apply_sensitive_visibility()
+        secret_key_id_var.trace_add("write", refresh_secret_key_status)
+        entra_tenant_var.trace_add("write", refresh_secret_key_status)
+        entra_client_var.trace_add("write", refresh_secret_key_status)
+        refresh_secret_key_status()
 
         def collect(strict=False, require_recipients=False):
             recipients_value = recipients_box.get("1.0", "end").strip()
@@ -1262,6 +1314,9 @@ class PDSGeneratorGUI(tk.Tk):
                 def on_success():
                     entra_token_var.set(token)
                     apply_transport_state()
+                    remembered_cfg = collect(strict=False, require_recipients=False)
+                    if remembered_cfg:
+                        self.mail_config = remembered_cfg
                     self.set_status("Pobrano token Entra")
                     messagebox.showinfo(
                         "E-mail",
@@ -1312,6 +1367,9 @@ class PDSGeneratorGUI(tk.Tk):
 
                 def on_success():
                     secret_key_id_var.set(key_id)
+                    remembered_cfg = collect(strict=False, require_recipients=False)
+                    if remembered_cfg:
+                        self.mail_config = remembered_cfg
                     self.set_status("Certyfikat szyfrowania gotowy")
                     if created:
                         messagebox.showinfo(
@@ -1906,10 +1964,14 @@ class PDSGeneratorGUI(tk.Tk):
                 ordered = sorted(self.elements.items(), key=lambda kv: kv[1].layer)
             except Exception as exc:
                 logger.exception("Failed to prepare preview row")
+                error_message = str(exc)
 
                 def on_error():
                     self._finish_preview_animation("")
-                    messagebox.showerror("Błąd", f"Nie udało się przygotować podglądu: {exc}")
+                    messagebox.showerror(
+                        "Błąd",
+                        f"Nie udało się przygotować podglądu: {error_message}",
+                    )
 
                 self.ui_call(on_error)
                 return

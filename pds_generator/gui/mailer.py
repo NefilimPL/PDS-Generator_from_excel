@@ -1,5 +1,6 @@
 import base64
 import datetime as dt
+import getpass
 import hashlib
 import logging
 import os
@@ -77,6 +78,10 @@ _SHARED_SECRET_ENV = "PDS_SHARED_SECRET_KEY"
 _SECRET_KEY_FILE_ENV = "PDS_SECRET_KEY_FILE"
 _SECRET_KEY_DIR_NAME = "secrets"
 _SHARED_CRYPTO_WARNED = False
+_SECRET_KEY_ID_MAX_LEN = 96
+_SECRET_KEY_ID_RE = re.compile(
+    r"^entra-([a-f0-9]{20})(?:-(\d{8}t\d{6})(?:-([a-z0-9._-]+))?)?$"
+)
 
 if os.name == "nt":
     class _DATA_BLOB(ctypes.Structure):
@@ -258,22 +263,117 @@ def _normalize_secret_key_id(value):
     if not text:
         return ""
     text = re.sub(r"[^a-z0-9._-]+", "-", text).strip("-.")
-    return text[:80]
+    return text[:_SECRET_KEY_ID_MAX_LEN]
 
 
-def _build_secret_key_id(cfg):
+def _normalize_key_label_part(value, max_len=24):
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    text = re.sub(r"[^a-z0-9._-]+", "-", text).strip("-.")
+    return text[:max_len]
+
+
+def _detect_secret_key_creator():
+    candidates = [
+        os.getenv("PDS_SECRET_KEY_CREATOR", ""),
+        os.getenv("USERNAME", ""),
+        os.getenv("USER", ""),
+    ]
+    try:
+        candidates.append(getpass.getuser())
+    except Exception:
+        pass
+    for value in candidates:
+        normalized = _normalize_key_label_part(value, max_len=24)
+        if normalized:
+            return normalized
+    return "unknown"
+
+
+def _secret_scope_fingerprint(cfg):
     tenant = str(cfg.get("entra_tenant_id", "") or "").strip().lower()
     client = str(cfg.get("entra_client_id", "") or "").strip().lower()
     if not (tenant and client):
+        return ""
+    return hashlib.sha256(f"{tenant}|{client}".encode("utf-8")).hexdigest()[:20]
+
+
+def _extract_scope_fingerprint_from_key_id(key_id):
+    normalized = _normalize_secret_key_id(key_id)
+    match = _SECRET_KEY_ID_RE.match(normalized)
+    if not match:
+        return ""
+    return match.group(1)
+
+
+def _extract_secret_key_metadata(key_id):
+    normalized = _normalize_secret_key_id(key_id)
+    match = _SECRET_KEY_ID_RE.match(normalized)
+    if not match:
+        return {
+            "scope_fingerprint": "",
+            "created_at": "",
+            "created_by": "",
+        }
+    created_raw = match.group(2) or ""
+    created_display = ""
+    if created_raw:
+        try:
+            created_dt = dt.datetime.strptime(created_raw, "%Y%m%dt%H%M%S")
+            created_display = created_dt.strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            created_display = ""
+    return {
+        "scope_fingerprint": match.group(1) or "",
+        "created_at": created_display,
+        "created_by": match.group(3) or "",
+    }
+
+
+def _build_secret_key_id(cfg):
+    scope_fingerprint = _secret_scope_fingerprint(cfg)
+    if not scope_fingerprint:
         raise ValueError(
             "Aby wygenerować certyfikat podaj Tenant ID i Client ID."
         )
-    fingerprint = hashlib.sha256(f"{tenant}|{client}".encode("utf-8")).hexdigest()[:20]
-    return f"entra-{fingerprint}"
+    created_stamp = dt.datetime.now().strftime("%Y%m%dt%H%M%S")
+    created_by = _detect_secret_key_creator()
+    return _normalize_secret_key_id(
+        f"entra-{scope_fingerprint}-{created_stamp}-{created_by}"
+    )
 
 
 def _secret_key_path_from_id(key_id):
     return os.path.join(_secret_store_dir(), f"{key_id}.key")
+
+
+def _key_id_from_path(path):
+    if not path:
+        return ""
+    filename = os.path.basename(path)
+    if filename.lower().endswith(".key"):
+        filename = filename[:-4]
+    return _normalize_secret_key_id(filename)
+
+
+def _latest_scope_key_path(scope_fingerprint):
+    if not scope_fingerprint:
+        return ""
+    best_path = ""
+    best_mtime = float("-inf")
+    for key_path in _iter_secret_key_files():
+        key_id = _key_id_from_path(key_path)
+        if _extract_scope_fingerprint_from_key_id(key_id) != scope_fingerprint:
+            continue
+        try:
+            mtime = os.path.getmtime(key_path)
+        except OSError:
+            mtime = float("-inf")
+        if mtime > best_mtime:
+            best_mtime = mtime
+            best_path = key_path
+    return best_path
 
 
 def _resolve_secret_key_path(cfg):
@@ -281,12 +381,16 @@ def _resolve_secret_key_path(cfg):
     if env_path:
         return os.path.abspath(os.path.expanduser(env_path))
     key_id = _normalize_secret_key_id(cfg.get("secret_key_id", ""))
-    if not key_id:
-        try:
-            key_id = _build_secret_key_id(cfg)
-        except ValueError:
-            return ""
-    return _secret_key_path_from_id(key_id)
+    if key_id:
+        return _secret_key_path_from_id(key_id)
+    scope_fingerprint = _secret_scope_fingerprint(cfg)
+    if not scope_fingerprint:
+        return ""
+    latest_path = _latest_scope_key_path(scope_fingerprint)
+    if latest_path:
+        return latest_path
+    # Legacy fallback for older deterministic naming.
+    return _secret_key_path_from_id(f"entra-{scope_fingerprint}")
 
 
 def _load_fernet_from_key_file(path):
@@ -316,6 +420,18 @@ def generate_secret_certificate(config):
         )
     key_id = _normalize_secret_key_id(cfg.get("secret_key_id", ""))
     if not key_id:
+        scope_fingerprint = _secret_scope_fingerprint(cfg)
+        if not scope_fingerprint:
+            raise ValueError(
+                "Aby wygenerować certyfikat podaj Tenant ID i Client ID."
+            )
+        existing_path = _latest_scope_key_path(scope_fingerprint)
+        if existing_path:
+            if _load_fernet_from_key_file(existing_path) is None:
+                raise RuntimeError(
+                    "Istniejący plik certyfikatu ma nieprawidłowy format."
+                )
+            return _key_id_from_path(existing_path), existing_path, False
         key_id = _build_secret_key_id(cfg)
     path = _secret_key_path_from_id(key_id)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -338,6 +454,52 @@ def generate_secret_certificate(config):
 def get_secret_certificate_path(config):
     cfg = normalize_mail_config(config)
     return _resolve_secret_key_path(cfg)
+
+
+def describe_secret_key_state(config):
+    cfg = normalize_mail_config(config)
+    key_id = _normalize_secret_key_id(cfg.get("secret_key_id", ""))
+    key_path = _resolve_secret_key_path(cfg)
+    key_exists = bool(key_path and os.path.isfile(key_path))
+    expected_scope = _secret_scope_fingerprint(cfg)
+    actual_scope = _extract_scope_fingerprint_from_key_id(key_id)
+    scope_mismatch = bool(
+        key_id and expected_scope and actual_scope and expected_scope != actual_scope
+    )
+    metadata = _extract_secret_key_metadata(key_id)
+
+    if not key_id:
+        level = "info"
+        if expected_scope:
+            message = (
+                "Brak ID certyfikatu dla podanych Tenant ID/Client ID."
+            )
+        else:
+            message = "Brak ID certyfikatu."
+    elif scope_mismatch:
+        level = "warning"
+        message = (
+            "ID certyfikatu nie zgadza się z aktualnymi Tenant ID/Client ID."
+        )
+    elif not key_exists:
+        level = "warning"
+        message = "Plik certyfikatu nie istnieje na tym komputerze."
+    else:
+        level = "ok"
+        message = "Certyfikat jest gotowy do użycia."
+
+    return {
+        "level": level,
+        "message": message,
+        "key_id": key_id,
+        "key_path": key_path,
+        "key_exists": key_exists,
+        "scope_mismatch": scope_mismatch,
+        "expected_scope": expected_scope,
+        "actual_scope": actual_scope,
+        "created_at": metadata.get("created_at", ""),
+        "created_by": metadata.get("created_by", ""),
+    }
 
 
 def _get_env_fernet():
@@ -394,7 +556,7 @@ def _get_decrypt_fernets(raw_config):
 
     seen_paths = set()
 
-    def add_key(path):
+    def add_key(path, source):
         if not path:
             return
         key = os.path.normcase(os.path.abspath(path))
@@ -403,15 +565,29 @@ def _get_decrypt_fernets(raw_config):
         seen_paths.add(key)
         fernet = _load_fernet_from_key_file(path)
         if fernet:
-            candidates.append(fernet)
+            candidates.append(
+                {
+                    "fernet": fernet,
+                    "source": source,
+                    "key_path": path,
+                    "key_id": _key_id_from_path(path),
+                }
+            )
 
-    add_key(_resolve_secret_key_path(cfg))
+    add_key(_resolve_secret_key_path(cfg), "configured")
     for key_path in _iter_secret_key_files():
-        add_key(key_path)
+        add_key(key_path, "store")
 
     from_env = _get_env_fernet()
     if from_env:
-        candidates.append(from_env)
+        candidates.append(
+            {
+                "fernet": from_env,
+                "source": "env",
+                "key_path": "",
+                "key_id": "",
+            }
+        )
     return candidates
 
 
@@ -433,22 +609,30 @@ def _shared_encrypt(plaintext, config=None):
     return _SHARED_PREFIX + token
 
 
-def _shared_decrypt(ciphertext, raw_config=None):
+def _shared_decrypt(ciphertext, raw_config=None, return_metadata=False):
     token = str(ciphertext or "").strip()
     if not token:
-        return ""
+        return ("", {}) if return_metadata else ""
     if not token.startswith(_SHARED_PREFIX):
-        return ""
+        return ("", {}) if return_metadata else ""
     payload = token[len(_SHARED_PREFIX) :]
-    for fernet in _get_decrypt_fernets(raw_config or {}):
+    for candidate in _get_decrypt_fernets(raw_config or {}):
+        fernet = candidate.get("fernet")
         try:
-            return fernet.decrypt(payload.encode("ascii")).decode("utf-8")
+            plaintext = fernet.decrypt(payload.encode("ascii")).decode("utf-8")
+            if return_metadata:
+                return plaintext, {
+                    "source": candidate.get("source", ""),
+                    "key_path": candidate.get("key_path", ""),
+                    "key_id": candidate.get("key_id", ""),
+                }
+            return plaintext
         except InvalidToken:
             continue
         except Exception:
             continue
     logger.warning("Failed to decrypt shared-encrypted secret from config.")
-    return ""
+    return ("", {}) if return_metadata else ""
 
 
 def _dpapi_encrypt(plaintext):
@@ -528,7 +712,7 @@ def _dpapi_decrypt(ciphertext):
     return secret
 
 
-def _secret_from_storage(raw_config, key):
+def _secret_from_storage(raw_config, key, decrypt_metadata=None):
     if not isinstance(raw_config, dict):
         return ""
     enc_key = SECRET_STORAGE_MAP.get(key)
@@ -538,7 +722,15 @@ def _secret_from_storage(raw_config, key):
     if not encrypted:
         return ""
     if encrypted.startswith(_SHARED_PREFIX):
-        value = _shared_decrypt(encrypted, raw_config=raw_config)
+        if decrypt_metadata is not None:
+            value, metadata = _shared_decrypt(
+                encrypted,
+                raw_config=raw_config,
+                return_metadata=True,
+            )
+            decrypt_metadata[key] = metadata or {}
+        else:
+            value = _shared_decrypt(encrypted, raw_config=raw_config)
     elif encrypted.startswith(_DPAPI_PREFIX):
         value = _dpapi_decrypt(encrypted) if os.name == "nt" else ""
     else:
@@ -549,16 +741,56 @@ def _secret_from_storage(raw_config, key):
     return str(value or "").strip()
 
 
+def _sync_secret_key_id_from_loaded_secrets(cfg, decrypt_metadata):
+    if not isinstance(decrypt_metadata, dict):
+        return
+    found_key_ids = []
+    for field_name in SENSITIVE_MAIL_FIELDS:
+        metadata = decrypt_metadata.get(field_name)
+        if not isinstance(metadata, dict):
+            continue
+        key_id = _normalize_secret_key_id(metadata.get("key_id", ""))
+        if not key_id or key_id in found_key_ids:
+            continue
+        found_key_ids.append(key_id)
+    if not found_key_ids:
+        return
+
+    selected_key_id = found_key_ids[0]
+    configured_key_id = _normalize_secret_key_id(cfg.get("secret_key_id", ""))
+    if configured_key_id and configured_key_id != selected_key_id:
+        logger.warning(
+            "Configured secret_key_id '%s' differs from key used to decrypt config '%s'. "
+            "Synchronizing to the working key.",
+            configured_key_id,
+            selected_key_id,
+        )
+    if len(found_key_ids) > 1:
+        logger.warning(
+            "Mail secrets were decrypted with multiple key IDs: %s. "
+            "Using '%s' as the active secret_key_id.",
+            ", ".join(found_key_ids),
+            selected_key_id,
+        )
+    cfg["secret_key_id"] = selected_key_id
+
+
 def load_mail_config(config):
     raw_config = config if isinstance(config, dict) else {}
     cfg = normalize_mail_config(raw_config)
+    decrypt_metadata = {}
     for key in SENSITIVE_MAIL_FIELDS:
         existing = str(cfg.get(key, "") or "")
         if existing.strip():
             continue
-        restored = _secret_from_storage(raw_config, key)
+        restored = _secret_from_storage(
+            raw_config,
+            key,
+            decrypt_metadata=decrypt_metadata,
+        )
         if restored:
             cfg[key] = restored
+    _sync_secret_key_id_from_loaded_secrets(cfg, decrypt_metadata)
     return cfg
 
 

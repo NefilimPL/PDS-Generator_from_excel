@@ -1,0 +1,9 @@
+2026-02-25 15:09:00,942 | DEBUG | PIL.PngImagePlugin | STREAM b'IHDR' 16 13
+2026-02-25 15:09:00,943 | DEBUG | PIL.PngImagePlugin | STREAM b'pHYs' 41 9
+2026-02-25 15:09:00,943 | DEBUG | PIL.PngImagePlugin | STREAM b'sRGB' 62 1
+2026-02-25 15:09:00,943 | DEBUG | PIL.PngImagePlugin | STREAM b'gAMA' 75 4
+2026-02-25 15:09:00,943 | DEBUG | PIL.PngImagePlugin | STREAM b'IDAT' 91 6286
+2026-02-25 15:09:03,657 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): api.github.com:443
+2026-02-25 15:09:04,486 | DEBUG | urllib3.connectionpool | https://api.github.com:443 "GET /repos/NefilimPL/PDS-Generator_from_excel/commits/MAIN HTTP/1.1" 200 1823
+2026-02-25 15:09:04,498 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): raw.githubusercontent.com:443
+2026-02-25 15:09:04,986 | DEBUG | urllib3.connectionpool | https://raw.githubusercontent.com:443 "GET /NefilimPL/PDS-Generator_from_excel/MAIN/VERSION HTTP/1.1" 200 27
