@@ -65,12 +65,32 @@ def main() -> int:
         return 1
 
     started = time.time()
+    last_print = {"ts": 0.0}
+
+    def on_progress(progress: dict):
+        now = time.time()
+        if str(progress.get("phase") or "") != "done" and now - last_print["ts"] < 1.0:
+            return
+        last_print["ts"] = now
+        processed = int(progress.get("processed", 0) or 0)
+        total = progress.get("total_estimate")
+        eta = progress.get("eta_seconds")
+        eta_text = f", ETA ~{max(0, int(eta))}s" if eta is not None else ""
+        if total:
+            text = f"\rIndexing: {processed}/{int(total)} files{eta_text}   "
+        else:
+            text = f"\rIndexing: {processed} files{eta_text}   "
+        print(text, end="", flush=True)
+
     index_data = image_index_utils.ensure_index(
         roots,
         force_rebuild=True,
         max_age_hours=0,
+        progress_callback=on_progress,
+        progress_interval_seconds=1.0,
     )
     elapsed = max(0.0, time.time() - started)
+    print()
     index_path = image_index_utils.get_default_index_path()
     print(f"Index rebuilt: {index_data.get('file_count', 0)} files")
     print(f"Roots: {len(index_data.get('roots', []))}")

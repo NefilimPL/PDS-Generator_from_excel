@@ -5,7 +5,8 @@ import datetime as dt
 import json
 import logging
 import os
-from typing import Iterable
+import time
+from typing import Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,8 @@ IMAGE_EXTENSIONS = {
     ".webp",
     ".ico",
 }
+
+ProgressCallback = Callable[[dict], None]
 
 
 def get_default_index_path() -> str:
@@ -115,27 +118,114 @@ def load_index_for_roots(roots: Iterable[str], index_path: str | None = None) ->
 def _iter_indexable_files(roots: list[str]):
     for root in roots:
         for current_root, _dirs, files in os.walk(root):
+            rel_dir = os.path.relpath(current_root, root)
+            if rel_dir in (".", ""):
+                rel_dir = ""
             for file_name in files:
                 name_lower = file_name.lower()
-                stem, ext = os.path.splitext(name_lower)
+                dot_idx = name_lower.rfind(".")
+                if dot_idx <= 0:
+                    continue
+                ext = name_lower[dot_idx:]
                 if ext not in IMAGE_EXTENSIONS:
                     continue
+                stem = name_lower[:dot_idx]
                 abs_path = os.path.join(current_root, file_name)
-                rel_path = _normalize_rel(os.path.relpath(abs_path, root))
-                yield rel_path, name_lower, stem, abs_path
+                rel_candidate = f"{rel_dir}/{file_name}" if rel_dir else file_name
+                rel_path = _normalize_rel(rel_candidate)
+                yield root, rel_path, name_lower, stem, abs_path
 
 
-def build_index(roots: Iterable[str]) -> dict:
+def _emit_progress(
+    progress_callback: ProgressCallback | None,
+    *,
+    phase: str,
+    processed: int,
+    elapsed: float,
+    total_estimate: int | None,
+    current_root: str = "",
+):
+    if progress_callback is None:
+        return
+    rate = (processed / elapsed) if elapsed > 0 else 0.0
+    eta_seconds = None
+    if total_estimate and total_estimate > processed and rate > 0:
+        eta_seconds = (total_estimate - processed) / rate
+    payload = {
+        "phase": phase,
+        "processed": int(processed),
+        "elapsed": float(elapsed),
+        "rate": float(rate),
+        "total_estimate": int(total_estimate) if total_estimate else None,
+        "eta_seconds": float(eta_seconds) if eta_seconds is not None else None,
+        "current_root": str(current_root or ""),
+    }
+    try:
+        progress_callback(payload)
+    except Exception:
+        logger.exception("Image index progress callback failed")
+
+
+def build_index(
+    roots: Iterable[str],
+    *,
+    progress_callback: ProgressCallback | None = None,
+    estimated_total: int | None = None,
+    progress_interval_seconds: float = 1.0,
+) -> dict:
     normalized = normalize_roots(roots)
     by_relative: dict[str, str] = {}
     by_basename: dict[str, str] = {}
     by_stem: dict[str, str] = {}
+    try:
+        estimate = int(estimated_total) if estimated_total is not None else None
+    except Exception:
+        estimate = None
+    if estimate is not None and estimate <= 0:
+        estimate = None
 
-    for rel_path, base_name, stem, abs_path in _iter_indexable_files(normalized):
-        by_relative.setdefault(rel_path, abs_path)
+    started = time.monotonic()
+    last_report = started
+    processed = 0
+    current_root = ""
+    _emit_progress(
+        progress_callback,
+        phase="start",
+        processed=0,
+        elapsed=0.0,
+        total_estimate=estimate,
+        current_root="",
+    )
+
+    for root, rel_path, base_name, stem, abs_path in _iter_indexable_files(normalized):
+        current_root = root
+        if rel_path not in by_relative:
+            by_relative[rel_path] = abs_path
+            processed += 1
         by_basename.setdefault(base_name, abs_path)
         if stem:
             by_stem.setdefault(stem, abs_path)
+        now = time.monotonic()
+        if now - last_report >= max(0.1, float(progress_interval_seconds)):
+            _emit_progress(
+                progress_callback,
+                phase="scan",
+                processed=processed,
+                elapsed=max(0.0, now - started),
+                total_estimate=estimate,
+                current_root=current_root,
+            )
+            last_report = now
+
+    elapsed = max(0.0, time.monotonic() - started)
+    _emit_progress(
+        progress_callback,
+        phase="done",
+        processed=processed,
+        elapsed=elapsed,
+        total_estimate=estimate,
+        current_root=current_root,
+    )
 
     return {
         "version": INDEX_VERSION,
@@ -164,9 +254,19 @@ def ensure_index(
     index_path: str | None = None,
     max_age_hours: float | int = DEFAULT_MAX_AGE_HOURS,
     force_rebuild: bool = False,
+    progress_callback: ProgressCallback | None = None,
+    progress_interval_seconds: float = 1.0,
 ) -> dict:
     normalized = normalize_roots(roots)
     if not normalized:
+        _emit_progress(
+            progress_callback,
+            phase="done",
+            processed=0,
+            elapsed=0.0,
+            total_estimate=0,
+            current_root="",
+        )
         return {
             "version": INDEX_VERSION,
             "built_at": _now_iso(),
@@ -184,9 +284,31 @@ def ensure_index(
         and _is_usable_index(current, normalized)
         and not _index_is_expired(current, max_age_hours)
     ):
+        _emit_progress(
+            progress_callback,
+            phase="cached",
+            processed=int(current.get("file_count", 0) or 0),
+            elapsed=0.0,
+            total_estimate=int(current.get("file_count", 0) or 0),
+            current_root="",
+        )
         return current
 
-    rebuilt = build_index(normalized)
+    estimated_total = None
+    if current and _is_usable_index(current, normalized):
+        try:
+            prev_count = int(current.get("file_count", 0) or 0)
+        except Exception:
+            prev_count = 0
+        if prev_count > 0:
+            estimated_total = prev_count
+
+    rebuilt = build_index(
+        normalized,
+        progress_callback=progress_callback,
+        estimated_total=estimated_total,
+        progress_interval_seconds=progress_interval_seconds,
+    )
     save_index(rebuilt, index_path=index_path)
     return rebuilt
 

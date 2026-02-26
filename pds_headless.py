@@ -9,6 +9,7 @@ import multiprocessing as mp
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -136,10 +137,42 @@ class HeadlessApp:
         )
         if roots:
             try:
+                progress_state = {"last": 0.0}
+
+                def on_index_progress(progress):
+                    now = time.time()
+                    phase = str(progress.get("phase") or "")
+                    if phase != "done" and now - progress_state["last"] < 5.0:
+                        return
+                    progress_state["last"] = now
+                    processed = int(progress.get("processed", 0) or 0)
+                    total_estimate = progress.get("total_estimate")
+                    eta_seconds = progress.get("eta_seconds")
+                    eta_text = (
+                        f", ETA ~{max(0, int(eta_seconds))}s"
+                        if eta_seconds is not None
+                        else ""
+                    )
+                    if total_estimate:
+                        logging.info(
+                            "Indeks obrazów (headless): %s/%s plików%s",
+                            processed,
+                            int(total_estimate),
+                            eta_text,
+                        )
+                    else:
+                        logging.info(
+                            "Indeks obrazów (headless): %s plików%s",
+                            processed,
+                            eta_text,
+                        )
+
                 self.image_index_data = image_index_utils.ensure_index(
                     roots,
                     max_age_hours=24,
                     force_rebuild=False,
+                    progress_callback=on_index_progress,
+                    progress_interval_seconds=1.0,
                 )
             except Exception:
                 logging.exception("Failed to load/build image index in headless mode")

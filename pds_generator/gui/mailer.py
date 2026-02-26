@@ -2,6 +2,8 @@ import base64
 import datetime as dt
 import getpass
 import hashlib
+import html
+import json
 import logging
 import os
 import re
@@ -123,6 +125,7 @@ _STATUS_LABELS = {
     "no_data": "Brak danych",
     "no_rows": "Brak wierszy",
 }
+_ROW_WARNING_RE = re.compile(r"^Wiersz\s+(\d+)(?:\s*\([^)]*\))?\s*:\s*(.*)$", re.IGNORECASE)
 
 
 def _report_status_text(report):
@@ -983,9 +986,48 @@ def _fetch_entra_token_from_client_credentials(cfg):
     return token
 
 
+def _has_entra_client_credentials(cfg):
+    return bool(
+        cfg.get("entra_tenant_id", "").strip()
+        and cfg.get("entra_client_id", "").strip()
+        and cfg.get("entra_client_secret", "")
+    )
+
+
+def _decode_jwt_exp(token):
+    text = str(token or "").strip()
+    parts = text.split(".")
+    if len(parts) < 2:
+        return None
+    payload_part = parts[1]
+    padding = "=" * (-len(payload_part) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(payload_part + padding)
+        payload = json.loads(decoded.decode("utf-8"))
+    except Exception:
+        return None
+    try:
+        exp = int(payload.get("exp", 0))
+    except Exception:
+        return None
+    return exp if exp > 0 else None
+
+
+def _is_token_expired(token, skew_seconds=90):
+    exp = _decode_jwt_exp(token)
+    if not exp:
+        return False
+    now_ts = int(dt.datetime.now(dt.timezone.utc).timestamp())
+    return now_ts + int(skew_seconds) >= exp
+
+
 def get_entra_access_token(config):
     cfg = resolve_mail_config_secrets(config)
-    token = cfg.get("entra_token", "").strip()
+    token = str(cfg.get("entra_token", "") or "").strip()
+    if token and not _is_token_expired(token):
+        return token
+    if _has_entra_client_credentials(cfg):
+        return _fetch_entra_token_from_client_credentials(cfg)
     if token:
         return token
     return _fetch_entra_token_from_client_credentials(cfg)
@@ -996,12 +1038,21 @@ def request_entra_token(config):
     return _fetch_entra_token_from_client_credentials(cfg)
 
 
-def _resolve_entra_access_token(cfg):
+def _resolve_entra_access_token(cfg, force_refresh=False):
     cached = cfg.get("_entra_cached_token", "")
-    if cached:
+    if cached and not force_refresh and not _is_token_expired(cached):
         return cached
+    if force_refresh:
+        cfg["_entra_cached_token"] = ""
     token = str(cfg.get("entra_token", "") or "").strip()
-    if token:
+    if token and not force_refresh and not _is_token_expired(token):
+        cfg["_entra_cached_token"] = token
+        return token
+    if (force_refresh or _is_token_expired(token)) and _has_entra_client_credentials(cfg):
+        token = _fetch_entra_token_from_client_credentials(cfg)
+        cfg["_entra_cached_token"] = token
+        return token
+    if token and not force_refresh:
         cfg["_entra_cached_token"] = token
         return token
     token = _fetch_entra_token_from_client_credentials(cfg)
@@ -1016,23 +1067,55 @@ def _entra_headers(cfg):
     }
 
 
-def _send_entra_email(cfg, subject, body, recipients):
-    payload = {
-        "message": {
-            "subject": subject,
-            "body": {"contentType": "Text", "content": body},
-            "toRecipients": [
-                {"emailAddress": {"address": recipient}} for recipient in recipients
-            ],
-        },
-        "saveToSentItems": True,
-    }
+def _is_expired_token_response(response):
+    text = _parse_error_response(response).lower()
+    return (
+        ("invalidauthenticationtoken" in text and "expired" in text)
+        or "lifetime validation failed" in text
+        or "token is expired" in text
+    )
+
+
+def _entra_post_with_retry(cfg, payload):
     response = requests.post(
         _resolve_entra_endpoint(cfg),
         headers=_entra_headers(cfg),
         json=payload,
         timeout=cfg["timeout_seconds"],
     )
+    if (
+        response.status_code in (401, 403)
+        and _has_entra_client_credentials(cfg)
+        and _is_expired_token_response(response)
+    ):
+        with suppress(Exception):
+            response.close()
+        response = requests.post(
+            _resolve_entra_endpoint(cfg),
+            headers={
+                "Authorization": f"Bearer {_resolve_entra_access_token(cfg, force_refresh=True)}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=cfg["timeout_seconds"],
+        )
+    return response
+
+
+def _send_entra_email(cfg, subject, body, recipients, html_body=None):
+    content = html_body if html_body else body
+    content_type = "HTML" if html_body else "Text"
+    payload = {
+        "message": {
+            "subject": subject,
+            "body": {"contentType": content_type, "content": content},
+            "toRecipients": [
+                {"emailAddress": {"address": recipient}} for recipient in recipients
+            ],
+        },
+        "saveToSentItems": True,
+    }
+    response = _entra_post_with_retry(cfg, payload)
     if response.status_code not in (200, 201, 202):
         details = _parse_error_response(response)
         raise RuntimeError(
@@ -1061,14 +1144,16 @@ def _test_entra_connection(cfg):
         },
         "saveToSentItems": False,
     }
-    response = requests.post(
-        _resolve_entra_endpoint(cfg),
-        headers=_entra_headers(cfg),
-        json=payload,
-        timeout=cfg["timeout_seconds"],
-    )
+    response = _entra_post_with_retry(cfg, payload)
     if response.status_code in (401, 403):
         details = _parse_error_response(response)
+        if _is_expired_token_response(response):
+            raise RuntimeError(
+                "Token Entra wygasł. Wklej nowy token albo uzupełnij "
+                "Tenant ID + Client ID + Secret Value, aby aplikacja mogła "
+                "odświeżać token automatycznie. "
+                f"Szczegóły: {details}"
+            )
         raise RuntimeError(
             "Brak autoryzacji (token nieprawidłowy albo brak uprawnień Mail.Send). "
             f"Szczegóły: {details}"
@@ -1104,6 +1189,186 @@ def _short_path(path):
     return os.path.normpath(str(path))
 
 
+def _html_escape(value):
+    return html.escape(str(value or ""), quote=True)
+
+
+def _html_join_paths(paths):
+    cleaned = [str(item).strip() for item in (paths or []) if str(item).strip()]
+    if not cleaned:
+        return "<span>brak</span>"
+    return "<br>".join(_html_escape(_short_path(item)) for item in cleaned)
+
+
+def _parse_row_warning(warning_text):
+    text = str(warning_text or "").strip()
+    match = _ROW_WARNING_RE.match(text)
+    if not match:
+        return None, text
+    row_no = int(match.group(1))
+    details = match.group(2).strip() or text
+    return row_no, details
+
+
+def _build_generation_html(report):
+    status_text = _report_status_text(report)
+    excel_path = _short_path(report.get("excel_path"))
+    output_dir = _short_path(report.get("output_dir"))
+
+    total_rows = report.get("total_rows")
+    total_tasks = report.get("total_tasks")
+    processed = report.get("processed_rows")
+    skipped = report.get("skipped_rows")
+
+    new_files = list(report.get("new_pdfs") or [])
+    changed_files = list(report.get("updated_pdfs") or [])
+    skipped_image_files = list(report.get("skipped_image_files") or [])
+    skipped_image_global_issues = list(report.get("skipped_image_global_issues") or [])
+    errors = list(report.get("errors") or [])
+    warnings = list(report.get("warnings") or [])
+
+    summary_parts = []
+    if total_rows is not None:
+        summary_parts.append(f"wiersze={total_rows}")
+    if total_tasks is not None:
+        summary_parts.append(f"zadania={total_tasks}")
+    if processed is not None:
+        summary_parts.append(f"przetworzone={processed}")
+    if skipped is not None:
+        summary_parts.append(f"pominięte={skipped}")
+    summary_text = ", ".join(summary_parts) if summary_parts else "brak"
+
+    green_rows = [
+        ("Status", _html_escape(status_text)),
+        ("Plik Excel", _html_escape(excel_path) if excel_path else "brak"),
+        ("Katalog PDF", _html_escape(output_dir) if output_dir else "brak"),
+        ("Podsumowanie", _html_escape(summary_text)),
+        ("Nowo wygenerowane PDF", _html_join_paths(sorted(new_files))),
+        ("Zaktualizowane PDF", _html_join_paths(sorted(changed_files))),
+    ]
+    green_rows_html = "".join(
+        f"<tr><th>{_html_escape(label)}</th><td>{value_html}</td></tr>"
+        for label, value_html in green_rows
+    )
+
+    row_context = {}
+    for item in skipped_image_files:
+        row = item.get("row")
+        if row is None:
+            continue
+        meta = row_context.setdefault(row, {"actions": set(), "pdf_names": set()})
+        action = str(item.get("action") or "").strip()
+        pdf_name = str(item.get("pdf_name") or "").strip()
+        if action:
+            meta["actions"].add(action)
+        if pdf_name:
+            meta["pdf_names"].add(pdf_name)
+
+    yellow_rows_html = []
+    if warnings:
+        for warning in warnings:
+            row_no, warning_details = _parse_row_warning(warning)
+            warn_type = "ostrzeżenie"
+            row_text = "-"
+            action_text = "-"
+            pdf_html = "-"
+            if row_no is not None:
+                warn_type = "ostrzeżenie wiersza"
+                row_text = str(row_no)
+                action_text = "walidacja"
+                meta = row_context.get(row_no)
+                if meta:
+                    if meta["actions"]:
+                        action_text = ", ".join(sorted(meta["actions"]))
+                    if meta["pdf_names"]:
+                        pdf_html = "<br>".join(
+                            _html_escape(name) for name in sorted(meta["pdf_names"])
+                        )
+            yellow_rows_html.append(
+                "<tr>"
+                f"<td>{_html_escape(warn_type)}</td>"
+                f"<td>{_html_escape(row_text)}</td>"
+                f"<td>{_html_escape(action_text)}</td>"
+                f"<td>{pdf_html}</td>"
+                f"<td>{_html_escape(warning_details)}</td>"
+                "</tr>"
+            )
+    if skipped_image_files:
+        for item in sorted(
+            skipped_image_files,
+            key=lambda data: (
+                data.get("row") if data.get("row") is not None else 0,
+                str(data.get("pdf_name") or ""),
+            ),
+        ):
+            row = item.get("row")
+            action = str(item.get("action") or "-")
+            pdf_name = str(item.get("pdf_name") or "-")
+            issues = [
+                str(issue).strip()
+                for issue in (item.get("issues") or [])
+                if str(issue).strip()
+            ]
+            details = "; ".join(issues[:2]) if issues else "-"
+            if len(issues) > 2:
+                details = f"{details} (+{len(issues) - 2} więcej)"
+            yellow_rows_html.append(
+                "<tr><td>brak obrazu</td>"
+                f"<td>{_html_escape(row if row is not None else '-')}</td>"
+                f"<td>{_html_escape(action)}</td>"
+                f"<td>{_html_escape(pdf_name)}</td>"
+                f"<td>{_html_escape(details)}</td></tr>"
+            )
+    if skipped_image_global_issues:
+        for issue in skipped_image_global_issues:
+            yellow_rows_html.append(
+                "<tr><td>brak obrazu (globalnie)</td><td>-</td><td>-</td><td>-</td>"
+                f"<td>{_html_escape(issue)}</td></tr>"
+            )
+    if not yellow_rows_html:
+        yellow_rows_html.append(
+            "<tr><td colspan='5'>brak</td></tr>"
+        )
+    yellow_table_rows = "".join(yellow_rows_html)
+
+    red_rows_html = []
+    if errors:
+        for err in errors:
+            red_rows_html.append(f"<tr><td>{_html_escape(err)}</td></tr>")
+    else:
+        red_rows_html.append("<tr><td>brak</td></tr>")
+    red_table_rows = "".join(red_rows_html)
+
+    return (
+        "<!doctype html>"
+        "<html><head><meta charset='utf-8'>"
+        "<style>"
+        "body{font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#1f2937;line-height:1.4;}"
+        "h2{margin:0 0 10px 0;font-size:16px;}"
+        "table{width:100%;border-collapse:collapse;margin:0 0 14px 0;}"
+        "th,td{border:1px solid #cbd5e1;padding:8px;vertical-align:top;text-align:left;}"
+        ".tbl-green th{background:#2e7d32;color:#fff;}"
+        ".tbl-green td{background:#e8f5e9;}"
+        ".tbl-yellow th{background:#f9a825;color:#111827;}"
+        ".tbl-yellow td{background:#fff8e1;}"
+        ".tbl-red th{background:#c62828;color:#fff;}"
+        ".tbl-red td{background:#ffebee;}"
+        "</style></head><body>"
+        "<h2>Raport generowania PDS</h2>"
+        "<table class='tbl-green'>"
+        "<thead><tr><th colspan='2'>Wynik generowania</th></tr></thead>"
+        f"<tbody>{green_rows_html}</tbody></table>"
+        "<table class='tbl-yellow'>"
+        "<thead><tr><th colspan='5'>Ostrzeżenia</th></tr>"
+        "<tr><th>Typ</th><th>Wiersz</th><th>Akcja</th><th>Plik PDF</th><th>Szczegóły</th></tr>"
+        f"</thead><tbody>{yellow_table_rows}</tbody></table>"
+        "<table class='tbl-red'>"
+        "<thead><tr><th>Błędy</th></tr></thead>"
+        f"<tbody>{red_table_rows}</tbody></table>"
+        "</body></html>"
+    )
+
+
 def _build_generation_body(report):
     status_text = _report_status_text(report)
     excel_path = _short_path(report.get("excel_path"))
@@ -1116,6 +1381,8 @@ def _build_generation_body(report):
 
     new_files = list(report.get("new_pdfs") or [])
     changed_files = list(report.get("updated_pdfs") or [])
+    skipped_image_files = list(report.get("skipped_image_files") or [])
+    skipped_image_global_issues = list(report.get("skipped_image_global_issues") or [])
     errors = list(report.get("errors") or [])
     warnings = list(report.get("warnings") or [])
 
@@ -1157,6 +1424,35 @@ def _build_generation_body(report):
         lines.append("- brak")
 
     lines.append("")
+    lines.append("Pominięte pliki PDF (brakujące obrazy):")
+    if skipped_image_files:
+        lines.append("Wiersz | Akcja | Plik PDF | Szczegóły")
+        lines.append("----- | ----- | -------- | --------")
+        for item in sorted(
+            skipped_image_files,
+            key=lambda data: (
+                data.get("row") if data.get("row") is not None else 0,
+                str(data.get("pdf_name") or ""),
+            ),
+        ):
+            row = item.get("row")
+            action = str(item.get("action") or "-")
+            pdf_name = str(item.get("pdf_name") or "-")
+            issues = [str(issue).strip() for issue in (item.get("issues") or []) if str(issue).strip()]
+            details = "; ".join(issues[:2]) if issues else "-"
+            if len(issues) > 2:
+                details = f"{details} (+{len(issues) - 2} więcej)"
+            lines.append(f"{row if row is not None else '-'} | {action} | {pdf_name} | {details}")
+    else:
+        lines.append("- brak")
+
+    if skipped_image_global_issues:
+        lines.append("")
+        lines.append("Problemy globalne obrazów:")
+        for issue in skipped_image_global_issues:
+            lines.append(f"- {issue}")
+
+    lines.append("")
     lines.append("Ostrzeżenia jakości danych:")
     if warnings:
         for warn in warnings:
@@ -1175,9 +1471,9 @@ def _build_generation_body(report):
     return "\n".join(lines)
 
 
-def _send_email(cfg, subject, body, recipients):
+def _send_email(cfg, subject, body, recipients, html_body=None):
     if cfg["transport"] == TRANSPORT_ENTRA_API:
-        _send_entra_email(cfg, subject, body, recipients)
+        _send_entra_email(cfg, subject, body, recipients, html_body=html_body)
         return
 
     sender = _resolve_sender(cfg)
@@ -1186,6 +1482,8 @@ def _send_email(cfg, subject, body, recipients):
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
     msg.set_content(body)
+    if html_body:
+        msg.add_alternative(html_body, subtype="html")
 
     client = _open_smtp_client(cfg)
     try:
@@ -1210,5 +1508,6 @@ def send_generation_report(config, report):
     cfg = validate_mail_config(config, require_recipients=True)
     subject = _build_report_subject(cfg, report)
     body = _build_generation_body(report)
-    _send_email(cfg, subject, body, cfg["recipients"])
+    html_body = _build_generation_html(report)
+    _send_email(cfg, subject, body, cfg["recipients"], html_body=html_body)
     logger.info("Generation report email sent to %s", ", ".join(cfg["recipients"]))

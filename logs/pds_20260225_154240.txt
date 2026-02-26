@@ -1,0 +1,49 @@
+2026-02-25 15:42:41,836 | DEBUG | PIL.PngImagePlugin | STREAM b'IHDR' 16 13
+2026-02-25 15:42:41,836 | DEBUG | PIL.PngImagePlugin | STREAM b'pHYs' 41 9
+2026-02-25 15:42:41,836 | DEBUG | PIL.PngImagePlugin | STREAM b'sRGB' 62 1
+2026-02-25 15:42:41,836 | DEBUG | PIL.PngImagePlugin | STREAM b'gAMA' 75 4
+2026-02-25 15:42:41,836 | DEBUG | PIL.PngImagePlugin | STREAM b'IDAT' 91 6286
+2026-02-25 15:42:44,536 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): api.github.com:443
+2026-02-25 15:42:45,458 | DEBUG | urllib3.connectionpool | https://api.github.com:443 "GET /repos/NefilimPL/PDS-Generator_from_excel/commits/MAIN HTTP/1.1" 200 1823
+2026-02-25 15:42:45,461 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): raw.githubusercontent.com:443
+2026-02-25 15:42:46,103 | DEBUG | urllib3.connectionpool | https://raw.githubusercontent.com:443 "GET /NefilimPL/PDS-Generator_from_excel/MAIN/VERSION HTTP/1.1" 200 27
+2026-02-25 15:43:01,572 | INFO | pds_generator.gui.pdf_export | Tracking mode=excel; tracked_columns=57; cache_rows=0; excel_rows=0; changed_rows=0/9
+2026-02-25 15:43:07,803 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-25 15:43:08,367 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "HEAD /img/5904804578428_03.jpg HTTP/1.1" 200 0
+2026-02-25 15:43:08,371 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-25 15:43:08,918 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "HEAD /img/5904804578428_15.jpg HTTP/1.1" 200 0
+2026-02-25 15:43:08,922 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-25 15:43:09,460 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "HEAD /img/5904804578428_08.jpg HTTP/1.1" 200 0
+2026-02-25 15:43:09,648 | WARNING | pds_generator.gui.pdf_export | Detected data quality warnings: 29 (sample: Pominięto 4 wiersze z powodu brakujących obrazów (wiersze: 1, 2, 3, 4)., Pominięto utworzenie 4 plików PDF z powodu brakujących obrazów., Pominięto utworzenie pliku HALLWAY_SET_DAP_P-003.pdf (wiersz 1) z powodu brakujących obrazów. Wiersz 1: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_1: test.jpg)
+2026-02-25 15:43:09,648 | WARNING | pds_generator.gui.pdf_export | Data warning: Pominięto 4 wiersze z powodu brakujących obrazów (wiersze: 1, 2, 3, 4).
+2026-02-25 15:43:09,649 | WARNING | pds_generator.gui.pdf_export | Data warning: Pominięto utworzenie 4 plików PDF z powodu brakujących obrazów.
+2026-02-25 15:43:09,649 | WARNING | pds_generator.gui.pdf_export | Data warning: Pominięto utworzenie pliku HALLWAY_SET_DAP_P-003.pdf (wiersz 1) z powodu brakujących obrazów. Wiersz 1: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_1: test.jpg
+2026-02-25 15:43:09,649 | WARNING | pds_generator.gui.pdf_export | Data warning: Pominięto utworzenie pliku HALLWAY_SET_DAP_P-004.pdf (wiersz 2) z powodu brakujących obrazów. Wiersz 2: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_1: test.jpg
+2026-02-25 15:43:09,649 | WARNING | pds_generator.gui.pdf_export | Data warning: Pominięto utworzenie pliku HALLWAY_SET_DAP_P-005.pdf (wiersz 3) z powodu brakujących obrazów. Wiersz 3: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_1: test.jpg
+2026-02-25 15:43:09,649 | WARNING | pds_generator.gui.pdf_export | Data warning: Pominięto utworzenie pliku HALLWAY_SET_DAP_P-006.pdf (wiersz 4) z powodu brakujących obrazów. Wiersz 4: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_1: test.jpg
+2026-02-25 15:43:09,649 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 1: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_1: test.jpg
+2026-02-25 15:43:09,649 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 1: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_2: test.jpg
+2026-02-25 15:43:09,649 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 1: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_3: test.jpg
+2026-02-25 15:43:09,649 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 1: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_4: test.jpg
+2026-02-25 15:43:09,649 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 1: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_5: test.jpg
+2026-02-25 15:43:09,649 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 1: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_6: test.jpg
+2026-02-25 15:43:09,649 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 2: PDS_DANE:VOLUME 4 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-25 15:43:09,649 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 2: PDS_DANE:VOLUME 5 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-25 15:43:09,649 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 2: PDS_DANE:VOLUME 6 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-25 15:43:09,649 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 2: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_1: test.jpg
+2026-02-25 15:43:09,650 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 2: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_2: test.jpg
+2026-02-25 15:43:09,650 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 2: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_4: test.jpg
+2026-02-25 15:43:09,650 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 3: PDS_DANE:VOLUME 4 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-25 15:43:09,650 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 3: PDS_DANE:VOLUME 5 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-25 15:43:09,650 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 3: PDS_DANE:VOLUME 6 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-25 15:43:09,650 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 3: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_1: test.jpg
+2026-02-25 15:43:09,650 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 3: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_2: test.jpg
+2026-02-25 15:43:09,650 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 3: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_3: test
+2026-02-25 15:43:09,650 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 4: PDS_DANE:VOLUME 4 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-25 15:43:09,650 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 4: PDS_DANE:VOLUME 5 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-25 15:43:09,650 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 4: PDS_DANE:VOLUME 6 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-25 15:43:09,650 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 4: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_1: test.jpg
+2026-02-25 15:43:09,650 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 4: nie znaleziono pliku obrazu dla pola PDS_DANE:PIC_COLOR_2: test.jpg
+2026-02-25 15:43:13,332 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-25 15:43:14,390 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "POST /v1.0/users/k.bober@vivaldimeble.pl/sendMail HTTP/1.1" 202 0
+2026-02-25 15:43:14,391 | INFO | pds_generator.gui.mailer | Generation report email sent to k.bober@wipmeb.pl

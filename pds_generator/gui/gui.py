@@ -433,7 +433,13 @@ class PDSGeneratorGUI(tk.Tk):
             self.image_index_data = None
             self.image_index_roots = ()
 
-    def _ensure_image_index(self, force_rebuild=False, max_age_hours=24):
+    def _ensure_image_index(
+        self,
+        force_rebuild=False,
+        max_age_hours=24,
+        progress_callback=None,
+        progress_interval_seconds=1.0,
+    ):
         roots = self._image_search_roots()
         roots_key = tuple(roots)
         with self.image_index_lock:
@@ -449,6 +455,8 @@ class PDSGeneratorGUI(tk.Tk):
             roots,
             force_rebuild=force_rebuild,
             max_age_hours=max_age_hours,
+            progress_callback=progress_callback,
+            progress_interval_seconds=progress_interval_seconds,
         )
         with self.image_index_lock:
             self.image_index_data = index_data
@@ -473,9 +481,44 @@ class PDSGeneratorGUI(tk.Tk):
         def worker():
             try:
                 started = time.time()
+                last_ui_update = {"ts": 0.0, "processed": 0}
+
+                def _format_eta(eta_seconds):
+                    if eta_seconds is None:
+                        return ""
+                    eta = max(0, int(eta_seconds))
+                    return f", ETA ~{eta}s"
+
+                def on_progress(progress):
+                    now = time.time()
+                    phase = str(progress.get("phase") or "")
+                    processed = int(progress.get("processed", 0) or 0)
+                    if (
+                        phase != "done"
+                        and now - last_ui_update["ts"] < 1.0
+                        and processed - int(last_ui_update["processed"]) < 300
+                    ):
+                        return
+                    last_ui_update["ts"] = now
+                    last_ui_update["processed"] = processed
+                    total_estimate = progress.get("total_estimate")
+                    eta_text = _format_eta(progress.get("eta_seconds"))
+                    if total_estimate:
+                        status_text = f"Indeksowanie: {processed}/{int(total_estimate)} plików{eta_text}"
+                    else:
+                        status_text = f"Indeksowanie: {processed} plików{eta_text}"
+
+                    def update_ui():
+                        if hasattr(self, "image_index_status_var") and self.image_index_status_var is not None:
+                            self.image_index_status_var.set(status_text)
+
+                    self.ui_call(update_ui)
+
                 index_data = self._ensure_image_index(
                     force_rebuild=True,
                     max_age_hours=0,
+                    progress_callback=on_progress,
+                    progress_interval_seconds=1.0,
                 )
                 elapsed = max(0.0, time.time() - started)
                 count = int(index_data.get("file_count", 0))
