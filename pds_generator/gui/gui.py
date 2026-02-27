@@ -1523,14 +1523,18 @@ class PDSGeneratorGUI(tk.Tk):
         win.protocol("WM_DELETE_WINDOW", close)
 
     def on_generation_complete(self, report):
-        self.last_generation_report = deepcopy(report)
+        report_to_send = deepcopy(report)
+        runtime_log_path = str(getattr(self, "runtime_log_path", "") or "").strip()
+        if runtime_log_path and not report_to_send.get("log_path"):
+            report_to_send["log_path"] = runtime_log_path
+        self.last_generation_report = deepcopy(report_to_send)
         has_issues = bool(
-            report.get("warnings")
-            or report.get("errors")
-            or report.get("skipped_image_files")
-            or report.get("skipped_image_global_issues")
+            report_to_send.get("warnings")
+            or report_to_send.get("errors")
+            or report_to_send.get("skipped_image_files")
+            or report_to_send.get("skipped_image_global_issues")
         )
-        if report.get("status") == "no_changes" and not has_issues:
+        if report_to_send.get("status") == "no_changes" and not has_issues:
             logger.info("Skipping report email: no PDF changes detected.")
             return
         cfg = mailer.normalize_mail_config(getattr(self, "mail_config", {}))
@@ -1550,7 +1554,7 @@ class PDSGeneratorGUI(tk.Tk):
 
         def worker():
             try:
-                mailer.send_generation_report(cfg, report)
+                mailer.send_generation_report(cfg, report_to_send)
             except Exception as exc:
                 logger.exception("Failed to send generation report email")
                 self.ui_call(

@@ -27,6 +27,7 @@ from pds_generator.excel_io import read_excel_data, detect_formula_columns
 from pds_generator import app_paths, image_index as image_index_utils
 
 LOG_PREFIX = "pds_headless_"
+LOG_RETENTION_DAYS = 7
 CONFIG_FILE = Path(app_paths.get_backup_config_path())
 LEGACY_CONFIG_FILE = Path(app_paths.get_legacy_backup_config_path())
 OLD_CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
@@ -34,8 +35,25 @@ OLD_CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
 _ERROR_FLAG = False
 
 
+def _cleanup_old_logs(log_dir: Path, days: int = LOG_RETENTION_DAYS) -> int:
+    cutoff = time.time() - max(1, int(days)) * 24 * 60 * 60
+    removed = 0
+    for path in log_dir.glob("*.txt"):
+        try:
+            if not path.is_file():
+                continue
+            if path.stat().st_mtime >= cutoff:
+                continue
+            path.unlink()
+            removed += 1
+        except Exception:
+            logging.debug("Failed to remove old log file %s", path, exc_info=True)
+    return removed
+
+
 def setup_logging(log_dir: Path) -> Path:
     log_dir.mkdir(parents=True, exist_ok=True)
+    removed = _cleanup_old_logs(log_dir)
     log_path = log_dir / f"{LOG_PREFIX}{dt.datetime.now():%Y%m%d_%H%M%S}.txt"
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
@@ -52,6 +70,8 @@ def setup_logging(log_dir: Path) -> Path:
     stream_handler.setFormatter(formatter)
     root.addHandler(file_handler)
     root.addHandler(stream_handler)
+    if removed:
+        logging.info("Removed old log files: %s", removed)
     return log_path
 
 
@@ -106,9 +126,10 @@ class _HeadlessWidget:
 
 
 class HeadlessApp:
-    def __init__(self, config, excel_path, dataframes):
+    def __init__(self, config, excel_path, dataframes, log_path=None):
         self.excel_path = excel_path
         self.dataframes = dataframes
+        self.runtime_log_path = str(log_path) if log_path else ""
         self.page_width = config.get("page_width", 595)
         self.page_height = config.get("page_height", 842)
         self.scale = 1.0
@@ -208,6 +229,9 @@ class HeadlessApp:
 
     def on_generation_complete(self, report):
         try:
+            report = dict(report or {})
+            if self.runtime_log_path and not report.get("log_path"):
+                report["log_path"] = self.runtime_log_path
             logging.info(
                 "Generation completion callback reached. Mail enabled=%s status=%s",
                 bool(self.mail_config.get("enabled")),
@@ -446,7 +470,7 @@ def run_headless(excel_path: str | None, config_path: str | None, log_dir: Path)
             ", ".join(preview),
         )
 
-    app = HeadlessApp(config, resolved_excel, dataframes)
+    app = HeadlessApp(config, resolved_excel, dataframes, log_path=log_path)
     started = pdf_export.generate_pds(app)
     if started:
         logging.info("Generation started. Waiting for completion...")

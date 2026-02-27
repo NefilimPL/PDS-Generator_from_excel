@@ -5,6 +5,7 @@ import hashlib
 import html
 import json
 import logging
+import mimetypes
 import os
 import re
 import smtplib
@@ -127,6 +128,7 @@ _STATUS_LABELS = {
     "no_rows": "Brak wierszy",
 }
 _ROW_WARNING_RE = re.compile(r"^Wiersz\s+(\d+)(?:\s*\([^)]*\))?\s*:\s*(.*)$", re.IGNORECASE)
+_ROW_ERROR_RE = re.compile(r"^Wiersz\s+(\d+)(?:\s*\(([^)]*)\))?\s*:\s*(.*)$", re.IGNORECASE)
 
 
 def _report_has_error_entries(report):
@@ -137,10 +139,27 @@ def _report_has_error_entries(report):
     )
 
 
+def _report_has_critical_exception(report):
+    if bool(report.get("critical_exception")):
+        return True
+    for err in report.get("errors") or []:
+        text = str(err or "").strip()
+        if not text:
+            continue
+        if text.startswith("Błąd wykonawcy:"):
+            return True
+        if _ROW_ERROR_RE.match(text):
+            return True
+    return False
+
+
 def _report_status_text(report):
     status_code = report.get("status") or "unknown"
+    has_critical = _report_has_critical_exception(report)
     has_errors = _report_has_error_entries(report)
     warnings = list(report.get("warnings") or [])
+    if has_critical:
+        return "Błąd krytyczny"
     if status_code == "success" and has_errors:
         return "Sukces z błędami"
     if status_code == "no_changes" and has_errors:
@@ -154,8 +173,11 @@ def _report_status_text(report):
 
 def _report_subject_tag(report):
     status_code = report.get("status") or "unknown"
+    has_critical = _report_has_critical_exception(report)
     has_errors = _report_has_error_entries(report)
     warnings = list(report.get("warnings") or [])
+    if has_critical:
+        return "KRYTYCZNY BŁĄD"
     if status_code in {"success", "no_changes"}:
         if has_errors:
             return "BŁĄD"
@@ -1119,7 +1141,7 @@ def _entra_post_with_retry(cfg, payload):
     return response
 
 
-def _send_entra_email(cfg, subject, body, recipients, html_body=None):
+def _send_entra_email(cfg, subject, body, recipients, html_body=None, attachments=None):
     content = html_body if html_body else body
     content_type = "HTML" if html_body else "Text"
     payload = {
@@ -1132,6 +1154,16 @@ def _send_entra_email(cfg, subject, body, recipients, html_body=None):
         },
         "saveToSentItems": True,
     }
+    if attachments:
+        payload["message"]["attachments"] = [
+            {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": item["name"],
+                "contentType": item["content_type"],
+                "contentBytes": base64.b64encode(item["data"]).decode("ascii"),
+            }
+            for item in attachments
+        ]
     response = _entra_post_with_retry(cfg, payload)
     if response.status_code not in (200, 201, 202):
         details = _parse_error_response(response)
@@ -1225,6 +1257,19 @@ def _parse_row_warning(warning_text):
     row_no = int(match.group(1))
     details = match.group(2).strip() or text
     return row_no, details
+
+
+def _parse_row_error(error_text):
+    text = str(error_text or "").strip()
+    match = _ROW_ERROR_RE.match(text)
+    if not match:
+        return None, "", text
+    row_no = int(match.group(1))
+    pdf_name = str(match.group(2) or "").strip()
+    if pdf_name and not os.path.splitext(pdf_name)[1]:
+        pdf_name = f"{pdf_name}.pdf"
+    details = str(match.group(3) or "").strip() or text
+    return row_no, pdf_name, details
 
 
 def _format_skipped_action(action_text):
@@ -1351,13 +1396,24 @@ def _build_generation_html(report):
             )
     if errors:
         for err in errors:
+            row_no, pdf_name, error_details = _parse_row_error(err)
+            error_type = "błąd"
+            row_text = "-"
+            action_text = "-"
+            pdf_text = "-"
+            if row_no is not None:
+                error_type = "błąd wykonania"
+                row_text = str(row_no)
+                action_text = "generowanie"
+            if pdf_name:
+                pdf_text = pdf_name
             red_rows_html.append(
                 "<tr>"
-                "<td>błąd</td>"
-                "<td>-</td>"
-                "<td>-</td>"
-                "<td>-</td>"
-                f"<td>{_html_escape(err)}</td>"
+                f"<td>{_html_escape(error_type)}</td>"
+                f"<td>{_html_escape(row_text)}</td>"
+                f"<td>{_html_escape(action_text)}</td>"
+                f"<td>{_html_escape(pdf_text)}</td>"
+                f"<td>{_html_escape(error_details)}</td>"
                 "</tr>"
             )
     if not red_rows_html:
@@ -1377,7 +1433,7 @@ def _build_generation_html(report):
         ".tbl-yellow th{background:#f9a825;color:#111827;}"
         ".tbl-yellow td{background:#fff8e1;}"
         ".tbl-red th{background:#c62828;color:#fff;}"
-        ".tbl-red td{background:#ffebee;}"
+        ".tbl-red td{background:#ffc7ce;}"
         "</style></head><body>"
         "<h2>Raport generowania PDS</h2>"
         "<table class='tbl-green'>"
@@ -1493,15 +1549,71 @@ def _build_generation_body(report):
         if skipped_image_files or skipped_image_global_issues:
             lines.append("")
         lines.append("Pozostałe błędy:")
+        lines.append("Typ | Wiersz | Akcja | Plik PDF | Szczegóły")
+        lines.append("---- | ----- | ----- | -------- | --------")
         for err in errors:
-            lines.append(f"- {err}")
+            row_no, pdf_name, error_details = _parse_row_error(err)
+            error_type = "błąd"
+            row_text = "-"
+            action_text = "-"
+            pdf_text = "-"
+            if row_no is not None:
+                error_type = "błąd wykonania"
+                row_text = str(row_no)
+                action_text = "generowanie"
+            if pdf_name:
+                pdf_text = pdf_name
+            lines.append(
+                f"{error_type} | {row_text} | {action_text} | {pdf_text} | {error_details}"
+            )
 
     return "\n".join(lines)
 
 
-def _send_email(cfg, subject, body, recipients, html_body=None):
+def _prepare_attachments(attachment_paths):
+    prepared = []
+    seen = set()
+    for raw_path in attachment_paths or []:
+        path = str(raw_path or "").strip()
+        if not path:
+            continue
+        norm = os.path.normcase(os.path.abspath(path))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        if not os.path.isfile(path):
+            logger.warning("Attachment path does not exist: %s", path)
+            continue
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except Exception:
+            logger.warning("Failed to read attachment: %s", path, exc_info=True)
+            continue
+        name = os.path.basename(path) or "attachment.bin"
+        content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        prepared.append(
+            {
+                "path": path,
+                "name": name,
+                "content_type": content_type,
+                "data": data,
+            }
+        )
+    return prepared
+
+
+def _send_email(cfg, subject, body, recipients, html_body=None, attachment_paths=None):
+    attachments = _prepare_attachments(attachment_paths)
     if cfg["transport"] == TRANSPORT_ENTRA_API:
-        _send_entra_email(cfg, subject, body, recipients, html_body=html_body)
+        _send_entra_email(
+            cfg,
+            subject,
+            body,
+            recipients,
+            html_body=html_body,
+            attachments=attachments,
+        )
         return
 
     sender = _resolve_sender(cfg)
@@ -1512,6 +1624,18 @@ def _send_email(cfg, subject, body, recipients, html_body=None):
     msg.set_content(body)
     if html_body:
         msg.add_alternative(html_body, subtype="html")
+    for item in attachments:
+        content_type = item["content_type"]
+        if "/" in content_type:
+            maintype, subtype = content_type.split("/", 1)
+        else:
+            maintype, subtype = "application", "octet-stream"
+        msg.add_attachment(
+            item["data"],
+            maintype=maintype,
+            subtype=subtype,
+            filename=item["name"],
+        )
 
     client = _open_smtp_client(cfg)
     try:
@@ -1537,5 +1661,17 @@ def send_generation_report(config, report):
     subject = _build_report_subject(cfg, report)
     body = _build_generation_body(report)
     html_body = _build_generation_html(report)
-    _send_email(cfg, subject, body, cfg["recipients"], html_body=html_body)
+    attachment_paths = []
+    if _report_has_critical_exception(report):
+        log_path = str(report.get("log_path") or "").strip()
+        if log_path:
+            attachment_paths.append(log_path)
+    _send_email(
+        cfg,
+        subject,
+        body,
+        cfg["recipients"],
+        html_body=html_body,
+        attachment_paths=attachment_paths,
+    )
     logger.info("Generation report email sent to %s", ", ".join(cfg["recipients"]))

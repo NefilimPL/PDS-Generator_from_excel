@@ -18,23 +18,46 @@ from openpyxl import load_workbook
 
 def _patch_md5_usedforsecurity_compat():
     """Compatibility shim for Python builds without hashlib `usedforsecurity` kwarg."""
+    def _wrap_strip_usedforsecurity(func):
+        def _compat(*args, **kwargs):
+            kwargs.pop("usedforsecurity", None)
+            return func(*args, **kwargs)
+
+        return _compat
+
     md5_func = getattr(hashlib, "md5", None)
-    if md5_func is None:
-        return
-    try:
-        md5_func(b"", usedforsecurity=False)
-        return
-    except TypeError as exc:
-        if "usedforsecurity" not in str(exc):
+    if md5_func is not None:
+        try:
+            md5_func(b"", usedforsecurity=False)
+        except TypeError as exc:
+            if "usedforsecurity" in str(exc):
+                hashlib.md5 = _wrap_strip_usedforsecurity(md5_func)
+        except Exception:
+            pass
+
+    new_func = getattr(hashlib, "new", None)
+    if new_func is not None:
+        try:
+            new_func("md5", b"", usedforsecurity=False)
+        except TypeError as exc:
+            if "usedforsecurity" in str(exc):
+                hashlib.new = _wrap_strip_usedforsecurity(new_func)
+        except Exception:
+            pass
+
+    with suppress(Exception):
+        import _hashlib
+
+        openssl_md5 = getattr(_hashlib, "openssl_md5", None)
+        if openssl_md5 is None:
             return
-    except Exception:
-        return
-
-    def _md5_compat(data=b"", *args, **kwargs):
-        kwargs.pop("usedforsecurity", None)
-        return md5_func(data, *args, **kwargs)
-
-    hashlib.md5 = _md5_compat
+        try:
+            openssl_md5(b"", usedforsecurity=False)
+        except TypeError as exc:
+            if "usedforsecurity" in str(exc):
+                _hashlib.openssl_md5 = _wrap_strip_usedforsecurity(openssl_md5)
+        except Exception:
+            pass
 
 
 _patch_md5_usedforsecurity_compat()
@@ -50,6 +73,7 @@ from .. import image_index as image_index_utils
 
 from .excel_tracking import (
     TRACKING_COLUMN,
+    mark_execution_error_rows,
     update_tracking_column,
     update_tracking_cache,
 )
@@ -72,6 +96,45 @@ REMOTE_IMAGE_CHECK_LIMIT_WARNING = (
     "Pominięto część zdalnych sprawdzeń URL obrazów (limit 30 unikalnych linków na uruchomienie)."
 )
 MISSING_IMAGE_ISSUE_ROW_RE = re.compile(r"^Wiersz\s+(\d+):")
+EXCEL_DATA_START_ROW = 2
+
+
+def _excel_row_number(data_row_idx):
+    return int(data_row_idx) + EXCEL_DATA_START_ROW
+
+
+def _reportlab_md5_compat(*args, **kwargs):
+    kwargs.pop("usedforsecurity", None)
+    return hashlib.md5(*args, **kwargs)
+
+
+def _reportlab_digester_compat(value):
+    with suppress(Exception):
+        from reportlab.lib.utils import isBytes
+
+        payload = value if isBytes(value) else str(value).encode("utf-8")
+        return _reportlab_md5_compat(payload).hexdigest()
+    payload = value if isinstance(value, (bytes, bytearray)) else str(value).encode("utf-8")
+    return _reportlab_md5_compat(payload).hexdigest()
+
+
+def _patch_reportlab_md5():
+    with suppress(Exception):
+        from reportlab.pdfbase import pdfdoc
+        from reportlab.lib import utils as rl_utils
+        from reportlab.pdfgen import canvas as rl_canvas
+
+        if getattr(pdfdoc, "md5", None) is not _reportlab_md5_compat:
+            pdfdoc.md5 = _reportlab_md5_compat
+        if getattr(rl_utils, "md5", None) is not _reportlab_md5_compat:
+            rl_utils.md5 = _reportlab_md5_compat
+        if getattr(rl_utils, "_digester", None) is not _reportlab_digester_compat:
+            rl_utils._digester = _reportlab_digester_compat
+        if getattr(rl_canvas, "_digester", None) is not _reportlab_digester_compat:
+            rl_canvas._digester = _reportlab_digester_compat
+
+
+_patch_reportlab_md5()
 
 
 def _to_float(value):
@@ -116,9 +179,11 @@ def _extract_rgb(color_obj):
     return rgb.upper()
 
 
-def _is_red_color(color_obj):
+def _is_warning_marker_color(color_obj):
     rgb = _extract_rgb(color_obj)
     if rgb:
+        if rgb == "FFF8E1":
+            return True
         r = int(rgb[0:2], 16)
         g = int(rgb[2:4], 16)
         b = int(rgb[4:6], 16)
@@ -127,15 +192,15 @@ def _is_red_color(color_obj):
     return indexed in {10}
 
 
-def _cell_marked_red(cell):
+def _cell_marked_warning(cell):
     fill = getattr(cell, "fill", None)
     if fill and getattr(fill, "patternType", None) not in (None, "none"):
-        if _is_red_color(getattr(fill, "fgColor", None)) or _is_red_color(
+        if _is_warning_marker_color(getattr(fill, "fgColor", None)) or _is_warning_marker_color(
             getattr(fill, "start_color", None)
         ):
             return True
     font = getattr(cell, "font", None)
-    if font and _is_red_color(getattr(font, "color", None)):
+    if font and _is_warning_marker_color(getattr(font, "color", None)):
         return True
     return False
 
@@ -154,8 +219,8 @@ def _collect_red_nonpositive_issues(
     try:
         wb = load_workbook(app.excel_path, data_only=False, read_only=True)
     except Exception:
-        logger.exception("Failed to open workbook for red-cell validation")
-        return ["Nie udało się sprawdzić pól oznaczonych na czerwono w Excelu."]
+        logger.exception("Failed to open workbook for warning-cell validation")
+        return ["Nie udało się sprawdzić pól oznaczonych jako ostrzeżenie w Excelu."]
 
     for sheet_name, columns in sheet_fields_all.items():
         if sheet_name not in wb.sheetnames:
@@ -187,7 +252,7 @@ def _collect_red_nonpositive_issues(
                     continue
                 excel_row = row_idx + 2
                 cell = ws.cell(row=excel_row, column=col_idx)
-                if not _cell_marked_red(cell):
+                if not _cell_marked_warning(cell):
                     continue
                 value = df.iloc[row_idx].get(col_name)
                 number = _to_float(value)
@@ -195,7 +260,7 @@ def _collect_red_nonpositive_issues(
                     continue
                 shown = round_numeric_value(value)
                 issues.add(
-                    f"Wiersz {row_idx + 1}: {sheet_name}:{col_name} ma wartość {shown} (<= 0) i jest oznaczone na czerwono."
+                    f"Wiersz {_excel_row_number(row_idx)}: {sheet_name}:{col_name} ma wartość {shown} (<= 0) i jest oznaczone kolorem ostrzeżenia."
                 )
     return sorted(issues)
 
@@ -210,9 +275,9 @@ def _issue_row_index(issue_text):
     if not match:
         return None
     row_no = int(match.group(1))
-    if row_no <= 0:
+    if row_no < EXCEL_DATA_START_ROW:
         return None
-    return row_no - 1
+    return row_no - EXCEL_DATA_START_ROW
 
 
 def _strip_issue_row_prefix(issue_text):
@@ -263,7 +328,7 @@ def _collect_missing_image_issues(app, row_indices):
         dynamic_fields.append((field, sheet, col))
 
     for row_idx in data_rows:
-        row_no = row_idx + 1
+        row_no = _excel_row_number(row_idx)
         for field, sheet, col in dynamic_fields:
             df = app.dataframes.get(sheet)
             if df is None or row_idx >= len(df):
@@ -697,6 +762,8 @@ class RenderAppProxy:
 
 def _init_render_context(context):
     global _render_context, _render_proxy
+    _patch_md5_usedforsecurity_compat()
+    _patch_reportlab_md5()
     _render_context = context
     _render_proxy = RenderAppProxy(
         context["scale"],
@@ -755,6 +822,8 @@ def _collect_static_entries(app):
 def render_single_pdf(task):
     if _render_context is None or _render_proxy is None:
         raise RuntimeError("Render context not initialised")
+    _patch_md5_usedforsecurity_compat()
+    _patch_reportlab_md5()
 
     context = _render_context
     idx = task["idx"]
@@ -918,6 +987,7 @@ def generate_pds(app):
     report = {
         "status": "started",
         "excel_path": getattr(app, "excel_path", ""),
+        "log_path": getattr(app, "runtime_log_path", ""),
         "output_dir": "",
         "total_rows": 0,
         "total_tasks": 0,
@@ -929,6 +999,7 @@ def generate_pds(app):
         "warnings": [],
         "skipped_image_files": [],
         "skipped_image_global_issues": [],
+        "critical_exception": False,
     }
 
     def finish_now(status_label, status_code):
@@ -945,7 +1016,7 @@ def generate_pds(app):
         finish_now("Brak danych", "no_data")
         return False
 
-    _, first_df = next(iter(app.dataframes.items()))
+    first_sheet_name, first_df = next(iter(app.dataframes.items()))
     total_rows = len(first_df)
     report["total_rows"] = total_rows
     if total_rows == 0:
@@ -1004,6 +1075,7 @@ def generate_pds(app):
         )
     except Exception:
         logger.exception("Failed to update tracking cache")
+        report["critical_exception"] = True
         report["errors"].append(
             "Nie udało się zaktualizować lokalnego cache śledzenia zmian."
         )
@@ -1022,6 +1094,7 @@ def generate_pds(app):
         tracking_mode = "excel"
     except Exception:
         logger.exception("Failed to update tracking column")
+        report["critical_exception"] = True
         report["errors"].append(
             "Nie udało się zaktualizować kolumny kontrolnej w Excelu."
         )
@@ -1152,6 +1225,15 @@ def generate_pds(app):
         )
 
     if not tasks:
+        try:
+            mark_execution_error_rows(
+                app.excel_path,
+                first_sheet_name,
+                [],
+                total_rows=total_rows,
+            )
+        except Exception:
+            logger.exception("Failed to clear execution error markers in Excel")
         report["total_tasks"] = 0
         report["skipped_rows"] = total_rows
         messagebox.showinfo(
@@ -1288,9 +1370,9 @@ def generate_pds(app):
                 )
             )
         except Exception:
-            logger.exception("Failed while validating red-marked numeric fields")
+            logger.exception("Failed while validating warning-marked numeric fields")
             validation_warnings.append(
-                "Nie udało się sprawdzić pól oznaczonych na czerwono."
+                "Nie udało się sprawdzić pól oznaczonych kolorem ostrzeżenia."
             )
         missing_image_rows = set()
         missing_image_issues_by_row = {}
@@ -1348,12 +1430,12 @@ def generate_pds(app):
             ) + skipped_due_missing_images
             skipped_image_files = []
             for task in skipped_tasks:
-                row_no = (task.get("idx") or 0) + 1
+                row_no = _excel_row_number(task.get("idx") or 0)
                 pdf_name = os.path.basename(task.get("pdf_path", ""))
                 if task.get("existed_before"):
-                    action = "aktualizacja"
+                    action = "pomijam aktualizację"
                 else:
-                    action = "utworzenie"
+                    action = "pomijam utworzenie"
                 row_issues = sorted(missing_image_issues_by_row.get(task.get("idx"), set()))
                 if not row_issues and non_row_image_issues:
                     row_issues = sorted(set(non_row_image_issues))
@@ -1398,6 +1480,15 @@ def generate_pds(app):
 
         if not tasks_local:
             def finish_only_skipped():
+                try:
+                    mark_execution_error_rows(
+                        app.excel_path,
+                        first_sheet_name,
+                        [],
+                        total_rows=total_rows,
+                    )
+                except Exception:
+                    logger.exception("Failed to clear execution error markers in Excel")
                 report["status"] = "error"
                 report["processed_rows"] = 0
                 report["new_pdfs"] = []
@@ -1442,9 +1533,12 @@ def generate_pds(app):
                     else:
                         new_files.append(final_pdf)
                 except Exception as exc:  # pragma: no cover - defensive logging
+                    report["critical_exception"] = True
                     failures.append((task["idx"], task.get("name", ""), str(exc)))
                     logger.exception(
-                        "Failed to render PDF for row %s", task["idx"] + 1, exc_info=exc
+                        "Failed to render PDF for row %s",
+                        _excel_row_number(task["idx"]),
+                        exc_info=exc,
                     )
                 completed += 1
                 progress = completed / total * 100
@@ -1466,6 +1560,7 @@ def generate_pds(app):
                     ),
                 )
         except Exception as exc:  # pragma: no cover - executor level failure
+            report["critical_exception"] = True
             failures.append((-1, "", str(exc)))
             logger.exception("PDF generation failed", exc_info=exc)
         finally:
@@ -1491,12 +1586,24 @@ def generate_pds(app):
                     if idx >= 0:
                         if name:
                             report["errors"].append(
-                                f"Wiersz {idx + 1} ({name}): {err}"
+                                f"Wiersz {_excel_row_number(idx)} ({name}): {err}"
                             )
                         else:
-                            report["errors"].append(f"Wiersz {idx + 1}: {err}")
+                            report["errors"].append(f"Wiersz {_excel_row_number(idx)}: {err}")
                     else:
                         report["errors"].append(f"Błąd wykonawcy: {err}")
+
+                # Mirror execution exceptions in Excel for quick triage and clear stale markers.
+                failed_rows = sorted({idx for idx, _name, _err in failures if idx >= 0})
+                try:
+                    mark_execution_error_rows(
+                        app.excel_path,
+                        first_sheet_name,
+                        failed_rows,
+                        total_rows=total_rows,
+                    )
+                except Exception:
+                    logger.exception("Failed to mark execution error rows in Excel")
 
                 if cancelled:
                     report["status"] = "cancelled"
@@ -1518,7 +1625,9 @@ def generate_pds(app):
                     if failures:
                         failed_rows = [idx for idx, _name, _err in failures if idx >= 0]
                         if failed_rows:
-                            rows_text = ", ".join(str(idx + 1) for idx in failed_rows)
+                            rows_text = ", ".join(
+                                str(_excel_row_number(idx)) for idx in failed_rows
+                            )
                             message = (
                                 "Wystąpiły błędy podczas generowania wierszy: "
                                 f"{rows_text}. Sprawdź logi."
