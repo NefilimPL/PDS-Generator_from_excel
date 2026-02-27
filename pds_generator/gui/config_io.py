@@ -4,13 +4,15 @@ import logging
 import shutil
 from tkinter import messagebox
 
+from .. import app_paths
 from ..elements import DraggableElement
 from ..groups import GroupArea
 from . import locks
 from . import mailer
 
-CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".pds_generator")
-CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+CONFIG_DIR = app_paths.get_app_storage_dir()
+CONFIG_FILE = app_paths.get_backup_config_path()
+LEGACY_CONFIG_FILE = app_paths.get_legacy_backup_config_path()
 OLD_CONFIG_FILE = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "config.json")
 )
@@ -20,6 +22,14 @@ logger = logging.getLogger(__name__)
 
 def _ensure_config_dir():
     os.makedirs(CONFIG_DIR, exist_ok=True)
+
+
+def _candidate_backup_files():
+    candidates = []
+    for candidate in (CONFIG_FILE, LEGACY_CONFIG_FILE):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
 
 
 def _excel_config_path(excel_path):
@@ -115,12 +125,17 @@ def save_config(app):
 
 def load_config(app, startup=False, path=None):
     excel_path = path or app.excel_path
-    if not excel_path and startup and os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                excel_path = json.load(f).get("excel_path")
-        except Exception:
-            excel_path = None
+    if not excel_path and startup:
+        for backup_path in _candidate_backup_files():
+            if not os.path.exists(backup_path):
+                continue
+            try:
+                with open(backup_path, "r", encoding="utf-8") as f:
+                    excel_path = json.load(f).get("excel_path")
+            except Exception:
+                excel_path = None
+            if excel_path:
+                break
 
     cfg_path = None
     loaded_from_backup = False
@@ -131,7 +146,10 @@ def load_config(app, startup=False, path=None):
         else:
             loaded_from_backup = True
     if cfg_path is None:
-        cfg_path = CONFIG_FILE if os.path.exists(CONFIG_FILE) else None
+        for backup_path in _candidate_backup_files():
+            if os.path.exists(backup_path):
+                cfg_path = backup_path
+                break
     if cfg_path is None and os.path.exists(OLD_CONFIG_FILE):
         cfg_path = OLD_CONFIG_FILE
     if cfg_path is None or not os.path.exists(cfg_path):
@@ -161,6 +179,13 @@ def load_config(app, startup=False, path=None):
             cfg_path = CONFIG_FILE
         except OSError:
             logger.exception("Failed to migrate config to %s", CONFIG_FILE)
+    if cfg_path == LEGACY_CONFIG_FILE and LEGACY_CONFIG_FILE != CONFIG_FILE:
+        try:
+            _ensure_config_dir()
+            shutil.move(LEGACY_CONFIG_FILE, CONFIG_FILE)
+            cfg_path = CONFIG_FILE
+        except OSError:
+            logger.exception("Failed to migrate legacy backup config to %s", CONFIG_FILE)
     if cfg_path != CONFIG_FILE:
         _ensure_config_dir()
         try:

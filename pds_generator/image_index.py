@@ -8,6 +8,8 @@ import os
 import time
 from typing import Callable, Iterable
 
+from . import app_paths
+
 logger = logging.getLogger(__name__)
 
 INDEX_VERSION = 1
@@ -29,8 +31,19 @@ ProgressCallback = Callable[[dict], None]
 
 
 def get_default_index_path() -> str:
-    config_dir = os.path.join(os.path.expanduser("~"), ".pds_generator")
-    return os.path.join(config_dir, INDEX_FILENAME)
+    return app_paths.get_image_index_path()
+
+
+def _resolve_index_load_path(index_path: str | None) -> str:
+    if index_path:
+        return index_path
+    default_path = get_default_index_path()
+    if os.path.exists(default_path):
+        return default_path
+    legacy_path = app_paths.get_legacy_image_index_path()
+    if legacy_path != default_path and os.path.exists(legacy_path):
+        return legacy_path
+    return default_path
 
 
 def _now_iso() -> str:
@@ -89,7 +102,7 @@ def _is_usable_index(index_data: dict, roots: list[str]) -> bool:
 
 
 def load_index(index_path: str | None = None) -> dict | None:
-    path = index_path or get_default_index_path()
+    path = _resolve_index_load_path(index_path)
     if not os.path.exists(path):
         return None
     try:
@@ -277,6 +290,8 @@ def ensure_index(
             "by_stem": {},
         }
 
+    load_path = _resolve_index_load_path(index_path)
+    target_path = index_path or get_default_index_path()
     current = load_index(index_path=index_path)
     if (
         not force_rebuild
@@ -284,6 +299,15 @@ def ensure_index(
         and _is_usable_index(current, normalized)
         and not _index_is_expired(current, max_age_hours)
     ):
+        if index_path is None and load_path != target_path:
+            try:
+                save_index(current, index_path=target_path)
+            except Exception:
+                logger.exception(
+                    "Failed to migrate image index from %s to %s",
+                    load_path,
+                    target_path,
+                )
         _emit_progress(
             progress_callback,
             phase="cached",
@@ -309,7 +333,7 @@ def ensure_index(
         estimated_total=estimated_total,
         progress_interval_seconds=progress_interval_seconds,
     )
-    save_index(rebuilt, index_path=index_path)
+    save_index(rebuilt, index_path=target_path)
     return rebuilt
 
 

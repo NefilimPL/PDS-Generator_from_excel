@@ -24,11 +24,11 @@ except ImportError as exc:  # pragma: no cover - runtime guard
 
 from pds_generator.gui import mailer, pdf_export
 from pds_generator.excel_io import read_excel_data, detect_formula_columns
-from pds_generator import image_index as image_index_utils
+from pds_generator import app_paths, image_index as image_index_utils
 
 LOG_PREFIX = "pds_headless_"
-CONFIG_DIR = Path.home() / ".pds_generator"
-CONFIG_FILE = CONFIG_DIR / "config.json"
+CONFIG_FILE = Path(app_paths.get_backup_config_path())
+LEGACY_CONFIG_FILE = Path(app_paths.get_legacy_backup_config_path())
 OLD_CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
 
 _ERROR_FLAG = False
@@ -367,10 +367,9 @@ def _resolve_config_path(excel_path: str | None, config_path: str | None) -> Pat
         candidate = Path(excel_path).resolve().parent / "config.json"
         if candidate.exists():
             return candidate
-    if CONFIG_FILE.exists():
-        return CONFIG_FILE
-    if OLD_CONFIG_FILE.exists():
-        return OLD_CONFIG_FILE
+    for candidate in (CONFIG_FILE, LEGACY_CONFIG_FILE, OLD_CONFIG_FILE):
+        if candidate.exists():
+            return candidate
     return None
 
 
