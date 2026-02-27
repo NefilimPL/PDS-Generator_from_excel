@@ -42,17 +42,24 @@ def read_excel_data(path):
             engine_kwargs={"data_only": True},
             **base_kwargs,
         )
-        _fill_formula_values(path, data)
+        _try_fill_formula_values(path, data)
         return data
     except TypeError:
         try:
             data = pd.read_excel(path, engine="openpyxl", **base_kwargs)
-            _fill_formula_values(path, data)
+            _try_fill_formula_values(path, data)
             return data
         except TypeError:
             data = pd.read_excel(path, sheet_name=None)
-            _fill_formula_values(path, data)
+            _try_fill_formula_values(path, data)
             return data
+
+
+def _try_fill_formula_values(path, dataframes):
+    try:
+        _fill_formula_values(path, dataframes)
+    except Exception:
+        logger.exception("Failed to populate fallback formula values for %s", path)
 
 
 def detect_formula_columns(path, max_rows=200):
@@ -413,6 +420,49 @@ def _eval_formula(
         return _EVAL_FAILED
 
 
+def _assign_formula_value(df, df_idx, col_name, value, sheet_name):
+    """Assign evaluated formula value with dtype-safe fallback for strict pandas dtypes."""
+    dtype = df[col_name].dtype
+    if _is_empty(value):
+        if pd.api.types.is_numeric_dtype(dtype):
+            write_value = math.nan
+        elif pd.api.types.is_datetime64_any_dtype(dtype):
+            write_value = pd.NaT
+        else:
+            write_value = ""
+    elif pd.api.types.is_string_dtype(dtype):
+        # Keep strict string columns as strings to avoid pandas setitem type errors.
+        write_value = str(value)
+    else:
+        write_value = value
+
+    try:
+        df.at[df_idx, col_name] = write_value
+        return
+    except (TypeError, ValueError):
+        logger.debug(
+            "Formula assignment mismatch on %s.%s (dtype=%s, value=%r). Retrying with object fallback.",
+            sheet_name,
+            col_name,
+            dtype,
+            value,
+        )
+
+    # Last-resort fallback: widen this column to object and preserve formula result.
+    try:
+        df[col_name] = df[col_name].astype(object)
+        df.at[df_idx, col_name] = "" if _is_empty(value) else value
+    except Exception:
+        logger.warning(
+            "Skipped formula write on %s.%s (dtype=%s, value=%r) due incompatible dtype.",
+            sheet_name,
+            col_name,
+            dtype,
+            value,
+            exc_info=True,
+        )
+
+
 def _fill_formula_values(path, dataframes):
     if not dataframes:
         return
@@ -494,4 +544,4 @@ def _fill_formula_values(path, dataframes):
             )
             if value is _EVAL_FAILED:
                 continue
-            df.at[df_idx, col_name] = value
+            _assign_formula_value(df, df_idx, col_name, value, sheet_name)

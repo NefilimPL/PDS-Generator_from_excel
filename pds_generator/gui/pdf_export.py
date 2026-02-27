@@ -223,14 +223,6 @@ def _strip_issue_row_prefix(issue_text):
     return text[match.end() :].strip()
 
 
-def _polish_file_word(count):
-    if count == 1:
-        return "plik"
-    if count % 10 in {2, 3, 4} and count % 100 not in {12, 13, 14}:
-        return "pliki"
-    return "plików"
-
-
 def _check_remote_image_exists(url, timeout=3):
     response = None
     try:
@@ -1333,13 +1325,11 @@ def generate_pds(app):
         has_non_row_image_issue = bool(non_row_image_issues)
 
         skipped_due_missing_images = 0
-        skipped_missing_row_numbers = []
         skipped_tasks = []
         if has_non_row_image_issue:
             skipped_due_missing_images = len(tasks_local)
             skipped_tasks = list(tasks_local)
             tasks_local = []
-            skipped_missing_row_numbers = sorted((task.get("idx") or 0) + 1 for task in skipped_tasks)
         elif missing_image_rows:
             filtered_tasks = []
             for task in tasks_local:
@@ -1349,7 +1339,6 @@ def generate_pds(app):
                 else:
                     filtered_tasks.append(task)
             tasks_local = filtered_tasks
-            skipped_missing_row_numbers = sorted(idx + 1 for idx in missing_image_rows)
 
         if skipped_due_missing_images:
             total = len(tasks_local)
@@ -1357,17 +1346,13 @@ def generate_pds(app):
             report["skipped_rows"] = (
                 report.get("skipped_rows") or 0
             ) + skipped_due_missing_images
-            skipped_updates = 0
-            skipped_creates = 0
             skipped_image_files = []
             for task in skipped_tasks:
                 row_no = (task.get("idx") or 0) + 1
                 pdf_name = os.path.basename(task.get("pdf_path", ""))
                 if task.get("existed_before"):
-                    skipped_updates += 1
                     action = "aktualizacja"
                 else:
-                    skipped_creates += 1
                     action = "utworzenie"
                 row_issues = sorted(missing_image_issues_by_row.get(task.get("idx"), set()))
                 if not row_issues and non_row_image_issues:
@@ -1386,24 +1371,6 @@ def generate_pds(app):
                 key=lambda item: (item.get("row") or 0, item.get("pdf_name") or ""),
             )
 
-            warning_parts = [
-                f"utworzenie: {skipped_creates}",
-                f"aktualizacja: {skipped_updates}",
-            ]
-            if skipped_missing_row_numbers:
-                shown_rows = skipped_missing_row_numbers[:20]
-                rows_text = ", ".join(str(row_no) for row_no in shown_rows)
-                if len(skipped_missing_row_numbers) > len(shown_rows):
-                    rows_text = f"{rows_text}, ..."
-                warning_parts.append(f"wiersze: {rows_text}")
-            if non_row_image_issues:
-                warning_parts.append(f"problemy globalne: {len(set(non_row_image_issues))}")
-            validation_warnings.append(
-                "Pominięto "
-                f"{skipped_due_missing_images} {_polish_file_word(skipped_due_missing_images)} PDF "
-                "z powodu brakujących obrazów "
-                f"({', '.join(warning_parts)})."
-            )
             _ui_counts(
                 app,
                 total_tasks=total,
@@ -1431,18 +1398,18 @@ def generate_pds(app):
 
         if not tasks_local:
             def finish_only_skipped():
-                report["status"] = "no_changes"
+                report["status"] = "error"
                 report["processed_rows"] = 0
                 report["new_pdfs"] = []
                 report["updated_pdfs"] = []
                 if hasattr(app, "finish_generation_ui"):
-                    app.finish_generation_ui("Brak zmian")
+                    app.finish_generation_ui("Błąd")
                 else:
-                    _ui_finish(app, "Brak zmian")
-                messagebox.showwarning(
-                    "Uwaga",
-                    "Nie wygenerowano nowych plików PDF, ponieważ pominięto zadania "
-                    "z brakującymi obrazami. Szczegóły znajdziesz w raporcie i logach.",
+                    _ui_finish(app, "Błąd")
+                messagebox.showerror(
+                    "Błąd",
+                    "Nie wygenerowano plików PDF, ponieważ wykryto brakujące obrazy. "
+                    "Szczegóły znajdziesz w sekcji Błędy raportu i logach.",
                 )
                 _notify_generation_complete(app, report)
 
@@ -1539,21 +1506,31 @@ def generate_pds(app):
                         _ui_finish(app, "Anulowano")
                     _notify_generation_complete(app, report)
                     return
-                if failures:
+                has_missing_image_errors = bool(
+                    report.get("skipped_image_files") or report.get("skipped_image_global_issues")
+                )
+                if failures or has_missing_image_errors:
                     report["status"] = "error"
                     if hasattr(app, "finish_generation_ui"):
                         app.finish_generation_ui("Błąd")
                     else:
                         _ui_finish(app, "Błąd")
-                    failed_rows = [idx for idx, _name, _err in failures if idx >= 0]
-                    if failed_rows:
-                        rows_text = ", ".join(str(idx + 1) for idx in failed_rows)
-                        message = (
-                            "Wystąpiły błędy podczas generowania wierszy: "
-                            f"{rows_text}. Sprawdź logi."
-                        )
+                    if failures:
+                        failed_rows = [idx for idx, _name, _err in failures if idx >= 0]
+                        if failed_rows:
+                            rows_text = ", ".join(str(idx + 1) for idx in failed_rows)
+                            message = (
+                                "Wystąpiły błędy podczas generowania wierszy: "
+                                f"{rows_text}. Sprawdź logi."
+                            )
+                        else:
+                            message = "Wystąpił błąd podczas generowania plików PDF. Sprawdź logi."
                     else:
-                        message = "Wystąpił błąd podczas generowania plików PDF. Sprawdź logi."
+                        skipped_count = len(report.get("skipped_image_files") or [])
+                        message = (
+                            "Wykryto brakujące obrazy i pominięto część zadań PDF. "
+                            f"Pominięte: {skipped_count}. Sprawdź sekcję Błędy raportu i logi."
+                        )
                     messagebox.showerror("Błąd", message)
                 else:
                     report["status"] = "success"
