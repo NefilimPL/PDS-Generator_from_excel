@@ -129,9 +129,22 @@ _STATUS_LABELS = {
 _ROW_WARNING_RE = re.compile(r"^Wiersz\s+(\d+)(?:\s*\([^)]*\))?\s*:\s*(.*)$", re.IGNORECASE)
 
 
+def _report_has_error_entries(report):
+    return bool(
+        report.get("errors")
+        or report.get("skipped_image_files")
+        or report.get("skipped_image_global_issues")
+    )
+
+
 def _report_status_text(report):
     status_code = report.get("status") or "unknown"
+    has_errors = _report_has_error_entries(report)
     warnings = list(report.get("warnings") or [])
+    if status_code == "success" and has_errors:
+        return "Sukces z błędami"
+    if status_code == "no_changes" and has_errors:
+        return "Brak zmian PDF, ale są błędy"
     if status_code == "success" and warnings:
         return "Sukces z ostrzeżeniami"
     if status_code == "no_changes" and warnings:
@@ -141,9 +154,13 @@ def _report_status_text(report):
 
 def _report_subject_tag(report):
     status_code = report.get("status") or "unknown"
+    has_errors = _report_has_error_entries(report)
     warnings = list(report.get("warnings") or [])
-    if status_code in {"success", "no_changes"} and warnings:
-        return "OSTRZEŻENIE"
+    if status_code in {"success", "no_changes"}:
+        if has_errors:
+            return "BŁĄD"
+        if warnings:
+            return "OSTRZEŻENIE"
     return _STATUS_LABELS.get(status_code, status_code)
 
 
@@ -1210,6 +1227,27 @@ def _parse_row_warning(warning_text):
     return row_no, details
 
 
+def _format_skipped_action(action_text):
+    action = str(action_text or "").strip().lower()
+    if not action:
+        return "pomijam"
+    if action in {"utworzenie", "aktualizacja"}:
+        return f"pomijam ({action})"
+    if action.startswith("pomijam"):
+        return action
+    return f"pomijam ({action})"
+
+
+def _format_issue_details(issues):
+    cleaned = [str(issue).strip() for issue in (issues or []) if str(issue).strip()]
+    if not cleaned:
+        return "-"
+    details = "; ".join(cleaned[:2])
+    if len(cleaned) > 2:
+        details = f"{details} (+{len(cleaned) - 2} więcej)"
+    return details
+
+
 def _build_generation_html(report):
     status_text = _report_status_text(report)
     excel_path = _short_path(report.get("excel_path"))
@@ -1251,19 +1289,6 @@ def _build_generation_html(report):
         for label, value_html in green_rows
     )
 
-    row_context = {}
-    for item in skipped_image_files:
-        row = item.get("row")
-        if row is None:
-            continue
-        meta = row_context.setdefault(row, {"actions": set(), "pdf_names": set()})
-        action = str(item.get("action") or "").strip()
-        pdf_name = str(item.get("pdf_name") or "").strip()
-        if action:
-            meta["actions"].add(action)
-        if pdf_name:
-            meta["pdf_names"].add(pdf_name)
-
     yellow_rows_html = []
     if warnings:
         for warning in warnings:
@@ -1276,14 +1301,6 @@ def _build_generation_html(report):
                 warn_type = "ostrzeżenie wiersza"
                 row_text = str(row_no)
                 action_text = "walidacja"
-                meta = row_context.get(row_no)
-                if meta:
-                    if meta["actions"]:
-                        action_text = ", ".join(sorted(meta["actions"]))
-                    if meta["pdf_names"]:
-                        pdf_html = "<br>".join(
-                            _html_escape(name) for name in sorted(meta["pdf_names"])
-                        )
             yellow_rows_html.append(
                 "<tr>"
                 f"<td>{_html_escape(warn_type)}</td>"
@@ -1293,6 +1310,13 @@ def _build_generation_html(report):
                 f"<td>{_html_escape(warning_details)}</td>"
                 "</tr>"
             )
+    if not yellow_rows_html:
+        yellow_rows_html.append(
+            "<tr><td colspan='5'>brak</td></tr>"
+        )
+    yellow_table_rows = "".join(yellow_rows_html)
+
+    red_rows_html = []
     if skipped_image_files:
         for item in sorted(
             skipped_image_files,
@@ -1302,41 +1326,42 @@ def _build_generation_html(report):
             ),
         ):
             row = item.get("row")
-            action = str(item.get("action") or "-")
+            action = _format_skipped_action(item.get("action"))
             pdf_name = str(item.get("pdf_name") or "-")
-            issues = [
-                str(issue).strip()
-                for issue in (item.get("issues") or [])
-                if str(issue).strip()
-            ]
-            details = "; ".join(issues[:2]) if issues else "-"
-            if len(issues) > 2:
-                details = f"{details} (+{len(issues) - 2} więcej)"
-            yellow_rows_html.append(
-                "<tr><td>brak obrazu</td>"
+            details = _format_issue_details(item.get("issues") or [])
+            red_rows_html.append(
+                "<tr>"
+                "<td>brak obrazu</td>"
                 f"<td>{_html_escape(row if row is not None else '-')}</td>"
                 f"<td>{_html_escape(action)}</td>"
                 f"<td>{_html_escape(pdf_name)}</td>"
-                f"<td>{_html_escape(details)}</td></tr>"
+                f"<td>{_html_escape(details)}</td>"
+                "</tr>"
             )
     if skipped_image_global_issues:
         for issue in skipped_image_global_issues:
-            yellow_rows_html.append(
-                "<tr><td>brak obrazu (globalnie)</td><td>-</td><td>-</td><td>-</td>"
-                f"<td>{_html_escape(issue)}</td></tr>"
+            red_rows_html.append(
+                "<tr>"
+                "<td>brak obrazu (globalnie)</td>"
+                "<td>-</td>"
+                "<td>pomijam</td>"
+                "<td>-</td>"
+                f"<td>{_html_escape(issue)}</td>"
+                "</tr>"
             )
-    if not yellow_rows_html:
-        yellow_rows_html.append(
-            "<tr><td colspan='5'>brak</td></tr>"
-        )
-    yellow_table_rows = "".join(yellow_rows_html)
-
-    red_rows_html = []
     if errors:
         for err in errors:
-            red_rows_html.append(f"<tr><td>{_html_escape(err)}</td></tr>")
-    else:
-        red_rows_html.append("<tr><td>brak</td></tr>")
+            red_rows_html.append(
+                "<tr>"
+                "<td>błąd</td>"
+                "<td>-</td>"
+                "<td>-</td>"
+                "<td>-</td>"
+                f"<td>{_html_escape(err)}</td>"
+                "</tr>"
+            )
+    if not red_rows_html:
+        red_rows_html.append("<tr><td colspan='5'>brak</td></tr>")
     red_table_rows = "".join(red_rows_html)
 
     return (
@@ -1363,7 +1388,9 @@ def _build_generation_html(report):
         "<tr><th>Typ</th><th>Wiersz</th><th>Akcja</th><th>Plik PDF</th><th>Szczegóły</th></tr>"
         f"</thead><tbody>{yellow_table_rows}</tbody></table>"
         "<table class='tbl-red'>"
-        "<thead><tr><th>Błędy</th></tr></thead>"
+        "<thead><tr><th colspan='5'>Błędy</th></tr>"
+        "<tr><th>Typ</th><th>Wiersz</th><th>Akcja</th><th>Plik PDF</th><th>Szczegóły</th></tr>"
+        "</thead>"
         f"<tbody>{red_table_rows}</tbody></table>"
         "</body></html>"
     )
@@ -1424,8 +1451,22 @@ def _build_generation_body(report):
         lines.append("- brak")
 
     lines.append("")
-    lines.append("Pominięte pliki PDF (brakujące obrazy):")
+    lines.append("Ostrzeżenia jakości danych:")
+    if warnings:
+        for warn in warnings:
+            lines.append(f"- {warn}")
+    else:
+        lines.append("- brak")
+
+    lines.append("")
+    lines.append("Błędy:")
+    has_error_entries = bool(skipped_image_files or skipped_image_global_issues or errors)
+    if not has_error_entries:
+        lines.append("- brak")
+        return "\n".join(lines)
+
     if skipped_image_files:
+        lines.append("Brakujące obrazy (pominięte PDF):")
         lines.append("Wiersz | Akcja | Plik PDF | Szczegóły")
         lines.append("----- | ----- | -------- | --------")
         for item in sorted(
@@ -1436,37 +1477,24 @@ def _build_generation_body(report):
             ),
         ):
             row = item.get("row")
-            action = str(item.get("action") or "-")
+            action = _format_skipped_action(item.get("action"))
             pdf_name = str(item.get("pdf_name") or "-")
-            issues = [str(issue).strip() for issue in (item.get("issues") or []) if str(issue).strip()]
-            details = "; ".join(issues[:2]) if issues else "-"
-            if len(issues) > 2:
-                details = f"{details} (+{len(issues) - 2} więcej)"
-            lines.append(f"{row if row is not None else '-'} | {action} | {pdf_name} | {details}")
-    else:
-        lines.append("- brak")
-
+            details = _format_issue_details(item.get("issues") or [])
+            lines.append(
+                f"{row if row is not None else '-'} | {action} | {pdf_name} | {details}"
+            )
     if skipped_image_global_issues:
-        lines.append("")
+        if skipped_image_files:
+            lines.append("")
         lines.append("Problemy globalne obrazów:")
         for issue in skipped_image_global_issues:
             lines.append(f"- {issue}")
-
-    lines.append("")
-    lines.append("Ostrzeżenia jakości danych:")
-    if warnings:
-        for warn in warnings:
-            lines.append(f"- {warn}")
-    else:
-        lines.append("- brak")
-
-    lines.append("")
-    lines.append("Błędy:")
     if errors:
+        if skipped_image_files or skipped_image_global_issues:
+            lines.append("")
+        lines.append("Pozostałe błędy:")
         for err in errors:
             lines.append(f"- {err}")
-    else:
-        lines.append("- brak")
 
     return "\n".join(lines)
 
