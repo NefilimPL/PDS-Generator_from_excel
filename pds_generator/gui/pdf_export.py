@@ -4,6 +4,7 @@ import time
 import threading
 import re
 import math
+import hashlib
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import suppress
 from io import BytesIO
@@ -13,6 +14,31 @@ import pandas as pd
 import requests
 from PIL import Image
 from openpyxl import load_workbook
+
+
+def _patch_md5_usedforsecurity_compat():
+    """Compatibility shim for Python builds without hashlib `usedforsecurity` kwarg."""
+    md5_func = getattr(hashlib, "md5", None)
+    if md5_func is None:
+        return
+    try:
+        md5_func(b"", usedforsecurity=False)
+        return
+    except TypeError as exc:
+        if "usedforsecurity" not in str(exc):
+            return
+    except Exception:
+        return
+
+    def _md5_compat(data=b"", *args, **kwargs):
+        kwargs.pop("usedforsecurity", None)
+        return md5_func(data, *args, **kwargs)
+
+    hashlib.md5 = _md5_compat
+
+
+_patch_md5_usedforsecurity_compat()
+
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.lib import colors
@@ -20,6 +46,7 @@ from reportlab.pdfbase import pdfmetrics
 from tkinter import messagebox
 
 from ..number_format import round_numeric_value
+from .. import image_index as image_index_utils
 
 from .excel_tracking import (
     TRACKING_COLUMN,
@@ -40,6 +67,11 @@ IMAGE_EXTENSIONS = (
     ".webp",
     ".ico",
 )
+
+REMOTE_IMAGE_CHECK_LIMIT_WARNING = (
+    "Pominięto część zdalnych sprawdzeń URL obrazów (limit 30 unikalnych linków na uruchomienie)."
+)
+MISSING_IMAGE_ISSUE_ROW_RE = re.compile(r"^Wiersz\s+(\d+):")
 
 
 def _to_float(value):
@@ -168,6 +200,32 @@ def _is_http_value(value):
     return text.startswith("http://") or text.startswith("https://")
 
 
+def _issue_row_index(issue_text):
+    match = MISSING_IMAGE_ISSUE_ROW_RE.match(str(issue_text or ""))
+    if not match:
+        return None
+    row_no = int(match.group(1))
+    if row_no <= 0:
+        return None
+    return row_no - 1
+
+
+def _strip_issue_row_prefix(issue_text):
+    text = str(issue_text or "").strip()
+    match = MISSING_IMAGE_ISSUE_ROW_RE.match(text)
+    if not match:
+        return text
+    return text[match.end() :].strip()
+
+
+def _polish_file_word(count):
+    if count == 1:
+        return "plik"
+    if count % 10 in {2, 3, 4} and count % 100 not in {12, 13, 14}:
+        return "pliki"
+    return "plików"
+
+
 def _check_remote_image_exists(url, timeout=3):
     response = None
     try:
@@ -257,9 +315,7 @@ def _collect_missing_image_issues(app, row_indices):
             )
 
     if len(remote_cache) >= max_remote_checks:
-        issues.add(
-            "Pominięto część zdalnych sprawdzeń URL obrazów (limit 30 unikalnych linków na uruchomienie)."
-        )
+        issues.add(REMOTE_IMAGE_CHECK_LIMIT_WARNING)
     return sorted(issues)
 
 
@@ -509,11 +565,18 @@ _render_proxy = None
 
 
 class RenderAppProxy:
-    def __init__(self, scale, excel_dir, image_dirs=None):
+    def __init__(self, scale, excel_dir, image_dirs=None, image_index_path=""):
         self.scale = scale
         self.excel_dir = excel_dir or ""
         self.image_dirs = list(image_dirs or [])
         self._image_cache = {}
+        self._image_index_data = None
+        roots = image_index_utils.normalize_roots([self.excel_dir] + self.image_dirs)
+        if roots:
+            self._image_index_data = image_index_utils.load_index_for_roots(
+                roots,
+                index_path=image_index_path or None,
+            )
 
     def find_local_image(self, filename):
         if not filename:
@@ -575,7 +638,9 @@ class RenderAppProxy:
                             break
                     if path:
                         break
-        if path is None and stem:
+        if path is None and self._image_index_data:
+            path = image_index_utils.find_in_index(self._image_index_data, name)
+        if path is None and stem and not self._image_index_data:
             target_name = os.path.basename(name).lower()
             for root in search_roots:
                 for current_root, _dirs, files in os.walk(root):
@@ -603,6 +668,7 @@ def _init_render_context(context):
         context["scale"],
         context["excel_dir"],
         context.get("image_dirs", []),
+        context.get("image_index_path", ""),
     )
 
 
@@ -827,6 +893,8 @@ def generate_pds(app):
         "updated_pdfs": [],
         "errors": [],
         "warnings": [],
+        "skipped_image_files": [],
+        "skipped_image_global_issues": [],
     }
 
     def finish_now(status_label, status_code):
@@ -1040,35 +1108,6 @@ def generate_pds(app):
             }
         )
 
-    validation_warnings = []
-    validation_row_indices = list(range(total_rows))
-    try:
-        validation_warnings.extend(
-            _collect_red_nonpositive_issues(app, validation_row_indices, sheet_fields_all)
-        )
-    except Exception:
-        logger.exception("Failed while validating red-marked numeric fields")
-        validation_warnings.append(
-            "Nie udało się sprawdzić pól oznaczonych na czerwono."
-        )
-    try:
-        validation_warnings.extend(_collect_missing_image_issues(app, validation_row_indices))
-    except Exception:
-        logger.exception("Failed while validating image references")
-        validation_warnings.append(
-            "Nie udało się sprawdzić ścieżek i linków obrazów."
-        )
-    if validation_warnings:
-        report["warnings"] = sorted(set(validation_warnings))
-        sample = ", ".join(report["warnings"][:3])
-        logger.warning(
-            "Detected data quality warnings: %s (sample: %s)",
-            len(report["warnings"]),
-            sample,
-        )
-        for warning_text in report["warnings"][:200]:
-            logger.warning("Data warning: %s", warning_text)
-
     if not tasks:
         report["total_tasks"] = 0
         report["skipped_rows"] = total_rows
@@ -1096,7 +1135,7 @@ def generate_pds(app):
         skipped=skipped_rows,
     )
     _ui_progress_mode(app, False)
-    _ui_status(app, "Generowanie PDF...")
+    _ui_status(app, "Sprawdzanie danych i generowanie PDF...")
 
     if _is_cancelled(app):
         finish_now("Anulowano", "cancelled")
@@ -1119,10 +1158,57 @@ def generate_pds(app):
         "total_tasks": len(tasks),
         "total_rows": total_rows,
         "skipped_rows": skipped_rows,
+        "image_index_path": image_index_utils.get_default_index_path(),
     }
 
     def worker(payload):
         start_time = time.time()
+        roots = image_index_utils.normalize_roots(
+            [payload["excel_dir"]] + list(payload.get("image_dirs", []))
+        )
+        if roots:
+            _ui_status(app, "Aktualizacja indeksu obrazów...")
+            try:
+                progress_state = {"last_emit": 0.0, "last_processed": 0}
+
+                def index_progress(progress):
+                    now = time.time()
+                    phase = str(progress.get("phase") or "")
+                    processed = int(progress.get("processed", 0) or 0)
+                    if (
+                        phase != "done"
+                        and now - progress_state["last_emit"] < 2.0
+                        and processed - int(progress_state["last_processed"]) < 1000
+                    ):
+                        return
+                    progress_state["last_emit"] = now
+                    progress_state["last_processed"] = processed
+                    total_estimate = progress.get("total_estimate")
+                    eta_seconds = progress.get("eta_seconds")
+                    eta_text = ""
+                    if eta_seconds is not None:
+                        eta_text = f", ETA ~{max(0, int(eta_seconds))}s"
+                    if total_estimate:
+                        status = (
+                            "Aktualizacja indeksu obrazów: "
+                            f"{processed}/{int(total_estimate)} plików{eta_text}"
+                        )
+                    else:
+                        status = f"Aktualizacja indeksu obrazów: {processed} plików{eta_text}"
+                    _ui_status(app, status)
+
+                image_index_utils.ensure_index(
+                    roots,
+                    index_path=payload.get("image_index_path") or None,
+                    max_age_hours=24,
+                    force_rebuild=False,
+                    progress_callback=index_progress,
+                    progress_interval_seconds=1.0,
+                )
+            except Exception:
+                logger.exception("Failed to build/load image index for generation")
+            _ui_status(app, "Sprawdzanie danych i generowanie PDF...")
+
         context = {
             "scale": payload["scale"],
             "page_width": payload["page_width"],
@@ -1135,6 +1221,7 @@ def generate_pds(app):
             "excel_dir": payload["excel_dir"],
             "image_fields": payload.get("image_fields", []),
             "image_dirs": payload.get("image_dirs", []),
+            "image_index_path": payload.get("image_index_path", ""),
         }
 
         tasks_local = payload["tasks"]
@@ -1144,6 +1231,168 @@ def generate_pds(app):
         cancelled = False
         new_files = []
         updated_files = []
+
+        validation_warnings = []
+        missing_image_issues = []
+        validation_row_indices = [task.get("idx") for task in tasks_local]
+        try:
+            validation_warnings.extend(
+                _collect_red_nonpositive_issues(app, validation_row_indices, sheet_fields_all)
+            )
+        except Exception:
+            logger.exception("Failed while validating red-marked numeric fields")
+            validation_warnings.append(
+                "Nie udało się sprawdzić pól oznaczonych na czerwono."
+            )
+        missing_image_rows = set()
+        missing_image_issues_by_row = {}
+        non_row_image_issues = []
+        remote_image_limit_warning = False
+        try:
+            missing_image_issues = _collect_missing_image_issues(app, validation_row_indices)
+        except Exception:
+            logger.exception("Failed while validating image references")
+            validation_warnings.append(
+                "Nie udało się sprawdzić ścieżek i linków obrazów."
+            )
+        else:
+            for issue in missing_image_issues:
+                if issue == REMOTE_IMAGE_CHECK_LIMIT_WARNING:
+                    remote_image_limit_warning = True
+                    continue
+                row_idx = _issue_row_index(issue)
+                if row_idx is None:
+                    non_row_image_issues.append(issue)
+                else:
+                    missing_image_rows.add(row_idx)
+                    missing_image_issues_by_row.setdefault(row_idx, set()).add(
+                        _strip_issue_row_prefix(issue)
+                    )
+
+        report["skipped_image_files"] = []
+        report["skipped_image_global_issues"] = sorted(set(non_row_image_issues))
+        if remote_image_limit_warning:
+            validation_warnings.append(REMOTE_IMAGE_CHECK_LIMIT_WARNING)
+
+        has_non_row_image_issue = bool(non_row_image_issues)
+
+        skipped_due_missing_images = 0
+        skipped_missing_row_numbers = []
+        skipped_tasks = []
+        if has_non_row_image_issue:
+            skipped_due_missing_images = len(tasks_local)
+            skipped_tasks = list(tasks_local)
+            tasks_local = []
+            skipped_missing_row_numbers = sorted((task.get("idx") or 0) + 1 for task in skipped_tasks)
+        elif missing_image_rows:
+            filtered_tasks = []
+            for task in tasks_local:
+                if task.get("idx") in missing_image_rows:
+                    skipped_due_missing_images += 1
+                    skipped_tasks.append(task)
+                else:
+                    filtered_tasks.append(task)
+            tasks_local = filtered_tasks
+            skipped_missing_row_numbers = sorted(idx + 1 for idx in missing_image_rows)
+
+        if skipped_due_missing_images:
+            total = len(tasks_local)
+            report["total_tasks"] = total
+            report["skipped_rows"] = (
+                report.get("skipped_rows") or 0
+            ) + skipped_due_missing_images
+            skipped_updates = 0
+            skipped_creates = 0
+            skipped_image_files = []
+            for task in skipped_tasks:
+                row_no = (task.get("idx") or 0) + 1
+                pdf_name = os.path.basename(task.get("pdf_path", ""))
+                if task.get("existed_before"):
+                    skipped_updates += 1
+                    action = "aktualizacja"
+                else:
+                    skipped_creates += 1
+                    action = "utworzenie"
+                row_issues = sorted(missing_image_issues_by_row.get(task.get("idx"), set()))
+                if not row_issues and non_row_image_issues:
+                    row_issues = sorted(set(non_row_image_issues))
+                skipped_image_files.append(
+                    {
+                        "row": row_no,
+                        "pdf_name": pdf_name,
+                        "action": action,
+                        "issues": row_issues,
+                    }
+                )
+
+            report["skipped_image_files"] = sorted(
+                skipped_image_files,
+                key=lambda item: (item.get("row") or 0, item.get("pdf_name") or ""),
+            )
+
+            warning_parts = [
+                f"utworzenie: {skipped_creates}",
+                f"aktualizacja: {skipped_updates}",
+            ]
+            if skipped_missing_row_numbers:
+                shown_rows = skipped_missing_row_numbers[:20]
+                rows_text = ", ".join(str(row_no) for row_no in shown_rows)
+                if len(skipped_missing_row_numbers) > len(shown_rows):
+                    rows_text = f"{rows_text}, ..."
+                warning_parts.append(f"wiersze: {rows_text}")
+            if non_row_image_issues:
+                warning_parts.append(f"problemy globalne: {len(set(non_row_image_issues))}")
+            validation_warnings.append(
+                "Pominięto "
+                f"{skipped_due_missing_images} {_polish_file_word(skipped_due_missing_images)} PDF "
+                "z powodu brakujących obrazów "
+                f"({', '.join(warning_parts)})."
+            )
+            _ui_counts(
+                app,
+                total_tasks=total,
+                processed=0,
+                skipped=report["skipped_rows"],
+            )
+
+        if validation_warnings:
+            deduped_warnings = []
+            seen_warnings = set()
+            for warning_text in validation_warnings:
+                if warning_text in seen_warnings:
+                    continue
+                seen_warnings.add(warning_text)
+                deduped_warnings.append(warning_text)
+            report["warnings"] = deduped_warnings
+            sample = ", ".join(report["warnings"][:3])
+            logger.warning(
+                "Detected data quality warnings: %s (sample: %s)",
+                len(report["warnings"]),
+                sample,
+            )
+            for warning_text in report["warnings"][:200]:
+                logger.warning("Data warning: %s", warning_text)
+
+        if not tasks_local:
+            def finish_only_skipped():
+                report["status"] = "no_changes"
+                report["processed_rows"] = 0
+                report["new_pdfs"] = []
+                report["updated_pdfs"] = []
+                if hasattr(app, "finish_generation_ui"):
+                    app.finish_generation_ui("Brak zmian")
+                else:
+                    _ui_finish(app, "Brak zmian")
+                messagebox.showwarning(
+                    "Uwaga",
+                    "Nie wygenerowano nowych plików PDF, ponieważ pominięto zadania "
+                    "z brakującymi obrazami. Szczegóły znajdziesz w raporcie i logach.",
+                )
+                _notify_generation_complete(app, report)
+
+            app.after(0, finish_only_skipped)
+            return
+
         max_workers = max(1, min(len(tasks_local), os.cpu_count() or 1))
 
         executor = None

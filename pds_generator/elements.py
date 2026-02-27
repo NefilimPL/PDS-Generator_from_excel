@@ -1,5 +1,6 @@
 import logging
 from io import BytesIO
+import threading
 
 import pandas as pd
 import requests
@@ -35,6 +36,7 @@ class DraggableElement:
         self.align = "left"
         # layering (1-based, 0 reserved for page background)
         self.layer = max((el.layer for el in parent.elements.values()), default=0) + 1
+        self._image_request_id = 0
         self._create_items()
 
     # ------------------------------------------------------------------
@@ -241,79 +243,16 @@ class DraggableElement:
             self.fit_text()
         self.update_colors()
 
-    def update_value(self, value):
-        """Update displayed value (text or image)."""
-        # Remove previous image if any
+    def _clear_image(self):
         if hasattr(self, "image_id"):
             self.canvas.delete(self.image_id)
             del self.image_id
-            if hasattr(self, "image_obj"):
-                del self.image_obj
-            if hasattr(self, "raw_image"):
-                del self.raw_image
-        try:
-            if value is None or pd.isna(value):
-                value = ""
-        except TypeError:
-            if value is None:
-                value = ""
-        value_str = value if isinstance(value, str) else str(value)
-        if self.is_image and value_str:
-            if value_str.lower().startswith("http"):
-                try:
-                    resp = requests.get(value_str, timeout=5)
-                    self.raw_image = Image.open(BytesIO(resp.content))
-                    img = self.raw_image.resize((int(self.width), int(self.height)), Image.LANCZOS)
-                    self.image_obj = ImageTk.PhotoImage(img)
-                    self.image_id = self.canvas.create_image(
-                        self.x,
-                        self.y,
-                        anchor="nw",
-                        image=self.image_obj,
-                    )
-                    for tag in (self.image_id,):
-                        self.canvas.tag_bind(tag, "<ButtonPress-1>", self.start_move)
-                        self.canvas.tag_bind(tag, "<B1-Motion>", self.moving)
-                        self.canvas.tag_bind(tag, "<ButtonRelease-1>", self.stop_move)
-                        self.canvas.tag_bind(tag, "<Button-3>", self.show_menu)
-                    self.canvas.tag_raise(self.rect)
-                    self.canvas.tag_raise(self.handle)
-                    self.canvas.itemconfig(self.rect, fill="")
-                    self.canvas.itemconfig(self.label, text="", state="hidden")
-                    self.text = str(value_str)
-                    if hasattr(self.parent, "restack_elements"):
-                        self.parent.restack_elements()
-                    return
-                except (requests.RequestException, OSError, UnidentifiedImageError) as exc:
-                    logger.exception("Failed to load remote image %s", value_str)
-            local_path = self.parent.find_local_image(value_str)
-            if local_path:
-                try:
-                    self.raw_image = Image.open(local_path)
-                    img = self.raw_image.resize((int(self.width), int(self.height)), Image.LANCZOS)
-                    self.image_obj = ImageTk.PhotoImage(img)
-                    self.image_id = self.canvas.create_image(
-                        self.x,
-                        self.y,
-                        anchor="nw",
-                        image=self.image_obj,
-                    )
-                    for tag in (self.image_id,):
-                        self.canvas.tag_bind(tag, "<ButtonPress-1>", self.start_move)
-                        self.canvas.tag_bind(tag, "<B1-Motion>", self.moving)
-                        self.canvas.tag_bind(tag, "<ButtonRelease-1>", self.stop_move)
-                        self.canvas.tag_bind(tag, "<Button-3>", self.show_menu)
-                    self.canvas.tag_raise(self.rect)
-                    self.canvas.tag_raise(self.handle)
-                    self.canvas.itemconfig(self.rect, fill="")
-                    self.canvas.itemconfig(self.label, text="", state="hidden")
-                    self.text = str(value_str)
-                    if hasattr(self.parent, "restack_elements"):
-                        self.parent.restack_elements()
-                    return
-                except (OSError, UnidentifiedImageError) as exc:
-                    logger.exception("Failed to load local image %s", local_path)
-        # default: text
+        if hasattr(self, "image_obj"):
+            del self.image_obj
+        if hasattr(self, "raw_image"):
+            del self.raw_image
+
+    def _show_text_value(self, value):
         self.canvas.itemconfig(self.rect, fill=self.bg_color if self.bg_visible else "")
         self.canvas.itemconfig(
             self.label,
@@ -328,6 +267,111 @@ class DraggableElement:
         self._update_label_position()
         if hasattr(self.parent, "restack_elements"):
             self.parent.restack_elements()
+
+    def _set_image_preview_loading(self):
+        self.canvas.itemconfig(self.rect, fill=self.bg_color if self.bg_visible else "")
+        self.canvas.itemconfig(
+            self.label,
+            text="Ładowanie...",
+            fill=self.text_color,
+            state="normal",
+        )
+        self.text = "Ładowanie..."
+        self.apply_font()
+        if self.auto_font:
+            self.fit_text()
+        self._update_label_position()
+        if hasattr(self.parent, "restack_elements"):
+            self.parent.restack_elements()
+
+    def _apply_loaded_image(self, request_id, value_str, loaded_image):
+        if request_id != self._image_request_id:
+            return
+        self._clear_image()
+        self.raw_image = loaded_image
+        width = max(1, int(self.width))
+        height = max(1, int(self.height))
+        resized = self.raw_image.resize((width, height), Image.LANCZOS)
+        self.image_obj = ImageTk.PhotoImage(resized)
+        self.image_id = self.canvas.create_image(
+            self.x,
+            self.y,
+            anchor="nw",
+            image=self.image_obj,
+        )
+        self.canvas.tag_bind(self.image_id, "<ButtonPress-1>", self.start_move)
+        self.canvas.tag_bind(self.image_id, "<B1-Motion>", self.moving)
+        self.canvas.tag_bind(self.image_id, "<ButtonRelease-1>", self.stop_move)
+        self.canvas.tag_bind(self.image_id, "<Button-3>", self.show_menu)
+        self.canvas.tag_raise(self.rect)
+        self.canvas.tag_raise(self.handle)
+        self.canvas.itemconfig(self.rect, fill="")
+        self.canvas.itemconfig(self.label, text="", state="hidden")
+        self.text = str(value_str)
+        if hasattr(self.parent, "restack_elements"):
+            self.parent.restack_elements()
+
+    def _load_image_async(self, request_id, value_str):
+        loaded_image = None
+        if value_str.lower().startswith("http"):
+            response = None
+            try:
+                response = requests.get(value_str, timeout=5)
+                response.raise_for_status()
+                with BytesIO(response.content) as buffer:
+                    with Image.open(buffer) as image:
+                        loaded_image = image.copy()
+            except (requests.RequestException, OSError, UnidentifiedImageError):
+                logger.exception("Failed to load remote image %s", value_str)
+            finally:
+                if response is not None:
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
+        else:
+            local_path = self.parent.find_local_image(value_str)
+            if local_path:
+                try:
+                    with Image.open(local_path) as image:
+                        loaded_image = image.copy()
+                except (OSError, UnidentifiedImageError):
+                    logger.exception("Failed to load local image %s", local_path)
+
+        def apply_result():
+            if request_id != self._image_request_id:
+                return
+            if loaded_image is not None:
+                self._apply_loaded_image(request_id, value_str, loaded_image)
+            else:
+                self._show_text_value(value_str)
+
+        if hasattr(self.parent, "ui_call"):
+            self.parent.ui_call(apply_result)
+        else:
+            self.canvas.after(0, apply_result)
+
+    def update_value(self, value):
+        """Update displayed value (text or image) without blocking UI."""
+        self._image_request_id += 1
+        request_id = self._image_request_id
+        self._clear_image()
+        try:
+            if value is None or pd.isna(value):
+                value = ""
+        except TypeError:
+            if value is None:
+                value = ""
+        value_str = value if isinstance(value, str) else str(value)
+        if self.is_image and value_str:
+            self._set_image_preview_loading()
+            threading.Thread(
+                target=self._load_image_async,
+                args=(request_id, value_str),
+                daemon=True,
+            ).start()
+            return
+        self._show_text_value(value)
 
     def apply_font(self):
         weight = "bold" if self.bold else "normal"

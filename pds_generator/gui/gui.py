@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import time
 import webbrowser
 import threading
 from copy import deepcopy
@@ -39,6 +40,7 @@ from ..github_utils import (
     pull_updates,
     get_version,
 )
+from .. import image_index as image_index_utils
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +95,9 @@ class PDSGeneratorGUI(tk.Tk):
         self.image_fields = set()
         self.image_vars = {}
         self.image_dirs = []
+        self.image_index_data = None
+        self.image_index_roots = ()
+        self.image_index_lock = threading.Lock()
         self.excel_lock_path = None
         self.config_lock_path = None
         self.selected_elements = []
@@ -123,6 +128,9 @@ class PDSGeneratorGUI(tk.Tk):
             str(os.getenv("PDS_REQUIRE_ADMIN_MAIL_SETTINGS", "1")).strip().lower()
             not in {"0", "false", "no"}
         )
+        self.preview_in_progress = False
+        self.preview_animation_after = None
+        self.preview_animation_step = 0
         self.mail_settings_win = None
         self.last_generation_report = None
         self.formula_map = {}
@@ -304,10 +312,12 @@ class PDSGeneratorGUI(tk.Tk):
             self.path_var.set(path)
             self.excel_path = path
             self.image_cache = {}
+            self._invalidate_image_index()
             self.load_excel(path)
             self.load_config(path=path)
 
     def load_excel(self, path):
+        self._invalidate_image_index()
         try:
             self.dataframes = read_excel_data(path)
         except (OSError, ValueError) as e:
@@ -413,6 +423,136 @@ class PDSGeneratorGUI(tk.Tk):
         self.update_field_highlights()
 
     # ------------------------------------------------------------------
+    def _image_search_roots(self):
+        base_dir = os.path.dirname(self.excel_path) if self.excel_path else ""
+        roots = [base_dir] + list(getattr(self, "image_dirs", []) or [])
+        return image_index_utils.normalize_roots(roots)
+
+    def _invalidate_image_index(self):
+        with self.image_index_lock:
+            self.image_index_data = None
+            self.image_index_roots = ()
+
+    def _ensure_image_index(
+        self,
+        force_rebuild=False,
+        max_age_hours=24,
+        progress_callback=None,
+        progress_interval_seconds=1.0,
+    ):
+        roots = self._image_search_roots()
+        roots_key = tuple(roots)
+        with self.image_index_lock:
+            cached = self.image_index_data
+            cached_roots = self.image_index_roots
+        if (
+            cached
+            and not force_rebuild
+            and cached_roots == roots_key
+        ):
+            return cached
+        index_data = image_index_utils.ensure_index(
+            roots,
+            force_rebuild=force_rebuild,
+            max_age_hours=max_age_hours,
+            progress_callback=progress_callback,
+            progress_interval_seconds=progress_interval_seconds,
+        )
+        with self.image_index_lock:
+            self.image_index_data = index_data
+            self.image_index_roots = roots_key
+        return index_data
+
+    def rebuild_image_index(self):
+        roots = self._image_search_roots()
+        if not roots:
+            messagebox.showinfo(
+                "Indeks obrazów",
+                "Brak katalogów obrazów do zindeksowania.",
+            )
+            return
+
+        if hasattr(self, "image_index_btn") and self.image_index_btn:
+            self.image_index_btn.state(["disabled"])
+        if hasattr(self, "image_index_status_var") and self.image_index_status_var is not None:
+            self.image_index_status_var.set("Indeksowanie...")
+        self.set_status("Budowanie indeksu obrazów...")
+
+        def worker():
+            try:
+                started = time.time()
+                last_ui_update = {"ts": 0.0, "processed": 0}
+
+                def _format_eta(eta_seconds):
+                    if eta_seconds is None:
+                        return ""
+                    eta = max(0, int(eta_seconds))
+                    return f", ETA ~{eta}s"
+
+                def on_progress(progress):
+                    now = time.time()
+                    phase = str(progress.get("phase") or "")
+                    processed = int(progress.get("processed", 0) or 0)
+                    if (
+                        phase != "done"
+                        and now - last_ui_update["ts"] < 1.0
+                        and processed - int(last_ui_update["processed"]) < 300
+                    ):
+                        return
+                    last_ui_update["ts"] = now
+                    last_ui_update["processed"] = processed
+                    total_estimate = progress.get("total_estimate")
+                    eta_text = _format_eta(progress.get("eta_seconds"))
+                    if total_estimate:
+                        status_text = f"Indeksowanie: {processed}/{int(total_estimate)} plików{eta_text}"
+                    else:
+                        status_text = f"Indeksowanie: {processed} plików{eta_text}"
+
+                    def update_ui():
+                        if hasattr(self, "image_index_status_var") and self.image_index_status_var is not None:
+                            self.image_index_status_var.set(status_text)
+
+                    self.ui_call(update_ui)
+
+                index_data = self._ensure_image_index(
+                    force_rebuild=True,
+                    max_age_hours=0,
+                    progress_callback=on_progress,
+                    progress_interval_seconds=1.0,
+                )
+                elapsed = max(0.0, time.time() - started)
+                count = int(index_data.get("file_count", 0))
+
+                def on_success():
+                    if hasattr(self, "image_index_btn") and self.image_index_btn:
+                        self.image_index_btn.state(["!disabled"])
+                    if hasattr(self, "image_index_status_var") and self.image_index_status_var is not None:
+                        self.image_index_status_var.set(
+                            f"Indeks: {count} plików ({elapsed:.1f}s)"
+                        )
+                    self.set_status("Indeks obrazów gotowy")
+
+                self.ui_call(on_success)
+            except Exception as exc:
+                logger.exception("Failed to rebuild image index")
+                error_message = str(exc)
+
+                def on_error():
+                    if hasattr(self, "image_index_btn") and self.image_index_btn:
+                        self.image_index_btn.state(["!disabled"])
+                    if hasattr(self, "image_index_status_var") and self.image_index_status_var is not None:
+                        self.image_index_status_var.set("Błąd indeksu")
+                    self.set_status("Błąd indeksu obrazów")
+                    messagebox.showerror(
+                        "Indeks obrazów",
+                        f"Nie udało się zbudować indeksu: {error_message}",
+                    )
+
+                self.ui_call(on_error)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ------------------------------------------------------------------
     def find_local_image(self, filename):
         """Search for an image file relative to the Excel file directory."""
         if not filename:
@@ -425,17 +565,8 @@ class PDSGeneratorGUI(tk.Tk):
         key = name.lower()
         if key in self.image_cache:
             return self.image_cache[key]
-        base_dir = os.path.dirname(self.excel_path)
-        roots = [base_dir] + list(getattr(self, "image_dirs", []) or [])
-        seen = set()
-        search_roots = []
-        for root in roots:
-            if not root:
-                continue
-            root = os.path.abspath(root)
-            if root not in seen:
-                seen.add(root)
-                search_roots.append(root)
+
+        search_roots = self._image_search_roots()
 
         stem, _ext = os.path.splitext(os.path.basename(name))
         stem_lower = stem.lower()
@@ -474,7 +605,18 @@ class PDSGeneratorGUI(tk.Tk):
                             break
                     if path:
                         break
-        if path is None and stem:
+
+        if path is None:
+            try:
+                index_data = self._ensure_image_index(force_rebuild=False, max_age_hours=24)
+            except Exception:
+                logger.exception("Failed to load/build image index")
+                index_data = None
+            indexed_path = image_index_utils.find_in_index(index_data, name)
+            if indexed_path:
+                path = indexed_path
+
+        if path is None and stem and not self.image_index_data:
             target_name = os.path.basename(name).lower()
             for root in search_roots:
                 for current_root, _dirs, files in os.walk(root):
@@ -600,6 +742,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.image_dirs.append(path)
         self.refresh_image_dir_list()
         self.image_cache = {}
+        self._invalidate_image_index()
         self.push_history()
 
     def remove_image_dir(self):
@@ -613,6 +756,7 @@ class PDSGeneratorGUI(tk.Tk):
                 self.image_dirs.pop(idx)
         self.refresh_image_dir_list()
         self.image_cache = {}
+        self._invalidate_image_index()
         self.push_history()
 
     def refresh_image_dir_list(self):
@@ -833,6 +977,7 @@ class PDSGeneratorGUI(tk.Tk):
         entra_sender_var = tk.StringVar(value=cfg["entra_sender"])
         entra_endpoint_var = tk.StringVar(value=cfg["entra_endpoint"])
         secret_key_id_var = tk.StringVar(value=cfg.get("secret_key_id", ""))
+        secret_key_status_var = tk.StringVar(value="")
         subject_var = tk.StringVar(value=cfg["subject_prefix"])
         timeout_var = tk.StringVar(value=str(cfg["timeout_seconds"]))
         show_sensitive_var = tk.BooleanVar(value=False)
@@ -987,9 +1132,23 @@ class PDSGeneratorGUI(tk.Tk):
             api_frame, textvariable=secret_key_id_var, state="readonly"
         )
         secret_key_id_entry.grid(row=7, column=1, sticky="ew", padx=8, pady=2)
+        secret_key_status_label = ttk.Label(
+            api_frame,
+            textvariable=secret_key_status_var,
+            justify="left",
+            wraplength=620,
+        )
+        secret_key_status_label.grid(
+            row=8,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            padx=8,
+            pady=(0, 2),
+        )
 
         cert_btns = ttk.Frame(api_frame)
-        cert_btns.grid(row=8, column=1, sticky="w", padx=8, pady=(2, 2))
+        cert_btns.grid(row=9, column=1, sticky="w", padx=8, pady=(2, 2))
         generate_cert_btn = ttk.Button(
             cert_btns, text="Generuj certyfikat", command=lambda: None
         )
@@ -998,13 +1157,13 @@ class PDSGeneratorGUI(tk.Tk):
         fetch_token_btn = ttk.Button(
             api_frame, text="Pobierz token", command=lambda: None
         )
-        fetch_token_btn.grid(row=9, column=1, sticky="w", padx=8, pady=(4, 2))
+        fetch_token_btn.grid(row=10, column=1, sticky="w", padx=8, pady=(4, 2))
 
         ttk.Checkbutton(
             api_frame,
             text="Pokaż pola wrażliwe (hasła/tokeny)",
             variable=show_sensitive_var,
-        ).grid(row=10, column=1, sticky="w", padx=8, pady=(0, 2))
+        ).grid(row=11, column=1, sticky="w", padx=8, pady=(0, 2))
 
         ttk.Label(win, text="Temat (prefix):").grid(
             row=4, column=0, sticky="w", padx=10, pady=2
@@ -1055,11 +1214,77 @@ class PDSGeneratorGUI(tk.Tk):
             fetch_token_btn,
         ]
 
+        sensitive_toggle_guard = {"active": False}
+
+        def current_secret_key_state():
+            return mailer.describe_secret_key_state(
+                {
+                    "secret_key_id": secret_key_id_var.get(),
+                    "entra_tenant_id": entra_tenant_var.get(),
+                    "entra_client_id": entra_client_var.get(),
+                }
+            )
+
+        def show_sensitive_blocked_message(key_state):
+            key_path = key_state.get("key_path", "")
+            location_msg = (
+                f"Brak odpowiedniego klucza .key w danej lokalizacji:\n{key_path}"
+                if key_path
+                else "Brak odpowiedniego klucza .key w wymaganej lokalizacji."
+            )
+            reason = key_state.get(
+                "message", "Klucz nie jest poprawny lub niezgodny z konfiguracją."
+            )
+            messagebox.showwarning(
+                "Brak klucza",
+                "Nie można włączyć podglądu danych tokenu.\n"
+                f"{location_msg}\n\n"
+                f"Powód: {reason}",
+            )
+
         def apply_sensitive_visibility(*_args):
-            mask = "" if show_sensitive_var.get() else "*"
+            reveal_sensitive = bool(show_sensitive_var.get())
+            if reveal_sensitive and not sensitive_toggle_guard["active"]:
+                key_state = current_secret_key_state()
+                if key_state.get("level") != "ok":
+                    sensitive_toggle_guard["active"] = True
+                    try:
+                        show_sensitive_var.set(False)
+                    finally:
+                        sensitive_toggle_guard["active"] = False
+                    reveal_sensitive = False
+                    show_sensitive_blocked_message(key_state)
+            mask = "" if reveal_sensitive else "*"
             password_entry.configure(show=mask)
             token_entry.configure(show=mask)
             entra_client_secret_entry.configure(show=mask)
+
+        def refresh_secret_key_status(*_args):
+            key_state = current_secret_key_state()
+            lines = [key_state.get("message", "")]
+            created_at = key_state.get("created_at", "")
+            created_by = key_state.get("created_by", "")
+            meta_parts = []
+            if created_at:
+                meta_parts.append(f"Utworzono: {created_at}")
+            if created_by:
+                meta_parts.append(f"Autor: {created_by}")
+            if meta_parts:
+                lines.append(", ".join(meta_parts))
+            key_path = key_state.get("key_path", "")
+            if key_path:
+                lines.append(f"Plik: {key_path}")
+            secret_key_status_var.set("\n".join(line for line in lines if line))
+            level = key_state.get("level")
+            if level == "ok":
+                color = "#1f6f43"
+            elif level == "warning":
+                color = "#9a5d00"
+            else:
+                color = "#4a4a4a"
+            secret_key_status_label.configure(foreground=color)
+            if key_state.get("level") != "ok" and show_sensitive_var.get():
+                show_sensitive_var.set(False)
 
         def set_controls_state(controls, enabled_state):
             for control in controls:
@@ -1088,6 +1313,10 @@ class PDSGeneratorGUI(tk.Tk):
         apply_transport_state()
         show_sensitive_var.trace_add("write", apply_sensitive_visibility)
         apply_sensitive_visibility()
+        secret_key_id_var.trace_add("write", refresh_secret_key_status)
+        entra_tenant_var.trace_add("write", refresh_secret_key_status)
+        entra_client_var.trace_add("write", refresh_secret_key_status)
+        refresh_secret_key_status()
 
         def collect(strict=False, require_recipients=False):
             recipients_value = recipients_box.get("1.0", "end").strip()
@@ -1115,8 +1344,34 @@ class PDSGeneratorGUI(tk.Tk):
                 require_recipients=require_recipients,
             )
 
+        def collect_entra(strict=False):
+            recipients_value = recipients_box.get("1.0", "end").strip()
+            token_value = entra_token_var.get().strip()
+            return self._mail_settings_from_inputs(
+                transport=mailer.TRANSPORT_ENTRA_API,
+                enabled=enabled_var.get(),
+                smtp_host=host_var.get(),
+                smtp_port=port_var.get(),
+                smtp_security=security_var.get(),
+                username=username_var.get(),
+                password=password_var.get(),
+                sender=sender_var.get(),
+                entra_token=token_value,
+                entra_tenant_id=entra_tenant_var.get(),
+                entra_client_id=entra_client_var.get(),
+                entra_client_secret=entra_client_secret_var.get(),
+                entra_sender=entra_sender_var.get(),
+                entra_endpoint=entra_endpoint_var.get(),
+                secret_key_id=secret_key_id_var.get(),
+                recipients_text=recipients_value,
+                subject_prefix=subject_var.get(),
+                timeout_seconds=timeout_var.get(),
+                strict=strict,
+                require_recipients=False,
+            )
+
         def fetch_token():
-            cfg_for_token = collect(strict=False, require_recipients=False)
+            cfg_for_token = collect_entra(strict=False)
             if not cfg_for_token:
                 return
             self.set_status("Pobieranie tokenu Entra...")
@@ -1137,6 +1392,9 @@ class PDSGeneratorGUI(tk.Tk):
                 def on_success():
                     entra_token_var.set(token)
                     apply_transport_state()
+                    remembered_cfg = collect(strict=False, require_recipients=False)
+                    if remembered_cfg:
+                        self.mail_config = remembered_cfg
                     self.set_status("Pobrano token Entra")
                     messagebox.showinfo(
                         "E-mail",
@@ -1148,37 +1406,65 @@ class PDSGeneratorGUI(tk.Tk):
             threading.Thread(target=worker, daemon=True).start()
 
         def generate_certificate():
-            cfg_for_cert = collect(strict=False, require_recipients=False)
+            cfg_for_cert = collect_entra(strict=True)
             if not cfg_for_cert:
                 return
             # Always derive certificate ID from current Tenant+Client inputs.
             cfg_for_cert["secret_key_id"] = ""
-            try:
-                key_id, cert_path, created = mailer.generate_secret_certificate(
-                    cfg_for_cert
-                )
-            except Exception as exc:
-                logger.exception("Failed to generate mail secret certificate")
-                messagebox.showerror(
-                    "E-mail",
-                    f"Nie udało się wygenerować certyfikatu: {exc}",
-                )
-                self.set_status("Błąd generowania certyfikatu")
-                return
-            secret_key_id_var.set(key_id)
-            self.set_status("Certyfikat szyfrowania gotowy")
-            if created:
-                messagebox.showinfo(
-                    "E-mail",
-                    "Wygenerowano certyfikat szyfrowania.\n"
-                    f"Plik: {cert_path}",
-                )
-            else:
-                messagebox.showinfo(
-                    "E-mail",
-                    "Certyfikat już istnieje i zostanie użyty.\n"
-                    f"Plik: {cert_path}",
-                )
+            self.set_status("Testowanie Entra przed generowaniem certyfikatu...")
+
+            def worker():
+                try:
+                    mailer.test_connection(cfg_for_cert)
+                except Exception as exc:
+                    logger.exception(
+                        "Connection test failed before certificate generation"
+                    )
+                    self.ui_call(
+                        messagebox.showerror,
+                        "E-mail",
+                        "Nie można wygenerować certyfikatu, ponieważ test połączenia "
+                        f"Entra zakończył się błędem:\n{exc}",
+                    )
+                    self.ui_call(self.set_status, "Błąd testu Entra")
+                    return
+
+                try:
+                    key_id, cert_path, created = mailer.generate_secret_certificate(
+                        cfg_for_cert
+                    )
+                except Exception as exc:
+                    logger.exception("Failed to generate mail secret certificate")
+                    self.ui_call(
+                        messagebox.showerror,
+                        "E-mail",
+                        f"Nie udało się wygenerować certyfikatu: {exc}",
+                    )
+                    self.ui_call(self.set_status, "Błąd generowania certyfikatu")
+                    return
+
+                def on_success():
+                    secret_key_id_var.set(key_id)
+                    remembered_cfg = collect(strict=False, require_recipients=False)
+                    if remembered_cfg:
+                        self.mail_config = remembered_cfg
+                    self.set_status("Certyfikat szyfrowania gotowy")
+                    if created:
+                        messagebox.showinfo(
+                            "E-mail",
+                            "Wygenerowano certyfikat szyfrowania.\n"
+                            f"Plik: {cert_path}",
+                        )
+                    else:
+                        messagebox.showinfo(
+                            "E-mail",
+                            "Certyfikat już istnieje i zostanie użyty.\n"
+                            f"Plik: {cert_path}",
+                        )
+
+                self.ui_call(on_success)
+
+            threading.Thread(target=worker, daemon=True).start()
 
         fetch_token_btn.configure(command=fetch_token)
         generate_cert_btn.configure(command=generate_certificate)
@@ -1188,11 +1474,8 @@ class PDSGeneratorGUI(tk.Tk):
             if not new_cfg:
                 return
             self.mail_config = new_cfg
-            messagebox.showinfo(
-                "E-mail",
-                "Zapisano ustawienia e-mail. "
-                "Użyj 'Zapisz konfigurację', aby zapisać je do pliku config.json.",
-            )
+            # Persist mail settings immediately (same path/mechanism as main Save Config).
+            self.save_config()
 
         def test_connection():
             test_cfg = collect(strict=True, require_recipients=False)
@@ -1666,50 +1949,129 @@ class PDSGeneratorGUI(tk.Tk):
         render_pdf_element(self, c, element, value, x, y)
 
     # ------------------------------------------------------------------
+    def _set_preview_status(self, text):
+        if hasattr(self, "preview_status_var") and self.preview_status_var is not None:
+            self.preview_status_var.set(text)
+
+    def _preview_animation_tick(self):
+        if not self.preview_in_progress:
+            return
+        dots = "." * (self.preview_animation_step % 4)
+        self._set_preview_status(f"Ładowanie{dots}")
+        self.preview_animation_step += 1
+        self.preview_animation_after = self.after(220, self._preview_animation_tick)
+
+    def _start_preview_animation(self):
+        if self.preview_in_progress:
+            return
+        self.preview_in_progress = True
+        self.preview_animation_step = 0
+        if hasattr(self, "preview_btn") and self.preview_btn:
+            self.preview_btn.state(["disabled"])
+        self._preview_animation_tick()
+
+    def _clear_preview_status(self):
+        if not self.preview_in_progress:
+            self._set_preview_status("")
+
+    def _finish_preview_animation(self, status_text=""):
+        self.preview_in_progress = False
+        if self.preview_animation_after is not None:
+            try:
+                self.after_cancel(self.preview_animation_after)
+            except Exception:
+                pass
+            self.preview_animation_after = None
+        if hasattr(self, "preview_btn") and self.preview_btn:
+            self.preview_btn.state(["!disabled"])
+        self._set_preview_status(status_text)
+        if status_text:
+            self.after(1500, self._clear_preview_status)
+
+    # ------------------------------------------------------------------
     def preview_row(self):
         if not self.dataframes:
+            return
+        if self.preview_in_progress:
             return
         try:
             idx = int(self.row_var.get()) - 1
         except ValueError:
             messagebox.showerror("Błąd", "Nieprawidłowy numer wiersza")
             return
-        values = {}
-        for name in self.elements.keys():
-            if ":" in name:
-                sheet, col = name.split(":", 1)
-                df = self.dataframes.get(sheet)
-                value = ""
-                if df is not None and 0 <= idx < len(df):
-                    value = df.iloc[idx].get(col)
-                    value = round_numeric_value(value)
-            else:
-                value = self.static_entries[name].get() if name in getattr(self, "static_entries", {}) else name
-            try:
-                if pd.isna(value):
-                    value = ""
-            except TypeError:
-                if value is None:
-                    value = ""
-            values[name] = value
+        self._start_preview_animation()
 
-        hidden = set()
-        for src, tgt in self.conditions:
-            if src not in values:
-                continue
-            src_val = values.get(src, "")
+        def worker():
             try:
-                empty = pd.isna(src_val) or src_val == ""
-            except TypeError:
-                empty = src_val == ""
-            if empty:
-                hidden.add(tgt)
+                values = {}
+                for name in self.elements.keys():
+                    if ":" in name:
+                        sheet, col = name.split(":", 1)
+                        df = self.dataframes.get(sheet)
+                        value = ""
+                        if df is not None and 0 <= idx < len(df):
+                            value = df.iloc[idx].get(col)
+                            value = round_numeric_value(value)
+                    else:
+                        if name in getattr(self, "static_entries", {}):
+                            value = self.static_entries[name].get()
+                        else:
+                            value = name
+                    try:
+                        if pd.isna(value):
+                            value = ""
+                    except TypeError:
+                        if value is None:
+                            value = ""
+                    values[name] = value
 
-        for name, element in sorted(self.elements.items(), key=lambda kv: kv[1].layer):
-            value = values.get(name, "")
-            if name in hidden:
-                value = ""
-            element.update_value(value)
+                hidden = set()
+                for src, tgt in self.conditions:
+                    if src not in values:
+                        continue
+                    src_val = values.get(src, "")
+                    try:
+                        empty = pd.isna(src_val) or src_val == ""
+                    except TypeError:
+                        empty = src_val == ""
+                    if empty:
+                        hidden.add(tgt)
+                ordered = sorted(self.elements.items(), key=lambda kv: kv[1].layer)
+            except Exception as exc:
+                logger.exception("Failed to prepare preview row")
+                error_message = str(exc)
+
+                def on_error():
+                    self._finish_preview_animation("")
+                    messagebox.showerror(
+                        "Błąd",
+                        f"Nie udało się przygotować podglądu: {error_message}",
+                    )
+
+                self.ui_call(on_error)
+                return
+
+            def apply_batch(start=0):
+                if not self.preview_in_progress:
+                    return
+                batch_size = 16
+                end = min(start + batch_size, len(ordered))
+                for name, element in ordered[start:end]:
+                    value = values.get(name, "")
+                    if name in hidden:
+                        value = ""
+                    try:
+                        element.update_value(value)
+                    except Exception:
+                        logger.exception("Failed to update preview element %s", name)
+                if end < len(ordered):
+                    self.after(1, lambda: apply_batch(end))
+                else:
+                    self._finish_preview_animation("Podgląd gotowy")
+
+            self.ui_call(apply_batch)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------------------------------------------
     def save_config(self):
@@ -2293,8 +2655,13 @@ class PDSGeneratorGUI(tk.Tk):
         setattr(self, attr, None)
 
     def on_close(self):
+        self.preview_in_progress = False
+        if self.preview_animation_after is not None:
+            try:
+                self.after_cancel(self.preview_animation_after)
+            except Exception:
+                pass
+            self.preview_animation_after = None
         self.release_lock("excel_lock_path")
         self.release_lock("config_lock_path")
         self.destroy()
-
-

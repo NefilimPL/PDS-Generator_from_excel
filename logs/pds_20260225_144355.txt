@@ -1,0 +1,68 @@
+2026-02-25 14:44:00,312 | DEBUG | PIL.PngImagePlugin | STREAM b'IHDR' 16 13
+2026-02-25 14:44:00,313 | DEBUG | PIL.PngImagePlugin | STREAM b'pHYs' 41 9
+2026-02-25 14:44:00,313 | DEBUG | PIL.PngImagePlugin | STREAM b'sRGB' 62 1
+2026-02-25 14:44:00,313 | DEBUG | PIL.PngImagePlugin | STREAM b'gAMA' 75 4
+2026-02-25 14:44:00,313 | DEBUG | PIL.PngImagePlugin | STREAM b'IDAT' 91 6286
+2026-02-25 14:44:02,177 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): api.github.com:443
+2026-02-25 14:44:03,129 | DEBUG | urllib3.connectionpool | https://api.github.com:443 "GET /repos/NefilimPL/PDS-Generator_from_excel/commits/MAIN HTTP/1.1" 200 1823
+2026-02-25 14:44:03,135 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): raw.githubusercontent.com:443
+2026-02-25 14:44:03,792 | DEBUG | urllib3.connectionpool | https://raw.githubusercontent.com:443 "GET /NefilimPL/PDS-Generator_from_excel/MAIN/VERSION HTTP/1.1" 200 27
+2026-02-25 14:44:15,214 | ERROR | pds_generator.gui.gui | Failed to rebuild image index
+Traceback (most recent call last):
+  File "C:\_GitHub_\PDS-Generator_from_excel\pds_generator\gui\gui.py", line 474, in worker
+    started = time.time()
+              ^^^^
+NameError: name 'time' is not defined. Did you forget to import 'time'?
+2026-02-25 14:44:15,219 | ERROR | exception | Unhandled exception in Tkinter callback
+Traceback (most recent call last):
+  File "C:\Users\k.bober\AppData\Local\Programs\Python\Python313\Lib\tkinter\__init__.py", line 2079, in __call__
+    return self.func(*args)
+           ~~~~~~~~~^^^^^^^
+  File "C:\Users\k.bober\AppData\Local\Programs\Python\Python313\Lib\tkinter\__init__.py", line 862, in callit
+    func(*args)
+    ~~~~^^^^^^^
+  File "C:\_GitHub_\PDS-Generator_from_excel\pds_generator\gui\gui.py", line 1968, in <lambda>
+    self.after(0, lambda: func(*args, **kwargs))
+                          ~~~~^^^^^^^^^^^^^^^^^
+  File "C:\_GitHub_\PDS-Generator_from_excel\pds_generator\gui\gui.py", line 503, in on_error
+    f"Nie udało się zbudować indeksu: {exc}",
+                                       ^^^
+NameError: cannot access free variable 'exc' where it is not associated with a value in enclosing scope. Did you mean: 'exec'?
+2026-02-25 14:44:31,672 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-25 14:44:32,224 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "POST /v1.0/users/k.bober@vivaldimeble.pl/sendMail HTTP/1.1" 401 None
+2026-02-25 14:44:32,224 | ERROR | pds_generator.gui.gui | Test połączenia nie powiódł się failed
+Traceback (most recent call last):
+  File "C:\_GitHub_\PDS-Generator_from_excel\pds_generator\gui\gui.py", line 878, in worker
+    action(config)
+    ~~~~~~^^^^^^^^
+  File "C:\_GitHub_\PDS-Generator_from_excel\pds_generator\gui\mailer.py", line 858, in test_connection
+    return _test_entra_connection(cfg)
+  File "C:\_GitHub_\PDS-Generator_from_excel\pds_generator\gui\mailer.py", line 840, in _test_entra_connection
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: Brak autoryzacji (token nieprawidłowy albo brak uprawnień Mail.Send). Szczegóły: {"error":{"code":"InvalidAuthenticationToken","message":"Lifetime validation failed, the token is expired.","innerError":{"date":"2026-02-25T13:44:32","request-id":"70f5ac56-3781-41e9-8b15-70fc887b3643","client-request-id":"70f5ac56-3781-41e9-8b15-70fc887b3643"}}}
+2026-02-25 14:46:03,654 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-25 14:46:04,131 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "POST /v1.0/users/k.bober@vivaldimeble.pl/sendMail HTTP/1.1" 401 None
+2026-02-25 14:46:04,131 | ERROR | pds_generator.gui.gui | Test połączenia nie powiódł się failed
+Traceback (most recent call last):
+  File "C:\_GitHub_\PDS-Generator_from_excel\pds_generator\gui\gui.py", line 878, in worker
+    action(config)
+    ~~~~~~^^^^^^^^
+  File "C:\_GitHub_\PDS-Generator_from_excel\pds_generator\gui\mailer.py", line 858, in test_connection
+    return _test_entra_connection(cfg)
+  File "C:\_GitHub_\PDS-Generator_from_excel\pds_generator\gui\mailer.py", line 840, in _test_entra_connection
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: Brak autoryzacji (token nieprawidłowy albo brak uprawnień Mail.Send). Szczegóły: {"error":{"code":"InvalidAuthenticationToken","message":"Lifetime validation failed, the token is expired.","innerError":{"date":"2026-02-25T13:46:04","request-id":"6e0bbeae-5415-4a25-96af-fc2832c29f7f","client-request-id":"6e0bbeae-5415-4a25-96af-fc2832c29f7f"}}}
+2026-02-25 14:46:37,537 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): login.microsoftonline.com:443
+2026-02-25 14:46:38,270 | DEBUG | urllib3.connectionpool | https://login.microsoftonline.com:443 "POST /2f91b825-8750-460f-baf9-6529335a23a8/oauth2/v2.0/token HTTP/1.1" 200 2059
+2026-02-25 14:46:40,424 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-25 14:46:41,191 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "POST /v1.0/users/k.bober@vivaldimeble.pl/sendMail HTTP/1.1" 400 None
+2026-02-25 14:46:48,438 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-25 14:46:48,952 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "POST /v1.0/users/k.bober@vivaldimeble.pl/sendMail HTTP/1.1" 400 None
+2026-02-25 14:46:53,086 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-25 14:46:53,646 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "POST /v1.0/users/k.bober@vivaldimeble.pl/sendMail HTTP/1.1" 400 None
+2026-02-25 14:46:58,656 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-25 14:46:59,192 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "POST /v1.0/users/k.bober@vivaldimeble.pl/sendMail HTTP/1.1" 400 None
