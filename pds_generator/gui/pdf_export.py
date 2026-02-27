@@ -140,7 +140,9 @@ def _cell_marked_red(cell):
     return False
 
 
-def _collect_red_nonpositive_issues(app, row_indices, sheet_fields_all):
+def _collect_red_nonpositive_issues(
+    app, row_indices, sheet_fields_all, image_sheet_fields=None
+):
     if not row_indices or not sheet_fields_all:
         return []
 
@@ -161,6 +163,7 @@ def _collect_red_nonpositive_issues(app, row_indices, sheet_fields_all):
         df = app.dataframes.get(sheet_name)
         if df is None or df.empty:
             continue
+        image_columns = set((image_sheet_fields or {}).get(sheet_name, set()))
         ws = wb[sheet_name]
         try:
             header_row = next(ws.iter_rows(min_row=1, max_row=1))
@@ -174,6 +177,8 @@ def _collect_red_nonpositive_issues(app, row_indices, sheet_fields_all):
             header_indices[str(header_value)] = col_idx
 
         for col_name in columns:
+            if col_name in image_columns:
+                continue
             col_idx = header_indices.get(col_name)
             if not col_idx:
                 continue
@@ -317,6 +322,43 @@ def _collect_missing_image_issues(app, row_indices):
     if len(remote_cache) >= max_remote_checks:
         issues.add(REMOTE_IMAGE_CHECK_LIMIT_WARNING)
     return sorted(issues)
+
+
+def _resolve_image_sheet_fields(image_fields):
+    mapping = {}
+    for field in image_fields or []:
+        if ":" not in str(field):
+            continue
+        sheet, col = str(field).split(":", 1)
+        if not sheet or not col:
+            continue
+        mapping.setdefault(sheet, set()).add(col)
+    return mapping
+
+
+def _build_image_missing_checker(app, max_remote_checks=30):
+    remote_cache = {}
+    local_cache = {}
+
+    def is_missing(value):
+        text = str(value or "").strip()
+        if not text:
+            return False
+        if _is_http_value(text):
+            exists = remote_cache.get(text)
+            if exists is None:
+                if len(remote_cache) >= max_remote_checks:
+                    return False
+                exists = _check_remote_image_exists(text)
+                remote_cache[text] = exists
+            return not exists
+        exists = local_cache.get(text)
+        if exists is None:
+            exists = bool(app.find_local_image(text))
+            local_cache[text] = exists
+        return not exists
+
+    return is_missing
 
 
 def _ui_call(app, func, *args, **kwargs):
@@ -945,6 +987,10 @@ def generate_pds(app):
 
     sheet_fields_all = {}
     sheet_fields_tracking = {}
+    image_sheet_fields = _resolve_image_sheet_fields(
+        getattr(app, "image_fields", set()) or []
+    )
+    image_missing_checker = _build_image_missing_checker(app)
     excluded_fields = getattr(app, "tracking_excluded", set())
     for field in dynamic_fields:
         sheet, col = field.split(":", 1)
@@ -974,7 +1020,12 @@ def generate_pds(app):
 
     try:
         excel_rows = update_tracking_column(
-            app.excel_path, app.dataframes, total_rows, sheet_fields=sheet_fields_tracking
+            app.excel_path,
+            app.dataframes,
+            total_rows,
+            sheet_fields=sheet_fields_tracking,
+            image_fields=image_sheet_fields,
+            is_image_missing=image_missing_checker,
         )
         tracking_mode = "excel"
     except Exception:
@@ -1237,7 +1288,12 @@ def generate_pds(app):
         validation_row_indices = [task.get("idx") for task in tasks_local]
         try:
             validation_warnings.extend(
-                _collect_red_nonpositive_issues(app, validation_row_indices, sheet_fields_all)
+                _collect_red_nonpositive_issues(
+                    app,
+                    validation_row_indices,
+                    sheet_fields_all,
+                    image_sheet_fields=image_sheet_fields,
+                )
             )
         except Exception:
             logger.exception("Failed while validating red-marked numeric fields")

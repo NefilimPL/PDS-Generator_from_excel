@@ -83,7 +83,14 @@ def _update_cell_protection(cell, locked):
     return True
 
 
-def update_tracking_column(excel_path, dataframes, total_rows, sheet_fields=None):
+def update_tracking_column(
+    excel_path,
+    dataframes,
+    total_rows,
+    sheet_fields=None,
+    image_fields=None,
+    is_image_missing=None,
+):
     if not excel_path or not dataframes:
         return set()
     try:
@@ -94,6 +101,16 @@ def update_tracking_column(excel_path, dataframes, total_rows, sheet_fields=None
 
     changed_rows = set()
     workbook_dirty = False
+    image_field_map = {}
+    if isinstance(image_fields, dict):
+        for sheet, cols in image_fields.items():
+            if not sheet:
+                continue
+            col_set = {
+                str(col) for col in (cols or set()) if col is not None and str(col) != TRACKING_COLUMN
+            }
+            if col_set:
+                image_field_map[str(sheet)] = col_set
 
     for sheet_name, df in dataframes.items():
         if sheet_name not in wb.sheetnames:
@@ -128,6 +145,7 @@ def update_tracking_column(excel_path, dataframes, total_rows, sheet_fields=None
             if idx is None:
                 idx = header_map_str.get(str(col))
             column_indices[col] = idx
+        image_columns = image_field_map.get(sheet_name, set())
         row_count = len(df)
         existing_rows = max(0, (ws.max_row or 1) - 1)
         check_rows = max(row_count, existing_rows)
@@ -150,6 +168,32 @@ def update_tracking_column(excel_path, dataframes, total_rows, sheet_fields=None
                             value = ""
                     except Exception:
                         pass
+                    if col in image_columns:
+                        values.append(value)
+                        col_idx = column_indices.get(col)
+                        if col_idx:
+                            cell = ws.cell(row=row_idx + 2, column=col_idx)
+                            text = str(value or "").strip()
+                            should_mark = False
+                            if text and callable(is_image_missing):
+                                try:
+                                    should_mark = bool(is_image_missing(text))
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to validate image for %s!%s row %s",
+                                        sheet_name,
+                                        col,
+                                        row_idx + 2,
+                                    )
+                            if should_mark:
+                                if cell.fill != _ZERO_FILL:
+                                    cell.fill = _ZERO_FILL
+                                    workbook_dirty = True
+                            else:
+                                if cell.fill == _ZERO_FILL:
+                                    cell.fill = _DEFAULT_FILL
+                                    workbook_dirty = True
+                        continue
                     analysis = analyze_numeric_value(
                         value, decimals=DEFAULT_DECIMALS
                     )
