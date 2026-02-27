@@ -59,6 +59,8 @@
    `Microsoft Graph` -> `Application permissions` -> `Mail.Send`.
 3. Kliknij **Grant admin consent** dla tenantu.
 4. Bez `Mail.Send` w trybie aplikacyjnym (`client_credentials`) wysyłka przez Graph nie zadziała.
+5. Aby aplikacja mogła automatycznie odczytywać datę wygaśnięcia `Secret Value` i wysyłać przypomnienia, dodaj także:
+   `Microsoft Graph` -> `Application permissions` -> `Application.Read.All` (z `Grant admin consent`).
 
 ### 2) Wymagane dane w GUI (tryb Entra API)
 1. `Tenant ID` = identyfikator dzierżawy.
@@ -75,6 +77,14 @@
 4. Dla tokenu ręcznego sprawdź:
    `aud = https://graph.microsoft.com`
    oraz obecność `Mail.Send` (`roles` dla app token, `scp` dla delegated token).
+
+### 3a) Automatyczne przypomnienia o wygaśnięciu Secret Value
+1. Aplikacja automatycznie sprawdza datę wygaśnięcia wpisu tajnego klienta (`Secret Value`) i może wysłać osobny mail przypominający.
+2. Progi przypomnień: **30, 14, 7, 2, 1 dni** przed wygaśnięciem.
+3. Mail przypomnienia zawiera:
+   datę wygaśnięcia (UTC i lokalnie), pozostały czas oraz instrukcję odnowienia (utworzenie nowego `Secret Value` + `Pobierz token` + `Zapisz` w aplikacji).
+4. Aby uniknąć duplikatów, wysłane progi są zapisywane lokalnie w:
+   `%APPDATA%\\PDS Generator\\secret_expiry_reminders.json`.
 
 ### 4) Ograniczenie dostępu aplikacji do wybranych skrzynek (zalecane)
 1. Samo `Mail.Send` (application) domyślnie daje szeroki dostęp.
@@ -110,14 +120,18 @@
 
 ## Microsoft Entra API - Tokens and permissions (EN)
 1. Required Graph app permission for client credentials: `Mail.Send` (Application) + admin consent.
-2. Use `Tenant ID`, `Client ID`, `Secret Value` (secret value, not secret ID), and mailbox sender (`UPN/ID`).
-3. Token scope for client credentials: `https://graph.microsoft.com/.default`.
-4. If using a pasted bearer token, verify Graph audience and `Mail.Send` claim (`roles` or `scp`).
-5. Generated encryption key file location:
+2. For automatic `Secret Value` expiry checks/reminders, also grant `Application.Read.All` (Application).
+3. Use `Tenant ID`, `Client ID`, `Secret Value` (secret value, not secret ID), and mailbox sender (`UPN/ID`).
+4. Token scope for client credentials: `https://graph.microsoft.com/.default`.
+5. If using a pasted bearer token, verify Graph audience and `Mail.Send` claim (`roles` or `scp`).
+6. Secret expiry reminder thresholds: `30/14/7/2/1` days before expiration.
+7. Reminder state file path:
+   `%APPDATA%\\PDS Generator\\secret_expiry_reminders.json`.
+8. Generated encryption key file location:
    `%APPDATA%\\PDS Generator\\secrets\\<secret_key_id>.key`
    (or override with `PDS_SECRET_KEY_FILE`).
-6. To decrypt the same config on multiple machines, copy the same `.key` file to each machine.
-7. For mailbox scoping, configure Exchange Online **RBAC for Applications** (recommended) or legacy Application Access Policies.
+9. To decrypt the same config on multiple machines, copy the same `.key` file to each machine.
+10. For mailbox scoping, configure Exchange Online **RBAC for Applications** (recommended) or legacy Application Access Policies.
 
 ## Harmonogram zadań (Windows) / Task Scheduler (Windows)
 

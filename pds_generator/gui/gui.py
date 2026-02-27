@@ -978,9 +978,18 @@ class PDSGeneratorGUI(tk.Tk):
         entra_endpoint_var = tk.StringVar(value=cfg["entra_endpoint"])
         secret_key_id_var = tk.StringVar(value=cfg.get("secret_key_id", ""))
         secret_key_status_var = tk.StringVar(value="")
+        token_expiry_var = tk.StringVar(
+            value="Ważność Secret Value: brak danych (kliknij 'Pobierz token')."
+        )
         subject_var = tk.StringVar(value=cfg["subject_prefix"])
         timeout_var = tk.StringVar(value=str(cfg["timeout_seconds"]))
         show_sensitive_var = tk.BooleanVar(value=False)
+        token_expiry_cache = {
+            "token": "",
+            "token_expiry": None,
+            "client_secret_expiry": None,
+            "client_secret_error": "",
+        }
 
         ttk.Checkbutton(
             win,
@@ -1082,6 +1091,13 @@ class PDSGeneratorGUI(tk.Tk):
         )
         token_entry = ttk.Entry(api_frame, textvariable=entra_token_var, show="*")
         token_entry.grid(row=1, column=1, sticky="ew", padx=8, pady=2)
+        token_expiry_label = ttk.Label(
+            api_frame,
+            textvariable=token_expiry_var,
+            justify="left",
+            wraplength=320,
+        )
+        token_expiry_label.grid(row=1, column=2, sticky="w", padx=(0, 8), pady=2)
 
         ttk.Label(api_frame, text="Tenant ID (dzierżawy):").grid(
             row=2, column=0, sticky="w", padx=8, pady=2
@@ -1286,6 +1302,127 @@ class PDSGeneratorGUI(tk.Tk):
             if key_state.get("level") != "ok" and show_sensitive_var.get():
                 show_sensitive_var.set(False)
 
+        def _normalize_token_value(raw_token):
+            token_value = str(raw_token or "").strip()
+            if token_value.lower().startswith("bearer "):
+                token_value = token_value[7:].strip()
+            return token_value
+
+        def _set_token_expiry_label_state(text, color="#4a4a4a"):
+            token_expiry_var.set(text)
+            token_expiry_label.configure(foreground=color)
+
+        def _format_remaining_token_time(expiry):
+            remaining_seconds = int(float(expiry.get("remaining_seconds", 0)))
+            if remaining_seconds <= 0:
+                return "wygasł"
+            days, rem = divmod(remaining_seconds, 86400)
+            hours, rem = divmod(rem, 3600)
+            minutes = rem // 60
+            return f"{days} d {hours} h {minutes} min"
+
+        def _clear_secret_expiry_cache(*_args):
+            token_expiry_cache["token"] = ""
+            token_expiry_cache["token_expiry"] = None
+            token_expiry_cache["client_secret_expiry"] = None
+            token_expiry_cache["client_secret_error"] = ""
+            refresh_token_expiry_info()
+
+        def refresh_token_expiry_info(*_args):
+            token_value = _normalize_token_value(entra_token_var.get())
+            cached_token = token_expiry_cache.get("token", "")
+            expiry = token_expiry_cache.get("client_secret_expiry")
+            error = str(token_expiry_cache.get("client_secret_error", "") or "").strip()
+
+            if not token_value and not expiry:
+                if error:
+                    _set_token_expiry_label_state(f"Ważność Secret Value: {error}")
+                else:
+                    _set_token_expiry_label_state(
+                        "Ważność Secret Value: brak danych (uzupełnij Entra i kliknij 'Pobierz token')."
+                    )
+                return
+            if token_value and cached_token != token_value:
+                _set_token_expiry_label_state(
+                    "Ważność Secret Value: brak danych dla tego tokenu "
+                    "(kliknij 'Pobierz token')."
+                )
+                return
+            if not expiry:
+                if error:
+                    _set_token_expiry_label_state(f"Ważność Secret Value: {error}")
+                else:
+                    _set_token_expiry_label_state(
+                        "Ważność Secret Value: brak danych (kliknij 'Pobierz token')."
+                    )
+                return
+
+            expires_at_utc = expiry["expires_at_utc"]
+            expires_at_utc_text = expires_at_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+            expires_at_local = expires_at_utc.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+            remaining_days = float(expiry.get("remaining_days", 0.0))
+            remaining_text = _format_remaining_token_time(expiry)
+            if remaining_days <= 0:
+                color = "#b33a3a"
+            elif remaining_days < 1:
+                color = "#9a5d00"
+            else:
+                color = "#1f6f43"
+            display_name = str(expiry.get("credential_display_name", "") or "").strip()
+            if display_name:
+                secret_caption = f"Secret Value ({display_name})"
+            else:
+                secret_caption = "Secret Value"
+            _set_token_expiry_label_state(
+                (
+                    f"{secret_caption} wygasa (UTC): {expires_at_utc_text}\n"
+                    f"Lokalnie: {expires_at_local} | Pozostało: {remaining_text}"
+                ),
+                color=color,
+            )
+
+        def auto_refresh_secret_expiry_info():
+            cfg_for_status = collect_entra(strict=False)
+            if not cfg_for_status:
+                return
+            has_creds = bool(
+                cfg_for_status.get("entra_tenant_id", "").strip()
+                and cfg_for_status.get("entra_client_id", "").strip()
+                and cfg_for_status.get("entra_client_secret", "")
+            )
+            if not has_creds:
+                return
+
+            request_scope = (
+                cfg_for_status.get("entra_tenant_id", "").strip().lower(),
+                cfg_for_status.get("entra_client_id", "").strip().lower(),
+                cfg_for_status.get("entra_client_secret", ""),
+            )
+
+            def worker():
+                try:
+                    expiry, error = mailer.get_client_secret_expiry_details(cfg_for_status)
+                except Exception as exc:
+                    logger.exception("Automatic secret expiry refresh failed")
+                    expiry, error = None, str(exc)
+
+                def on_done():
+                    current_scope = (
+                        entra_tenant_var.get().strip().lower(),
+                        entra_client_var.get().strip().lower(),
+                        entra_client_secret_var.get(),
+                    )
+                    if current_scope != request_scope:
+                        return
+                    token_expiry_cache["token"] = _normalize_token_value(entra_token_var.get())
+                    token_expiry_cache["client_secret_expiry"] = expiry
+                    token_expiry_cache["client_secret_error"] = error
+                    refresh_token_expiry_info()
+
+                self.ui_call(on_done)
+
+            threading.Thread(target=worker, daemon=True).start()
+
         def set_controls_state(controls, enabled_state):
             for control in controls:
                 if isinstance(control, tk.Text):
@@ -1316,7 +1453,12 @@ class PDSGeneratorGUI(tk.Tk):
         secret_key_id_var.trace_add("write", refresh_secret_key_status)
         entra_tenant_var.trace_add("write", refresh_secret_key_status)
         entra_client_var.trace_add("write", refresh_secret_key_status)
+        entra_token_var.trace_add("write", refresh_token_expiry_info)
+        entra_tenant_var.trace_add("write", _clear_secret_expiry_cache)
+        entra_client_var.trace_add("write", _clear_secret_expiry_cache)
+        entra_client_secret_var.trace_add("write", _clear_secret_expiry_cache)
         refresh_secret_key_status()
+        refresh_token_expiry_info()
 
         def collect(strict=False, require_recipients=False):
             recipients_value = recipients_box.get("1.0", "end").strip()
@@ -1370,6 +1512,8 @@ class PDSGeneratorGUI(tk.Tk):
                 require_recipients=False,
             )
 
+        auto_refresh_secret_expiry_info()
+
         def fetch_token():
             cfg_for_token = collect_entra(strict=False)
             if not cfg_for_token:
@@ -1378,7 +1522,11 @@ class PDSGeneratorGUI(tk.Tk):
 
             def worker():
                 try:
-                    token = mailer.request_entra_token(cfg_for_token)
+                    token_data = mailer.request_entra_token_details(cfg_for_token)
+                    token = token_data["token"]
+                    token_expiry = token_data.get("token_expiry")
+                    client_secret_expiry = token_data.get("client_secret_expiry")
+                    client_secret_error = token_data.get("client_secret_error", "")
                 except Exception as exc:
                     logger.exception("Failed to fetch Entra token")
                     self.ui_call(
@@ -1391,15 +1539,58 @@ class PDSGeneratorGUI(tk.Tk):
 
                 def on_success():
                     entra_token_var.set(token)
+                    token_expiry_cache["token"] = token
+                    token_expiry_cache["token_expiry"] = token_expiry
+                    token_expiry_cache["client_secret_expiry"] = client_secret_expiry
+                    token_expiry_cache["client_secret_error"] = client_secret_error
+                    refresh_token_expiry_info()
                     apply_transport_state()
                     remembered_cfg = collect(strict=False, require_recipients=False)
                     if remembered_cfg:
                         self.mail_config = remembered_cfg
-                    self.set_status("Pobrano token Entra")
-                    messagebox.showinfo(
-                        "E-mail",
-                        "Pobrano token Entra API i wstawiono do pola Token Bearer.",
-                    )
+                    info_lines = [
+                        "Pobrano token Entra API i wstawiono do pola Token Bearer."
+                    ]
+                    if client_secret_expiry:
+                        expires_at_utc = client_secret_expiry["expires_at_utc"]
+                        expires_at_utc_text = expires_at_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+                        expires_at_local = expires_at_utc.astimezone().strftime(
+                            "%Y-%m-%d %H:%M:%S %Z"
+                        )
+                        remaining_days = max(
+                            0.0, float(client_secret_expiry["remaining_days"])
+                        )
+                        remaining_text = _format_remaining_token_time(client_secret_expiry)
+                        display_name = str(
+                            client_secret_expiry.get("credential_display_name", "") or ""
+                        ).strip()
+                        if display_name:
+                            secret_header = f"Wpis tajny klienta: {display_name}"
+                        else:
+                            secret_header = "Wpis tajny klienta (Secret Value)"
+                        info_lines.extend(
+                            [
+                                "",
+                                secret_header,
+                                f"Data wygaśnięcia Secret Value (UTC): {expires_at_utc_text}",
+                                f"Data wygaśnięcia Secret Value (lokalnie): {expires_at_local}",
+                                f"Pozostało: {remaining_text} ({remaining_days:.2f} dnia)",
+                            ]
+                        )
+                        self.set_status("Pobrano token Entra + datę wygaśnięcia Secret Value")
+                    else:
+                        info_lines.extend(
+                            [
+                                "",
+                                (
+                                    "Nie udało się odczytać daty wygaśnięcia Secret Value."
+                                    if not client_secret_error
+                                    else f"Nie udało się odczytać daty wygaśnięcia Secret Value: {client_secret_error}"
+                                ),
+                            ]
+                        )
+                        self.set_status("Pobrano token Entra")
+                    messagebox.showinfo("E-mail", "\n".join(info_lines))
 
                 self.ui_call(on_success)
 
@@ -1494,12 +1685,21 @@ class PDSGeneratorGUI(tk.Tk):
             test_cfg = collect(strict=True, require_recipients=True)
             if not test_cfg:
                 return
+            if test_cfg.get("transport") == mailer.TRANSPORT_ENTRA_API:
+                success_msg = (
+                    "Wysłano testową wiadomość oraz dodatkową symulację "
+                    "przypomnienia o wygaśnięciu Secret Value."
+                )
+                success_status = "Wysłano test + symulację przypomnienia"
+            else:
+                success_msg = "Wysłano testową wiadomość."
+                success_status = "Wysłano testową wiadomość"
             self._run_mail_action_async(
                 test_cfg,
                 mailer.send_test_email,
-                "Wysłano testową wiadomość.",
+                success_msg,
                 "Wysyłanie testowej wiadomości...",
-                "Wysłano testową wiadomość",
+                success_status,
                 "Wysyłka testowej wiadomości nie powiodła się",
             )
 
@@ -1523,16 +1723,18 @@ class PDSGeneratorGUI(tk.Tk):
         win.protocol("WM_DELETE_WINDOW", close)
 
     def on_generation_complete(self, report):
-        self.last_generation_report = deepcopy(report)
+        report_to_send = deepcopy(report)
+        runtime_log_path = str(getattr(self, "runtime_log_path", "") or "").strip()
+        if runtime_log_path and not report_to_send.get("log_path"):
+            report_to_send["log_path"] = runtime_log_path
+        self.last_generation_report = deepcopy(report_to_send)
         has_issues = bool(
-            report.get("warnings")
-            or report.get("errors")
-            or report.get("skipped_image_files")
-            or report.get("skipped_image_global_issues")
+            report_to_send.get("warnings")
+            or report_to_send.get("errors")
+            or report_to_send.get("skipped_image_files")
+            or report_to_send.get("skipped_image_global_issues")
         )
-        if report.get("status") == "no_changes" and not has_issues:
-            logger.info("Skipping report email: no PDF changes detected.")
-            return
+        skip_report = report_to_send.get("status") == "no_changes" and not has_issues
         cfg = mailer.normalize_mail_config(getattr(self, "mail_config", {}))
         if not cfg.get("enabled"):
             return
@@ -1546,11 +1748,29 @@ class PDSGeneratorGUI(tk.Tk):
             )
             return
 
-        self.set_status("Wysyłanie raportu e-mail...")
+        if skip_report:
+            logger.info("Skipping report email: no PDF changes detected.")
+        self.set_status("Sprawdzanie przypomnienia o wygaśnięciu Secret Value...")
 
         def worker():
             try:
-                mailer.send_generation_report(cfg, report)
+                reminder_result = mailer.send_secret_expiry_reminder_if_due(cfg)
+                if reminder_result.get("sent"):
+                    logger.info(
+                        "Sent secret expiry reminder (threshold=%sd) to %s",
+                        reminder_result.get("threshold_days"),
+                        ", ".join(reminder_result.get("recipients") or []),
+                    )
+            except Exception:
+                logger.exception("Failed to send secret expiry reminder email")
+
+            if skip_report:
+                self.ui_call(self.set_status, "Brak zmian PDF (sprawdzono przypomnienie)")
+                return
+
+            self.ui_call(self.set_status, "Wysyłanie raportu e-mail...")
+            try:
+                mailer.send_generation_report(cfg, report_to_send)
             except Exception as exc:
                 logger.exception("Failed to send generation report email")
                 self.ui_call(

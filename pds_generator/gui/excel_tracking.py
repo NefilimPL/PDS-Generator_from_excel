@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import time
+from copy import copy
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -18,7 +19,20 @@ TRACKING_COLUMN = "__PDS_ROW_TRACKING__"
 _EXCEL_CELL_LIMIT = 32767
 _HASH_PREFIX = "sha256:"
 _CACHE_VERSION = 1
-_ZERO_FILL = PatternFill(fill_type="solid", start_color="FFFF0000", end_color="FFFF0000")
+_WARNING_FILL_RGB = "FFF8E1"
+_LEGACY_WARNING_FILL_RGB = "FF0000"
+_ERROR_FILL_RGB = "FFC7CE"
+_LEGACY_ERROR_FILL_RGB = "FFEBEE"
+_WARNING_FILL = PatternFill(
+    fill_type="solid",
+    start_color=f"FF{_WARNING_FILL_RGB}",
+    end_color=f"FF{_WARNING_FILL_RGB}",
+)
+_ERROR_FILL = PatternFill(
+    fill_type="solid",
+    start_color=f"FF{_ERROR_FILL_RGB}",
+    end_color=f"FF{_ERROR_FILL_RGB}",
+)
 _DEFAULT_FILL = PatternFill()
 
 
@@ -81,6 +95,77 @@ def _update_cell_protection(cell, locked):
             locked=locked, hidden=getattr(current, "hidden", False)
         )
     return True
+
+
+def _fill_rgb(fill):
+    if fill is None or getattr(fill, "fill_type", None) in (None, "none"):
+        return None
+    for color in (
+        getattr(fill, "fgColor", None),
+        getattr(fill, "start_color", None),
+        getattr(fill, "end_color", None),
+    ):
+        if color is None:
+            continue
+        rgb = getattr(color, "rgb", None)
+        if not rgb:
+            continue
+        text = str(rgb).strip().lstrip("#")
+        if len(text) == 8:
+            text = text[2:]
+        if len(text) != 6:
+            continue
+        try:
+            int(text, 16)
+        except ValueError:
+            continue
+        return text.upper()
+    return None
+
+
+def _is_tracking_warning_fill(fill):
+    rgb = _fill_rgb(fill)
+    if rgb is None:
+        return False
+    if rgb == _WARNING_FILL_RGB:
+        return True
+    if rgb == _LEGACY_WARNING_FILL_RGB:
+        # legacy red markers were used in older versions for data warnings
+        return True
+    return False
+
+
+def _is_tracking_error_fill(fill):
+    rgb = _fill_rgb(fill)
+    if rgb is None:
+        return False
+    if rgb in {_ERROR_FILL_RGB, _LEGACY_ERROR_FILL_RGB}:
+        return True
+    r = int(rgb[0:2], 16)
+    g = int(rgb[2:4], 16)
+    b = int(rgb[4:6], 16)
+    return r >= 170 and g <= 110 and b <= 110
+
+
+def _is_tracking_marker_fill(fill):
+    return _is_tracking_warning_fill(fill) or _is_tracking_error_fill(fill)
+
+
+def _clone_fill(fill):
+    try:
+        return copy(fill)
+    except Exception:
+        return PatternFill()
+
+
+def _column_reference_fill(ws, col_idx, check_rows):
+    start_row = 2
+    end_row = max(start_row, min((ws.max_row or start_row), check_rows + 1))
+    for row in range(start_row, end_row + 1):
+        fill = ws.cell(row=row, column=col_idx).fill
+        if not _is_tracking_marker_fill(fill):
+            return _clone_fill(fill)
+    return _clone_fill(_DEFAULT_FILL)
 
 
 def update_tracking_column(
@@ -151,6 +236,11 @@ def update_tracking_column(
         check_rows = max(row_count, existing_rows)
         if total_rows is not None:
             check_rows = min(check_rows, total_rows)
+        column_reference_fills = {
+            idx: _column_reference_fill(ws, idx, check_rows)
+            for idx in column_indices.values()
+            if idx
+        }
 
         empty_old = 0
         nonempty_new = 0
@@ -186,12 +276,14 @@ def update_tracking_column(
                                         row_idx + 2,
                                     )
                             if should_mark:
-                                if cell.fill != _ZERO_FILL:
-                                    cell.fill = _ZERO_FILL
+                                if not _is_tracking_error_fill(cell.fill):
+                                    cell.fill = _clone_fill(_ERROR_FILL)
                                     workbook_dirty = True
                             else:
-                                if cell.fill == _ZERO_FILL:
-                                    cell.fill = _DEFAULT_FILL
+                                if _is_tracking_marker_fill(cell.fill):
+                                    cell.fill = _clone_fill(
+                                        column_reference_fills.get(col_idx, _DEFAULT_FILL)
+                                    )
                                     workbook_dirty = True
                         continue
                     analysis = analyze_numeric_value(
@@ -202,8 +294,10 @@ def update_tracking_column(
                         col_idx = column_indices.get(col)
                         if col_idx:
                             cell = ws.cell(row=row_idx + 2, column=col_idx)
-                            if cell.fill == _ZERO_FILL:
-                                cell.fill = _DEFAULT_FILL
+                            if _is_tracking_warning_fill(cell.fill):
+                                cell.fill = _clone_fill(
+                                    column_reference_fills.get(col_idx, _DEFAULT_FILL)
+                                )
                                 workbook_dirty = True
                         continue
                     values.append(analysis["formatted_dot"])
@@ -215,12 +309,14 @@ def update_tracking_column(
                         cell.value = analysis["numeric"]
                         workbook_dirty = True
                     if analysis["should_mark"]:
-                        if cell.fill != _ZERO_FILL:
-                            cell.fill = _ZERO_FILL
+                        if not _is_tracking_warning_fill(cell.fill):
+                            cell.fill = _clone_fill(_WARNING_FILL)
                             workbook_dirty = True
                     else:
-                        if cell.fill == _ZERO_FILL:
-                            cell.fill = _DEFAULT_FILL
+                        if _is_tracking_warning_fill(cell.fill):
+                            cell.fill = _clone_fill(
+                                column_reference_fills.get(col_idx, _DEFAULT_FILL)
+                            )
                             workbook_dirty = True
             else:
                 values = ["" for _ in columns]
@@ -270,6 +366,58 @@ def update_tracking_column(
             logger.exception("Failed to save Excel tracking updates: %s", excel_path)
             raise
     return changed_rows
+
+
+def mark_execution_error_rows(excel_path, sheet_name, failed_rows, total_rows=None):
+    if not excel_path or not sheet_name:
+        return
+    try:
+        wb = load_workbook(excel_path)
+    except Exception:
+        logger.exception("Failed to open Excel file for execution error marking: %s", excel_path)
+        return
+    if sheet_name not in wb.sheetnames:
+        return
+
+    ws = wb[sheet_name]
+    max_col = ws.max_column or 1
+    target_col = None
+    for col_idx in range(1, max_col + 1):
+        header = ws.cell(row=1, column=col_idx).value
+        if header is None:
+            continue
+        if str(header) == TRACKING_COLUMN:
+            continue
+        target_col = col_idx
+        break
+    if target_col is None:
+        return
+
+    check_rows = max(0, int(total_rows or 0))
+    if check_rows <= 0:
+        check_rows = max(0, (ws.max_row or 1) - 1)
+    reference_fill = _column_reference_fill(ws, target_col, check_rows)
+    failed_set = {int(idx) for idx in (failed_rows or []) if isinstance(idx, int) and idx >= 0}
+    workbook_dirty = False
+
+    for row_idx in range(check_rows):
+        cell = ws.cell(row=row_idx + 2, column=target_col)
+        if row_idx in failed_set:
+            if not _is_tracking_error_fill(cell.fill):
+                cell.fill = _clone_fill(_ERROR_FILL)
+                workbook_dirty = True
+        else:
+            if _is_tracking_error_fill(cell.fill):
+                cell.fill = _clone_fill(reference_fill)
+                workbook_dirty = True
+
+    if not workbook_dirty:
+        return
+
+    try:
+        wb.save(excel_path)
+    except Exception:
+        logger.exception("Failed to save execution error markers to %s", excel_path)
 
 
 def _tracking_cache_paths(excel_path):

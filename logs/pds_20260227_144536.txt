@@ -1,0 +1,13 @@
+2026-02-27 14:45:38,438 | DEBUG | PIL.PngImagePlugin | STREAM b'IHDR' 16 13
+2026-02-27 14:45:38,439 | DEBUG | PIL.PngImagePlugin | STREAM b'pHYs' 41 9
+2026-02-27 14:45:38,440 | DEBUG | PIL.PngImagePlugin | STREAM b'sRGB' 62 1
+2026-02-27 14:45:38,440 | DEBUG | PIL.PngImagePlugin | STREAM b'gAMA' 75 4
+2026-02-27 14:45:38,440 | DEBUG | PIL.PngImagePlugin | STREAM b'IDAT' 91 6286
+2026-02-27 14:45:41,420 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): api.github.com:443
+2026-02-27 14:45:42,322 | DEBUG | urllib3.connectionpool | https://api.github.com:443 "GET /repos/NefilimPL/PDS-Generator_from_excel/commits/MAIN HTTP/1.1" 200 None
+2026-02-27 14:45:42,327 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): raw.githubusercontent.com:443
+2026-02-27 14:45:43,014 | DEBUG | urllib3.connectionpool | https://raw.githubusercontent.com:443 "GET /NefilimPL/PDS-Generator_from_excel/MAIN/VERSION HTTP/1.1" 200 27
+2026-02-27 14:45:53,629 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): login.microsoftonline.com:443
+2026-02-27 14:45:54,372 | DEBUG | urllib3.connectionpool | https://login.microsoftonline.com:443 "POST /2f91b825-8750-460f-baf9-6529335a23a8/oauth2/v2.0/token HTTP/1.1" 200 2052
+2026-02-27 14:45:54,375 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-27 14:45:54,954 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "GET /v1.0/applications(appId='37d6945f-177c-4f07-8394-0ef4fad39058')?%24select=appId%2CdisplayName%2CpasswordCredentials HTTP/1.1" 200 None

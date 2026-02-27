@@ -2,6 +2,7 @@ import datetime as dt
 import logging
 import os
 import sys
+import time
 import traceback
 import types
 import threading
@@ -10,10 +11,34 @@ from tkinter import messagebox
 
 from pds_generator.requirements_installer import install_missing_requirements
 
+LOG_RETENTION_DAYS = 7
+
+
+def _cleanup_old_logs(log_dir, days=LOG_RETENTION_DAYS):
+    cutoff = time.time() - max(1, int(days)) * 24 * 60 * 60
+    removed = 0
+    for name in os.listdir(log_dir):
+        if not name.lower().endswith(".txt"):
+            continue
+        path = os.path.join(log_dir, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            if os.path.getmtime(path) >= cutoff:
+                continue
+            os.remove(path)
+            removed += 1
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "Failed to remove old log file %s", path, exc_info=True
+            )
+    return removed
+
 
 def setup_logging():
     log_dir = os.path.join(os.path.dirname(__file__), "logs")
     os.makedirs(log_dir, exist_ok=True)
+    removed = _cleanup_old_logs(log_dir)
     log_path = os.path.join(
         log_dir, f"pds_{dt.datetime.now():%Y%m%d_%H%M%S}.txt"
     )
@@ -32,6 +57,8 @@ def setup_logging():
     stream_handler.setFormatter(formatter)
     root.addHandler(file_handler)
     root.addHandler(stream_handler)
+    if removed:
+        logging.info("Removed old log files: %s", removed)
     return log_path
 
 
@@ -78,6 +105,7 @@ if __name__ == "__main__":
     from pds_generator.gui import PDSGeneratorGUI
 
     app = PDSGeneratorGUI()
+    app.runtime_log_path = log_path
 
     def _tk_exception_handler(self, exc, val, tb):
         _handle_exception("Tkinter callback", exc, val, tb, log_path)
