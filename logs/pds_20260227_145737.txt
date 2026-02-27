@@ -1,0 +1,22 @@
+2026-02-27 14:57:39,938 | DEBUG | PIL.PngImagePlugin | STREAM b'IHDR' 16 13
+2026-02-27 14:57:39,938 | DEBUG | PIL.PngImagePlugin | STREAM b'pHYs' 41 9
+2026-02-27 14:57:39,938 | DEBUG | PIL.PngImagePlugin | STREAM b'sRGB' 62 1
+2026-02-27 14:57:39,938 | DEBUG | PIL.PngImagePlugin | STREAM b'gAMA' 75 4
+2026-02-27 14:57:39,938 | DEBUG | PIL.PngImagePlugin | STREAM b'IDAT' 91 6286
+2026-02-27 14:57:43,102 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): api.github.com:443
+2026-02-27 14:57:43,873 | DEBUG | urllib3.connectionpool | https://api.github.com:443 "GET /repos/NefilimPL/PDS-Generator_from_excel/commits/MAIN HTTP/1.1" 200 None
+2026-02-27 14:57:43,877 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): raw.githubusercontent.com:443
+2026-02-27 14:57:44,525 | DEBUG | urllib3.connectionpool | https://raw.githubusercontent.com:443 "GET /NefilimPL/PDS-Generator_from_excel/MAIN/VERSION HTTP/1.1" 200 27
+2026-02-27 14:57:50,685 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): login.microsoftonline.com:443
+2026-02-27 14:57:51,349 | DEBUG | urllib3.connectionpool | https://login.microsoftonline.com:443 "POST /2f91b825-8750-460f-baf9-6529335a23a8/oauth2/v2.0/token HTTP/1.1" 200 2057
+2026-02-27 14:57:51,358 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-27 14:57:51,993 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "GET /v1.0/applications(appId='37d6945f-177c-4f07-8394-0ef4fad39058')?%24select=appId%2CdisplayName%2CpasswordCredentials HTTP/1.1" 200 None
+2026-02-27 14:57:58,391 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): login.microsoftonline.com:443
+2026-02-27 14:57:59,095 | DEBUG | urllib3.connectionpool | https://login.microsoftonline.com:443 "POST /2f91b825-8750-460f-baf9-6529335a23a8/oauth2/v2.0/token HTTP/1.1" 200 2057
+2026-02-27 14:57:59,098 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-27 14:57:59,787 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "POST /v1.0/users/k.bober@vivaldimeble.pl/sendMail HTTP/1.1" 202 0
+2026-02-27 14:57:59,789 | INFO | pds_generator.gui.mailer | Test email sent to k.bober@wipmeb.pl
+2026-02-27 14:58:08,832 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): login.microsoftonline.com:443
+2026-02-27 14:58:09,537 | DEBUG | urllib3.connectionpool | https://login.microsoftonline.com:443 "POST /2f91b825-8750-460f-baf9-6529335a23a8/oauth2/v2.0/token HTTP/1.1" 200 2053
+2026-02-27 14:58:09,547 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-27 14:58:10,146 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "POST /v1.0/users/k.bober@vivaldimeble.pl/sendMail HTTP/1.1" 400 None
