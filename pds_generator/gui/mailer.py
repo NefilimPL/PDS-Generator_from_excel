@@ -1052,6 +1052,21 @@ def _decode_jwt_exp(token):
     return exp if exp > 0 else None
 
 
+def get_token_expiry_details(token, now_utc=None):
+    """Return decoded token expiry metadata or None when exp is unavailable."""
+    exp = _decode_jwt_exp(token)
+    if not exp:
+        return None
+    expires_at_utc = dt.datetime.fromtimestamp(exp, tz=dt.timezone.utc)
+    now = now_utc or dt.datetime.now(dt.timezone.utc)
+    remaining_seconds = int((expires_at_utc - now).total_seconds())
+    return {
+        "expires_at_utc": expires_at_utc,
+        "remaining_seconds": remaining_seconds,
+        "remaining_days": remaining_seconds / 86400.0,
+    }
+
+
 def _is_token_expired(token, skew_seconds=90):
     exp = _decode_jwt_exp(token)
     if not exp:

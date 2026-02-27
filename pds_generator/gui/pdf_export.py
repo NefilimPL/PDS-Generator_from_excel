@@ -460,6 +460,24 @@ def _notify_generation_complete(app, report):
         _ui_call(app, app.on_generation_complete, report)
 
 
+def _cache_image_index_for_app(app, roots, index_data):
+    if not index_data:
+        return
+    roots_key = tuple(roots or [])
+    lock = getattr(app, "image_index_lock", None)
+    if lock is not None:
+        with lock:
+            if hasattr(app, "image_index_data"):
+                app.image_index_data = index_data
+            if hasattr(app, "image_index_roots"):
+                app.image_index_roots = roots_key
+        return
+    if hasattr(app, "image_index_data"):
+        app.image_index_data = index_data
+    if hasattr(app, "image_index_roots"):
+        app.image_index_roots = roots_key
+
+
 def _is_cancelled(app):
     cancel_event = getattr(app, "cancel_event", None)
     return cancel_event is not None and cancel_event.is_set()
@@ -1313,7 +1331,9 @@ def generate_pds(app):
                     eta_text = ""
                     if eta_seconds is not None:
                         eta_text = f", ETA ~{max(0, int(eta_seconds))}s"
-                    if total_estimate:
+                    if phase == "cached":
+                        status = f"Aktualizacja indeksu obrazów: użyto cache ({processed} plików)"
+                    elif total_estimate:
                         status = (
                             "Aktualizacja indeksu obrazów: "
                             f"{processed}/{int(total_estimate)} plików{eta_text}"
@@ -1322,7 +1342,7 @@ def generate_pds(app):
                         status = f"Aktualizacja indeksu obrazów: {processed} plików{eta_text}"
                     _ui_status(app, status)
 
-                image_index_utils.ensure_index(
+                index_data = image_index_utils.ensure_index(
                     roots,
                     index_path=payload.get("image_index_path") or None,
                     max_age_hours=24,
@@ -1330,6 +1350,7 @@ def generate_pds(app):
                     progress_callback=index_progress,
                     progress_interval_seconds=1.0,
                 )
+                _cache_image_index_for_app(app, roots, index_data)
             except Exception:
                 logger.exception("Failed to build/load image index for generation")
             _ui_status(app, "Sprawdzanie danych i generowanie PDF...")

@@ -1395,11 +1395,34 @@ class PDSGeneratorGUI(tk.Tk):
                     remembered_cfg = collect(strict=False, require_recipients=False)
                     if remembered_cfg:
                         self.mail_config = remembered_cfg
-                    self.set_status("Pobrano token Entra")
-                    messagebox.showinfo(
-                        "E-mail",
+                    token_expiry = mailer.get_token_expiry_details(token)
+                    info_lines = [
                         "Pobrano token Entra API i wstawiono do pola Token Bearer.",
-                    )
+                    ]
+                    if token_expiry:
+                        expires_at_local = (
+                            token_expiry["expires_at_utc"].astimezone().strftime(
+                                "%Y-%m-%d %H:%M:%S %Z"
+                            )
+                        )
+                        remaining_days = max(0.0, token_expiry["remaining_days"])
+                        info_lines.extend(
+                            [
+                                "",
+                                f"Data wygaśnięcia tokenu: {expires_at_local}",
+                                f"Pozostało dni: {remaining_days:.2f}",
+                            ]
+                        )
+                        self.set_status("Pobrano token Entra (z datą wygaśnięcia)")
+                    else:
+                        info_lines.extend(
+                            [
+                                "",
+                                "Nie udało się odczytać daty wygaśnięcia tokenu.",
+                            ]
+                        )
+                        self.set_status("Pobrano token Entra")
+                    messagebox.showinfo("E-mail", "\n".join(info_lines))
 
                 self.ui_call(on_success)
 

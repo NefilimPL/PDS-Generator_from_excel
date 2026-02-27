@@ -158,45 +158,19 @@ class HeadlessApp:
         )
         if roots:
             try:
-                progress_state = {"last": 0.0}
-
-                def on_index_progress(progress):
-                    now = time.time()
-                    phase = str(progress.get("phase") or "")
-                    if phase != "done" and now - progress_state["last"] < 5.0:
-                        return
-                    progress_state["last"] = now
-                    processed = int(progress.get("processed", 0) or 0)
-                    total_estimate = progress.get("total_estimate")
-                    eta_seconds = progress.get("eta_seconds")
-                    eta_text = (
-                        f", ETA ~{max(0, int(eta_seconds))}s"
-                        if eta_seconds is not None
-                        else ""
+                self.image_index_data = image_index_utils.load_index_for_roots(roots)
+                if self.image_index_data:
+                    cached_count = int(self.image_index_data.get("file_count", 0) or 0)
+                    logging.info(
+                        "Indeks obrazów (headless, cache): %s plików",
+                        cached_count,
                     )
-                    if total_estimate:
-                        logging.info(
-                            "Indeks obrazów (headless): %s/%s plików%s",
-                            processed,
-                            int(total_estimate),
-                            eta_text,
-                        )
-                    else:
-                        logging.info(
-                            "Indeks obrazów (headless): %s plików%s",
-                            processed,
-                            eta_text,
-                        )
-
-                self.image_index_data = image_index_utils.ensure_index(
-                    roots,
-                    max_age_hours=24,
-                    force_rebuild=False,
-                    progress_callback=on_index_progress,
-                    progress_interval_seconds=1.0,
-                )
+                else:
+                    logging.info(
+                        "Indeks obrazów (headless): brak zgodnego cache, odświeżenie nastąpi przy generowaniu."
+                    )
             except Exception:
-                logging.exception("Failed to load/build image index in headless mode")
+                logging.exception("Failed to load image index cache in headless mode")
 
     def after(self, _delay_ms, func):
         func()
