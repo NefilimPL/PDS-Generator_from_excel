@@ -464,6 +464,7 @@ def describe_secret_key_state(config):
     key_id = _normalize_secret_key_id(cfg.get("secret_key_id", ""))
     key_path = _resolve_secret_key_path(cfg)
     key_exists = bool(key_path and os.path.isfile(key_path))
+    key_valid = bool(key_exists and _load_fernet_from_key_file(key_path))
     expected_scope = _secret_scope_fingerprint(cfg)
     actual_scope = _extract_scope_fingerprint_from_key_id(key_id)
     scope_mismatch = bool(
@@ -487,6 +488,9 @@ def describe_secret_key_state(config):
     elif not key_exists:
         level = "warning"
         message = "Plik certyfikatu nie istnieje na tym komputerze."
+    elif not key_valid:
+        level = "warning"
+        message = "Plik certyfikatu ma nieprawidłowy format."
     else:
         level = "ok"
         message = "Certyfikat jest gotowy do użycia."
@@ -497,6 +501,7 @@ def describe_secret_key_state(config):
         "key_id": key_id,
         "key_path": key_path,
         "key_exists": key_exists,
+        "key_valid": key_valid,
         "scope_mismatch": scope_mismatch,
         "expected_scope": expected_scope,
         "actual_scope": actual_scope,

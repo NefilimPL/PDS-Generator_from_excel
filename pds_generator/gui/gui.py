@@ -1214,20 +1214,53 @@ class PDSGeneratorGUI(tk.Tk):
             fetch_token_btn,
         ]
 
-        def apply_sensitive_visibility(*_args):
-            mask = "" if show_sensitive_var.get() else "*"
-            password_entry.configure(show=mask)
-            token_entry.configure(show=mask)
-            entra_client_secret_entry.configure(show=mask)
+        sensitive_toggle_guard = {"active": False}
 
-        def refresh_secret_key_status(*_args):
-            key_state = mailer.describe_secret_key_state(
+        def current_secret_key_state():
+            return mailer.describe_secret_key_state(
                 {
                     "secret_key_id": secret_key_id_var.get(),
                     "entra_tenant_id": entra_tenant_var.get(),
                     "entra_client_id": entra_client_var.get(),
                 }
             )
+
+        def show_sensitive_blocked_message(key_state):
+            key_path = key_state.get("key_path", "")
+            location_msg = (
+                f"Brak odpowiedniego klucza .key w danej lokalizacji:\n{key_path}"
+                if key_path
+                else "Brak odpowiedniego klucza .key w wymaganej lokalizacji."
+            )
+            reason = key_state.get(
+                "message", "Klucz nie jest poprawny lub niezgodny z konfiguracją."
+            )
+            messagebox.showwarning(
+                "Brak klucza",
+                "Nie można włączyć podglądu danych tokenu.\n"
+                f"{location_msg}\n\n"
+                f"Powód: {reason}",
+            )
+
+        def apply_sensitive_visibility(*_args):
+            reveal_sensitive = bool(show_sensitive_var.get())
+            if reveal_sensitive and not sensitive_toggle_guard["active"]:
+                key_state = current_secret_key_state()
+                if key_state.get("level") != "ok":
+                    sensitive_toggle_guard["active"] = True
+                    try:
+                        show_sensitive_var.set(False)
+                    finally:
+                        sensitive_toggle_guard["active"] = False
+                    reveal_sensitive = False
+                    show_sensitive_blocked_message(key_state)
+            mask = "" if reveal_sensitive else "*"
+            password_entry.configure(show=mask)
+            token_entry.configure(show=mask)
+            entra_client_secret_entry.configure(show=mask)
+
+        def refresh_secret_key_status(*_args):
+            key_state = current_secret_key_state()
             lines = [key_state.get("message", "")]
             created_at = key_state.get("created_at", "")
             created_by = key_state.get("created_by", "")
@@ -1250,6 +1283,8 @@ class PDSGeneratorGUI(tk.Tk):
             else:
                 color = "#4a4a4a"
             secret_key_status_label.configure(foreground=color)
+            if key_state.get("level") != "ok" and show_sensitive_var.get():
+                show_sensitive_var.set(False)
 
         def set_controls_state(controls, enabled_state):
             for control in controls:
@@ -1439,11 +1474,8 @@ class PDSGeneratorGUI(tk.Tk):
             if not new_cfg:
                 return
             self.mail_config = new_cfg
-            messagebox.showinfo(
-                "E-mail",
-                "Zapisano ustawienia e-mail. "
-                "Użyj 'Zapisz konfigurację', aby zapisać je do pliku config.json.",
-            )
+            # Persist mail settings immediately (same path/mechanism as main Save Config).
+            self.save_config()
 
         def test_connection():
             test_cfg = collect(strict=True, require_recipients=False)
