@@ -18,6 +18,14 @@ _RANGE_RE = re.compile(
     r"(?:(?P<sheet>'[^']+'|[A-Za-z0-9_ ]+)!)?(?P<start>\$?[A-Za-z]{1,3}\$?\d+):(?P<end>\$?[A-Za-z]{1,3}\$?\d+)"
 )
 _EVAL_FAILED = object()
+_FORMULA_FUNCTION_ALIASES = {
+    "JEŻELI": "IF",
+    "JEZELI": "IF",
+}
+_CELL_NOT_EMPTY_RE = re.compile(r'CELL\((\d+)\)\s*!=\s*""')
+_CELL_EMPTY_RE = re.compile(r'CELL\((\d+)\)\s*==\s*""')
+_CELL_NOT_EMPTY_RE_REVERSED = re.compile(r'""\s*!=\s*CELL\((\d+)\)')
+_CELL_EMPTY_RE_REVERSED = re.compile(r'""\s*==\s*CELL\((\d+)\)')
 
 
 def read_excel_data(path):
@@ -153,6 +161,8 @@ def _is_empty(value):
             return True
     except Exception:
         pass
+    if isinstance(value, str) and value.strip() == "":
+        return True
     return value == "" or value is None
 
 
@@ -249,6 +259,8 @@ def _eval_formula(
     expr = re.sub(r"<>", "!=", expr)
     expr = re.sub(r"(?<![<>=!])=(?!=)", "==", expr)
     expr = re.sub(r"(\d+(?:\.\d+)?)%", r"(\1/100)", expr)
+    for src, target in _FORMULA_FUNCTION_ALIASES.items():
+        expr = re.sub(rf"\b{re.escape(src)}\b", target, expr, flags=re.IGNORECASE)
     for name in ("SUM", "MIN", "MAX", "ABS", "ROUND", "IF", "AND", "OR", "NOT"):
         expr = re.sub(rf"\b{name}\b", name, expr, flags=re.IGNORECASE)
     expr = re.sub(r"\bTRUE\b", "True", expr, flags=re.IGNORECASE)
@@ -277,34 +289,32 @@ def _eval_formula(
 
     expr = _CELL_RE.sub(repl_cell, expr)
 
-    def cell_value(target_sheet, cell_ref):
+    def cell_value_raw(target_sheet, cell_ref):
         t_sheet = target_sheet or sheet_name
         info = _parse_cell_ref(cell_ref)
         if not info:
-            return 0
+            return ""
         t_col_idx, t_row = info
         df = dataframes.get(t_sheet)
         if df is None:
-            return 0
+            return ""
         if t_row <= 1:
-            return 0
+            return ""
         df_idx = t_row - 2
         if df_idx < 0 or df_idx >= len(df):
-            return 0
+            return ""
         col_map = col_index_maps.get(t_sheet, {})
         col_name = col_map.get(t_col_idx)
         if col_name is None:
-            return 0
+            return ""
         if str(col_name) == TRACKING_COLUMN:
-            return 0
+            return ""
         f_map = formula_maps.get(t_sheet, {})
         key = (t_row, t_col_idx)
         if key not in f_map:
-            current = df.at[df_idx, col_name]
-            return _coerce_value(current)
+            return df.at[df_idx, col_name]
         if key in visiting:
-            current = df.at[df_idx, col_name]
-            return _coerce_value(current)
+            return df.at[df_idx, col_name]
         visiting.add(key)
         try:
             computed = _eval_formula(
@@ -321,9 +331,11 @@ def _eval_formula(
         finally:
             visiting.discard(key)
         if computed is _EVAL_FAILED:
-            current = df.at[df_idx, col_name]
-            return _coerce_value(current)
-        return _coerce_value(computed)
+            return df.at[df_idx, col_name]
+        return computed
+
+    def cell_value(target_sheet, cell_ref):
+        return _coerce_value(cell_value_raw(target_sheet, cell_ref))
 
     def range_values(target_sheet, start_ref, end_ref):
         t_sheet = target_sheet or sheet_name
@@ -369,16 +381,29 @@ def _eval_formula(
     for idx, (sheet, cell) in enumerate(cells):
         expr = expr.replace(f"__C{idx}__", f"CELL({idx})")
         env[f"CELL_{idx}"] = (sheet, cell)
+    expr = _CELL_NOT_EMPTY_RE.sub(r"NOT_EMPTY_CELL(\1)", expr)
+    expr = _CELL_EMPTY_RE.sub(r"EMPTY_CELL(\1)", expr)
+    expr = _CELL_NOT_EMPTY_RE_REVERSED.sub(r"NOT_EMPTY_CELL(\1)", expr)
+    expr = _CELL_EMPTY_RE_REVERSED.sub(r"EMPTY_CELL(\1)", expr)
 
     def CELL(idx):
         sheet, cell = env.get(f"CELL_{idx}", (None, None))
         return cell_value(sheet, cell)
+
+    def EMPTY_CELL(idx):
+        sheet, cell = env.get(f"CELL_{idx}", (None, None))
+        return _is_empty(cell_value_raw(sheet, cell))
+
+    def NOT_EMPTY_CELL(idx):
+        return not EMPTY_CELL(idx)
 
     def RANGE(idx):
         sheet, start, end = env.get(f"RANGE_{idx}", (None, None, None))
         return range_values(sheet, start, end)
 
     env["CELL"] = CELL
+    env["EMPTY_CELL"] = EMPTY_CELL
+    env["NOT_EMPTY_CELL"] = NOT_EMPTY_CELL
     env["RANGE"] = RANGE
 
     try:
@@ -448,6 +473,11 @@ def _fill_formula_values(path, dataframes):
                 continue
             col_name = col_index_maps.get(sheet_name, {}).get(col_idx)
             if col_name is None or str(col_name) == TRACKING_COLUMN:
+                continue
+            # Prefer cached Excel result (data_only) regardless of formula type.
+            # Fallback evaluator is only used when the cached result is empty.
+            current_value = df.at[df_idx, col_name]
+            if not _is_empty(current_value):
                 continue
             visiting = set()
             visiting.add((row_idx, col_idx))

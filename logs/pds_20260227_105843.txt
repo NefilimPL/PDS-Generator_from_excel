@@ -1,0 +1,29 @@
+2026-02-27 10:58:46,143 | DEBUG | PIL.PngImagePlugin | STREAM b'IHDR' 16 13
+2026-02-27 10:58:46,144 | DEBUG | PIL.PngImagePlugin | STREAM b'pHYs' 41 9
+2026-02-27 10:58:46,144 | DEBUG | PIL.PngImagePlugin | STREAM b'sRGB' 62 1
+2026-02-27 10:58:46,144 | DEBUG | PIL.PngImagePlugin | STREAM b'gAMA' 75 4
+2026-02-27 10:58:46,144 | DEBUG | PIL.PngImagePlugin | STREAM b'IDAT' 91 6286
+2026-02-27 10:58:49,057 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): api.github.com:443
+2026-02-27 10:58:49,922 | DEBUG | urllib3.connectionpool | https://api.github.com:443 "GET /repos/NefilimPL/PDS-Generator_from_excel/commits/MAIN HTTP/1.1" 200 None
+2026-02-27 10:58:58,065 | INFO | pds_generator.gui.excel_tracking | Tracking cache changed columns (sample): PDS_DANE:VOLUME 4, PDS_DANE:VOLUME 5, PDS_DANE:VOLUME 6, PDS_DANE:WIDTH 3
+2026-02-27 10:58:58,298 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-27 10:58:58,862 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "HEAD /img/5904804578428_08.jpg HTTP/1.1" 200 0
+2026-02-27 10:58:58,865 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-27 10:58:59,361 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "HEAD /img/5904804578428_15.jpg HTTP/1.1" 200 0
+2026-02-27 10:58:59,364 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-27 10:58:59,872 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "HEAD /img/5904804578428_03.jpg HTTP/1.1" 200 0
+2026-02-27 10:59:00,670 | INFO | pds_generator.gui.pdf_export | Tracking mode=excel; tracked_columns=57; cache_rows=9; excel_rows=9; changed_rows=9/9
+2026-02-27 10:59:00,670 | INFO | pds_generator.gui.pdf_export | Most rows changed; changed columns (sample): PDS_DANE:VOLUME 4, PDS_DANE:VOLUME 5, PDS_DANE:VOLUME 6, PDS_DANE:WIDTH 3
+2026-02-27 10:59:04,785 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-27 10:59:05,270 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "HEAD /img/5904804578428_03.jpg HTTP/1.1" 200 0
+2026-02-27 10:59:05,279 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-27 10:59:05,790 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "HEAD /img/5904804578428_15.jpg HTTP/1.1" 200 0
+2026-02-27 10:59:05,793 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-27 10:59:06,273 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "HEAD /img/5904804578428_08.jpg HTTP/1.1" 200 0
+2026-02-27 10:59:06,290 | WARNING | pds_generator.gui.pdf_export | Detected data quality warnings: 1 (sample: Pominięto 1 plik PDF z powodu brakujących obrazów (utworzenie: 1, aktualizacja: 0, wiersze: 2).)
+2026-02-27 10:59:06,290 | WARNING | pds_generator.gui.pdf_export | Data warning: Pominięto 1 plik PDF z powodu brakujących obrazów (utworzenie: 1, aktualizacja: 0, wiersze: 2).
+2026-02-27 10:59:27,343 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): login.microsoftonline.com:443
+2026-02-27 10:59:28,110 | DEBUG | urllib3.connectionpool | https://login.microsoftonline.com:443 "POST /2f91b825-8750-460f-baf9-6529335a23a8/oauth2/v2.0/token HTTP/1.1" 200 2053
+2026-02-27 10:59:28,114 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-27 10:59:28,852 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "POST /v1.0/users/k.bober@vivaldimeble.pl/sendMail HTTP/1.1" 202 0
+2026-02-27 10:59:28,854 | INFO | pds_generator.gui.mailer | Generation report email sent to k.bober@wipmeb.pl
