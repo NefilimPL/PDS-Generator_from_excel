@@ -24,6 +24,8 @@ if os.name == "nt":
     import ctypes
     from ctypes import wintypes
 
+from .. import app_paths
+
 logger = logging.getLogger(__name__)
 
 TRANSPORT_SMTP = "smtp"
@@ -78,7 +80,6 @@ _DPAPI_UI_FORBIDDEN = 0x01
 _SHARED_PREFIX = "fernet:"
 _SHARED_SECRET_ENV = "PDS_SHARED_SECRET_KEY"
 _SECRET_KEY_FILE_ENV = "PDS_SECRET_KEY_FILE"
-_SECRET_KEY_DIR_NAME = "secrets"
 _SHARED_CRYPTO_WARNED = False
 _SECRET_KEY_ID_MAX_LEN = 96
 _SECRET_KEY_ID_RE = re.compile(
@@ -248,13 +249,7 @@ def _blob_to_bytes(blob):
 
 
 def _secret_store_dir():
-    if os.name == "nt":
-        appdata = (
-            str(os.getenv("APPDATA", "") or "").strip()
-            or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
-        )
-        return os.path.join(appdata, "PDS Generator", _SECRET_KEY_DIR_NAME)
-    return os.path.join(os.path.expanduser("~"), ".pds_generator", _SECRET_KEY_DIR_NAME)
+    return app_paths.get_secret_store_dir()
 
 
 def get_secret_store_dir():

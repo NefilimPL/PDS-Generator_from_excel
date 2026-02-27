@@ -8,11 +8,17 @@ import os
 import sys
 import time
 
-from pds_generator import image_index as image_index_utils
+from pds_generator import app_paths, image_index as image_index_utils
 
 
 def _default_config_path() -> str:
-    return os.path.join(os.path.expanduser("~"), ".pds_generator", "config.json")
+    default_path = app_paths.get_backup_config_path()
+    legacy_path = app_paths.get_legacy_backup_config_path()
+    if os.path.exists(default_path):
+        return default_path
+    if legacy_path != default_path and os.path.exists(legacy_path):
+        return legacy_path
+    return default_path
 
 
 def _load_config(path: str) -> dict:
@@ -55,7 +61,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--config",
-        help="Optional path to config.json (default: ~/.pds_generator/config.json).",
+        help=f"Optional path to config.json (default: {app_paths.get_backup_config_path()}).",
     )
     args = parser.parse_args()
 

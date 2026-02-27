@@ -1,0 +1,13 @@
+2026-02-27 10:35:59,304 | DEBUG | PIL.PngImagePlugin | STREAM b'IHDR' 16 13
+2026-02-27 10:35:59,305 | DEBUG | PIL.PngImagePlugin | STREAM b'pHYs' 41 9
+2026-02-27 10:35:59,305 | DEBUG | PIL.PngImagePlugin | STREAM b'sRGB' 62 1
+2026-02-27 10:35:59,305 | DEBUG | PIL.PngImagePlugin | STREAM b'gAMA' 75 4
+2026-02-27 10:35:59,305 | DEBUG | PIL.PngImagePlugin | STREAM b'IDAT' 91 6286
+2026-02-27 10:36:02,318 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): api.github.com:443
+2026-02-27 10:36:03,130 | DEBUG | urllib3.connectionpool | https://api.github.com:443 "GET /repos/NefilimPL/PDS-Generator_from_excel/commits/MAIN HTTP/1.1" 200 None
+2026-02-27 10:36:15,601 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-27 10:36:15,604 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-27 10:36:15,607 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-27 10:36:16,412 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "GET /img/5904804578428_15.jpg HTTP/1.1" 200 167213
+2026-02-27 10:36:16,420 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "GET /img/5904804578428_08.jpg HTTP/1.1" 200 1930660
+2026-02-27 10:36:16,465 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "GET /img/5904804578428_03.jpg HTTP/1.1" 200 513057

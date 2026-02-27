@@ -1,0 +1,65 @@
+2026-02-27 10:25:44,436 | INFO | root | Headless run started. Log: C:\_GitHub_\PDS-Generator_from_excel\logs\pds_headless_20260227_102544.txt
+2026-02-27 10:25:44,437 | INFO | root | Config: C:\Users\k.bober\AppData\Roaming\PDS Generator\config.json
+2026-02-27 10:25:44,439 | INFO | root | Excel: G:/04_OFERTA/07 OFERTA EAN/PDS Generator/LISTA_DANYCH_PDS.xlsx
+2026-02-27 10:25:45,230 | INFO | root | Indeks obrazów (headless): 40019/40019 plików
+2026-02-27 10:25:45,230 | INFO | root | Counts: rows=9 tasks=None processed=None skipped=None
+2026-02-27 10:25:45,761 | INFO | pds_generator.gui.pdf_export | Tracking mode=excel; tracked_columns=57; cache_rows=0; excel_rows=0; changed_rows=0/9
+2026-02-27 10:25:45,783 | INFO | root | Counts: rows=9 tasks=9 processed=0 skipped=0
+2026-02-27 10:25:45,783 | DEBUG | root | Progress indeterminate: False
+2026-02-27 10:25:45,784 | INFO | root | Status: Sprawdzanie danych i generowanie PDF...
+2026-02-27 10:25:45,784 | INFO | root | Generation started. Waiting for completion...
+2026-02-27 10:25:45,785 | INFO | root | Status: Aktualizacja indeksu obrazów...
+2026-02-27 10:25:46,088 | INFO | root | Status: Aktualizacja indeksu obrazów: 40019/40019 plików
+2026-02-27 10:25:46,099 | INFO | root | Status: Sprawdzanie danych i generowanie PDF...
+2026-02-27 10:25:50,036 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-27 10:25:50,564 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "HEAD /img/5904804578428_03.jpg HTTP/1.1" 200 0
+2026-02-27 10:25:50,569 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-27 10:25:51,104 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "HEAD /img/5904804578428_08.jpg HTTP/1.1" 200 0
+2026-02-27 10:25:51,107 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): xml.wipmebgroup.pl:443
+2026-02-27 10:25:51,605 | DEBUG | urllib3.connectionpool | https://xml.wipmebgroup.pl:443 "HEAD /img/5904804578428_15.jpg HTTP/1.1" 200 0
+2026-02-27 10:25:51,663 | INFO | root | Counts: rows=None tasks=8 processed=0 skipped=1
+2026-02-27 10:25:51,663 | WARNING | pds_generator.gui.pdf_export | Detected data quality warnings: 25 (sample: Wiersz 2: PDS_DANE:VOLUME 4 ma wartość 0 (<= 0) i jest oznaczone na czerwono., Wiersz 2: PDS_DANE:VOLUME 5 ma wartość 0 (<= 0) i jest oznaczone na czerwono., Wiersz 2: PDS_DANE:VOLUME 6 ma wartość 0 (<= 0) i jest oznaczone na czerwono.)
+2026-02-27 10:25:51,664 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 2: PDS_DANE:VOLUME 4 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,664 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 2: PDS_DANE:VOLUME 5 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,664 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 2: PDS_DANE:VOLUME 6 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,665 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 3: PDS_DANE:VOLUME 4 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,665 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 3: PDS_DANE:VOLUME 5 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,665 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 3: PDS_DANE:VOLUME 6 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,665 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 4: PDS_DANE:VOLUME 4 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,667 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 4: PDS_DANE:VOLUME 5 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,667 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 4: PDS_DANE:VOLUME 6 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,668 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 5: PDS_DANE:VOLUME 4 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,669 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 5: PDS_DANE:VOLUME 5 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,669 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 5: PDS_DANE:VOLUME 6 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,669 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 6: PDS_DANE:VOLUME 4 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,670 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 6: PDS_DANE:VOLUME 5 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,670 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 6: PDS_DANE:VOLUME 6 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,671 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 7: PDS_DANE:VOLUME 4 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,671 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 7: PDS_DANE:VOLUME 5 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,672 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 7: PDS_DANE:VOLUME 6 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,672 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 8: PDS_DANE:VOLUME 4 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,673 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 8: PDS_DANE:VOLUME 5 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,673 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 8: PDS_DANE:VOLUME 6 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,673 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 9: PDS_DANE:VOLUME 4 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,674 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 9: PDS_DANE:VOLUME 5 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,674 | WARNING | pds_generator.gui.pdf_export | Data warning: Wiersz 9: PDS_DANE:VOLUME 6 ma wartość 0 (<= 0) i jest oznaczone na czerwono.
+2026-02-27 10:25:51,675 | WARNING | pds_generator.gui.pdf_export | Data warning: Pominięto 1 plik PDF z powodu brakujących obrazów (utworzenie: 1, aktualizacja: 0, wiersze: 2).
+2026-02-27 10:26:03,992 | INFO | root | Counts: rows=None tasks=8 processed=1 skipped=None
+2026-02-27 10:26:04,081 | INFO | root | Counts: rows=None tasks=8 processed=2 skipped=None
+2026-02-27 10:26:06,204 | INFO | root | Counts: rows=None tasks=8 processed=3 skipped=None
+2026-02-27 10:26:08,441 | INFO | root | Counts: rows=None tasks=8 processed=4 skipped=None
+2026-02-27 10:26:08,443 | INFO | root | Counts: rows=None tasks=8 processed=5 skipped=None
+2026-02-27 10:26:09,866 | INFO | root | Counts: rows=None tasks=8 processed=6 skipped=None
+2026-02-27 10:26:10,366 | INFO | root | Counts: rows=None tasks=8 processed=7 skipped=None
+2026-02-27 10:26:11,055 | INFO | root | Counts: rows=None tasks=8 processed=8 skipped=None
+2026-02-27 10:26:11,383 | INFO | root | Finished: Zakończono
+2026-02-27 10:26:11,383 | INFO | root | INFO: Zakończono - Pliki zapisane w G:/04_OFERTA/07 OFERTA EAN/PDS Generator\PDS
+2026-02-27 10:26:11,385 | WARNING | root | WARNING: Uwaga - Wykryto ostrzeżenia jakości danych: 25. Szczegóły są dostępne w raporcie e-mail i logach.
+2026-02-27 10:26:11,386 | INFO | root | Generation completion callback reached. Mail enabled=True status=success
+2026-02-27 10:26:11,388 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): login.microsoftonline.com:443
+2026-02-27 10:26:12,121 | DEBUG | urllib3.connectionpool | https://login.microsoftonline.com:443 "POST /2f91b825-8750-460f-baf9-6529335a23a8/oauth2/v2.0/token HTTP/1.1" 200 2060
+2026-02-27 10:26:12,129 | DEBUG | urllib3.connectionpool | Starting new HTTPS connection (1): graph.microsoft.com:443
+2026-02-27 10:26:12,882 | DEBUG | urllib3.connectionpool | https://graph.microsoft.com:443 "POST /v1.0/users/k.bober@vivaldimeble.pl/sendMail HTTP/1.1" 202 0
+2026-02-27 10:26:12,886 | INFO | pds_generator.gui.mailer | Generation report email sent to k.bober@wipmeb.pl
+2026-02-27 10:26:12,887 | INFO | root | Mail report sent.
+2026-02-27 10:26:12,893 | INFO | root | Finished without errors.
