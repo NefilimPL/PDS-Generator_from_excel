@@ -51,6 +51,30 @@ def smtp_config():
 
 
 class MailerExceptionEmailTests(unittest.TestCase):
+    def test_runtime_footer_is_appended_to_text_and_html(self):
+        with mock.patch.object(
+            mailer,
+            "_get_runtime_mail_context",
+            return_value={
+                "pc_name": "PDS-PC-01",
+                "ip_addresses": ["192.168.10.25"],
+                "launch_source": r"C:\PDS\launcher.exe",
+            },
+        ):
+            body, html = mailer._append_runtime_mail_footer(
+                "Treść testowa",
+                "<html><body><p>Treść testowa</p></body></html>",
+            )
+
+        self.assertIn("Informacje o urządzeniu", body)
+        self.assertIn("Nazwa PC: PDS-PC-01", body)
+        self.assertIn("IP: 192.168.10.25", body)
+        self.assertIn(r"Plik uruchamiający: C:\PDS\launcher.exe", body)
+        self.assertIn("Informacje o urządzeniu", html)
+        self.assertIn("PDS-PC-01", html)
+        self.assertIn("192.168.10.25", html)
+        self.assertIn("launcher.exe", html)
+
     def test_generation_report_attaches_log_for_critical_error(self):
         report = {
             "status": "error",

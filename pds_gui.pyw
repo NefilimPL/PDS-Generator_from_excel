@@ -136,6 +136,7 @@ def _install_exception_hooks(log_path, get_app=None):
 
 
 if __name__ == "__main__":
+    os.environ.setdefault("PDS_LAUNCH_SOURCE", os.path.abspath(sys.argv[0]))
     log_path = setup_logging()
     app_ref = {"app": None}
     _install_exception_hooks(log_path, get_app=lambda: app_ref["app"])

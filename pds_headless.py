@@ -537,6 +537,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    os.environ.setdefault("PDS_LAUNCH_SOURCE", os.path.abspath(sys.argv[0]))
     args = parse_args(argv)
     pdf_export.messagebox = _HeadlessMessageBox
     log_dir = Path(args.log_dir).resolve()

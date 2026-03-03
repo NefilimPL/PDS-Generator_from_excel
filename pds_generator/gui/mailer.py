@@ -8,8 +8,10 @@ import logging
 import mimetypes
 import os
 import re
+import socket
 import smtplib
 import ssl
+import sys
 import traceback
 from urllib.parse import quote
 from contextlib import suppress
@@ -90,6 +92,7 @@ _SECRET_KEY_ID_RE = re.compile(
 _SECRET_EXPIRY_REMINDER_THRESHOLDS_DAYS = (30, 14, 7, 2, 1)
 _SECRET_EXPIRY_STATE_FILENAME = "secret_expiry_reminders.json"
 _SECRET_EXPIRY_TEST_SIM_DAYS = 7
+_RUNTIME_MAIL_CONTEXT_CACHE = None
 
 if os.name == "nt":
     class _DATA_BLOB(ctypes.Structure):
@@ -133,6 +136,149 @@ _STATUS_LABELS = {
 }
 _ROW_WARNING_RE = re.compile(r"^Wiersz\s+(\d+)(?:\s*\([^)]*\))?\s*:\s*(.*)$", re.IGNORECASE)
 _ROW_ERROR_RE = re.compile(r"^Wiersz\s+(\d+)(?:\s*\(([^)]*)\))?\s*:\s*(.*)$", re.IGNORECASE)
+
+
+def _get_runtime_pc_name():
+    for env_name in ("COMPUTERNAME", "HOSTNAME"):
+        value = str(os.getenv(env_name, "") or "").strip()
+        if value:
+            return value
+    with suppress(Exception):
+        hostname = str(socket.gethostname() or "").strip()
+        if hostname:
+            return hostname
+    return "nie ustalono"
+
+
+def _normalize_ip_candidate(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "%" in text:
+        text = text.split("%", 1)[0].strip()
+    if text in {"127.0.0.1", "::1"}:
+        return ""
+    return text
+
+
+def _get_runtime_ip_addresses():
+    addresses = []
+    seen = set()
+
+    def add_address(value):
+        text = _normalize_ip_candidate(value)
+        if not text:
+            return
+        key = text.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        addresses.append(text)
+
+    with suppress(Exception):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("10.255.255.255", 1))
+            add_address(sock.getsockname()[0])
+
+    hostname = _get_runtime_pc_name()
+    if hostname and hostname != "nie ustalono":
+        with suppress(Exception):
+            for _host, _aliases, host_addresses in socket.gethostbyname_ex(hostname):
+                for address in host_addresses:
+                    add_address(address)
+        with suppress(Exception):
+            for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_DGRAM):
+                sockaddr = info[4]
+                if sockaddr:
+                    add_address(sockaddr[0])
+
+    return addresses or ["nie ustalono"]
+
+
+def _get_launch_source_path():
+    for candidate in (
+        os.getenv("PDS_LAUNCH_SOURCE", ""),
+        sys.argv[0] if sys.argv else "",
+        sys.executable,
+    ):
+        value = str(candidate or "").strip()
+        if not value:
+            continue
+        with suppress(Exception):
+            return os.path.abspath(os.path.normpath(value))
+        return value
+    return "nie ustalono"
+
+
+def _get_runtime_mail_context():
+    global _RUNTIME_MAIL_CONTEXT_CACHE
+    if _RUNTIME_MAIL_CONTEXT_CACHE is None:
+        _RUNTIME_MAIL_CONTEXT_CACHE = {
+            "pc_name": _get_runtime_pc_name(),
+            "ip_addresses": _get_runtime_ip_addresses(),
+            "launch_source": _get_launch_source_path(),
+        }
+    return dict(_RUNTIME_MAIL_CONTEXT_CACHE)
+
+
+def _build_runtime_mail_footer_text():
+    context = _get_runtime_mail_context()
+    ip_text = ", ".join(context.get("ip_addresses") or []) or "nie ustalono"
+    return "\n".join(
+        [
+            "---",
+            "Informacje o urządzeniu",
+            f"Nazwa PC: {context.get('pc_name') or 'nie ustalono'}",
+            f"IP: {ip_text}",
+            f"Plik uruchamiający: {context.get('launch_source') or 'nie ustalono'}",
+        ]
+    )
+
+
+def _build_runtime_mail_footer_html():
+    context = _get_runtime_mail_context()
+    ip_text = ", ".join(context.get("ip_addresses") or []) or "nie ustalono"
+    rows = [
+        ("Nazwa PC", context.get("pc_name") or "nie ustalono"),
+        ("IP", ip_text),
+        ("Plik uruchamiający", context.get("launch_source") or "nie ustalono"),
+    ]
+    rows_html = "".join(
+        "<tr>"
+        f"<td style=\"padding:4px 12px 4px 0;vertical-align:top\"><strong>{_html_escape(label)}</strong></td>"
+        f"<td style=\"padding:4px 0\">{_html_escape(value)}</td>"
+        "</tr>"
+        for label, value in rows
+    )
+    return (
+        "<hr style=\"margin:24px 0;border:none;border-top:1px solid #d0d7de\">"
+        "<h3 style=\"margin:0 0 10px 0\">Informacje o urządzeniu</h3>"
+        "<table style=\"border-collapse:collapse\">"
+        f"{rows_html}"
+        "</table>"
+    )
+
+
+def _append_runtime_mail_footer(body, html_body=None):
+    footer_text = _build_runtime_mail_footer_text()
+    text_body = str(body or "").rstrip()
+    if text_body:
+        text_body = f"{text_body}\n\n{footer_text}"
+    else:
+        text_body = footer_text
+
+    if not html_body:
+        return text_body, html_body
+
+    footer_html = _build_runtime_mail_footer_html()
+    html_text = str(html_body)
+    lower_html = html_text.lower()
+    body_close_idx = lower_html.rfind("</body>")
+    if body_close_idx >= 0:
+        html_text = html_text[:body_close_idx] + footer_html + html_text[body_close_idx:]
+    else:
+        html_text = html_text + footer_html
+    return text_body, html_text
 
 
 def _report_has_error_entries(report):
@@ -2214,6 +2360,7 @@ def _prepare_attachments(attachment_paths):
 
 
 def _send_email(cfg, subject, body, recipients, html_body=None, attachment_paths=None):
+    body, html_body = _append_runtime_mail_footer(body, html_body)
     attachments = _prepare_attachments(attachment_paths)
     if cfg["transport"] == TRANSPORT_ENTRA_API:
         _send_entra_email(

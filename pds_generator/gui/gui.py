@@ -132,6 +132,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.preview_animation_after = None
         self.preview_animation_step = 0
         self.mail_settings_win = None
+        self.update_prompt_win = None
         self.last_generation_report = None
         self.formula_map = {}
         self.column_rows = {}
@@ -155,6 +156,37 @@ class PDSGeneratorGUI(tk.Tk):
     # ------------------------------------------------------------------
     def setup_ui(self):
         build_ui(self)
+
+    def _present_modal_window(self, win):
+        try:
+            win.transient(self)
+        except tk.TclError:
+            pass
+        try:
+            win.lift()
+        except tk.TclError:
+            pass
+        try:
+            win.focus_force()
+        except tk.TclError:
+            pass
+        try:
+            win.grab_set()
+        except tk.TclError:
+            pass
+
+    def _close_modal_window(self, win, attr_name=None):
+        if attr_name and getattr(self, attr_name, None) is win:
+            setattr(self, attr_name, None)
+        try:
+            if win.grab_current() == win:
+                win.grab_release()
+        except tk.TclError:
+            pass
+        try:
+            win.destroy()
+        except tk.TclError:
+            pass
 
     # ------------------------------------------------------------------
     def check_for_updates(self):
@@ -197,7 +229,11 @@ class PDSGeneratorGUI(tk.Tk):
         elif self.update_available and not self.ignore_updates:
             should_prompt = True
         if should_prompt:
+            if self.update_prompt_win and self.update_prompt_win.winfo_exists():
+                self._present_modal_window(self.update_prompt_win)
+                return
             win = tk.Toplevel(self)
+            self.update_prompt_win = win
             win.title("Aktualizacja")
             ttk.Label(
                 win, text="Dostępna jest nowa wersja aplikacji."
@@ -216,8 +252,11 @@ class PDSGeneratorGUI(tk.Tk):
             btns = ttk.Frame(win)
             btns.pack(pady=10)
 
+            def close():
+                self._close_modal_window(win, "update_prompt_win")
+
             def do_update():
-                win.destroy()
+                close()
                 if self.update_test:
                     messagebox.showinfo(
                         "Aktualizacja", "Symulacja pobierania aktualizacji."
@@ -228,9 +267,11 @@ class PDSGeneratorGUI(tk.Tk):
             ttk.Button(btns, text="Aktualizuj", command=do_update).pack(
                 side="left", padx=5
             )
-            ttk.Button(btns, text="Pomiń", command=win.destroy).pack(
+            ttk.Button(btns, text="Pomiń", command=close).pack(
                 side="left", padx=5
             )
+            win.protocol("WM_DELETE_WINDOW", close)
+            self._present_modal_window(win)
 
     def manual_update(self):
         if self.update_test:
@@ -937,8 +978,7 @@ class PDSGeneratorGUI(tk.Tk):
 
     def open_mail_settings(self):
         if self.mail_settings_win and self.mail_settings_win.winfo_exists():
-            self.mail_settings_win.lift()
-            self.mail_settings_win.focus_force()
+            self._present_modal_window(self.mail_settings_win)
             return
 
         if self.require_admin_for_mail_settings and os.name == "nt":
@@ -1711,8 +1751,7 @@ class PDSGeneratorGUI(tk.Tk):
             )
 
         def close():
-            self.mail_settings_win = None
-            win.destroy()
+            self._close_modal_window(win, "mail_settings_win")
 
         ttk.Button(btns, text="Test połączenia", command=test_connection).grid(
             row=0, column=0, sticky="ew"
@@ -1728,6 +1767,7 @@ class PDSGeneratorGUI(tk.Tk):
         )
 
         win.protocol("WM_DELETE_WINDOW", close)
+        self._present_modal_window(win)
 
     def on_generation_complete(self, report):
         report_to_send = deepcopy(report)
