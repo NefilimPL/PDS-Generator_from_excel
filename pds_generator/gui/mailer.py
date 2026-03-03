@@ -10,6 +10,7 @@ import os
 import re
 import smtplib
 import ssl
+import traceback
 from urllib.parse import quote
 from contextlib import suppress
 from email.message import EmailMessage
@@ -1539,6 +1540,13 @@ def _build_report_subject(cfg, report):
     return f"{prefix} [{status}] {stamp}"
 
 
+def _build_exception_subject(cfg, source):
+    prefix = cfg.get("subject_prefix", "Raport PDS")
+    stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    source_text = str(source or "Unhandled exception").strip() or "Unhandled exception"
+    return f"{prefix} [KRYTYCZNY BŁĄD] {source_text} {stamp}"
+
+
 def _short_path(path):
     if not path:
         return ""
@@ -1554,6 +1562,61 @@ def _html_join_paths(paths):
     if not cleaned:
         return "<span>brak</span>"
     return "<br>".join(_html_escape(_short_path(item)) for item in cleaned)
+
+
+def _format_exception_trace(exc_type, exc, tb):
+    resolved_type = exc_type or (type(exc) if exc is not None else RuntimeError)
+    resolved_exc = exc if exc is not None else resolved_type()
+    return "".join(traceback.format_exception(resolved_type, resolved_exc, tb))
+
+
+def _build_exception_body(source, exc_type, exc, tb, log_path=None):
+    resolved_type = exc_type or (type(exc) if exc is not None else RuntimeError)
+    source_text = str(source or "Unhandled exception").strip() or "Unhandled exception"
+    message_text = str(exc or "").strip() or "(brak komunikatu)"
+    lines = [
+        "W aplikacji PDS Generator wystąpił krytyczny błąd.",
+        f"Źródło: {source_text}",
+        f"Typ wyjątku: {resolved_type.__name__}",
+        f"Komunikat: {message_text}",
+    ]
+    if log_path:
+        lines.append(f"Log: {_short_path(log_path)}")
+    lines.extend(
+        [
+            "",
+            "Traceback:",
+            _format_exception_trace(resolved_type, exc, tb),
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _build_exception_html(source, exc_type, exc, tb, log_path=None):
+    resolved_type = exc_type or (type(exc) if exc is not None else RuntimeError)
+    source_text = str(source or "Unhandled exception").strip() or "Unhandled exception"
+    message_text = str(exc or "").strip() or "(brak komunikatu)"
+    html_parts = [
+        "<html><body>",
+        "<h2>Krytyczny błąd PDS Generator</h2>",
+        "<table style=\"border-collapse:collapse\">",
+        f"<tr><td style=\"padding:4px 12px 4px 0\"><strong>Źródło</strong></td><td>{_html_escape(source_text)}</td></tr>",
+        f"<tr><td style=\"padding:4px 12px 4px 0\"><strong>Typ wyjątku</strong></td><td>{_html_escape(resolved_type.__name__)}</td></tr>",
+        f"<tr><td style=\"padding:4px 12px 4px 0\"><strong>Komunikat</strong></td><td>{_html_escape(message_text)}</td></tr>",
+    ]
+    if log_path:
+        html_parts.append(
+            f"<tr><td style=\"padding:4px 12px 4px 0\"><strong>Log</strong></td><td>{_html_escape(_short_path(log_path))}</td></tr>"
+        )
+    html_parts.extend(
+        [
+            "</table>",
+            "<h3>Traceback</h3>",
+            f"<pre>{_html_escape(_format_exception_trace(resolved_type, exc, tb))}</pre>",
+            "</body></html>",
+        ]
+    )
+    return "".join(html_parts)
 
 
 def _parse_row_warning(warning_text):
@@ -2192,14 +2255,27 @@ def _send_email(cfg, subject, body, recipients, html_body=None, attachment_paths
             client.quit()
 
 
-def send_test_email(config):
+def send_test_email(config, attachment_paths=None):
     cfg = validate_mail_config(config, require_recipients=True)
     subject = f"{cfg['subject_prefix']} [TEST]"
+    attached_files = [
+        _short_path(path)
+        for path in (attachment_paths or [])
+        if str(path or "").strip()
+    ]
     body = (
         "To jest testowa wiadomość z aplikacji PDS Generator.\n"
         f"Czas wysyłki: {dt.datetime.now():%Y-%m-%d %H:%M:%S}."
     )
-    _send_email(cfg, subject, body, cfg["recipients"])
+    if attached_files:
+        body += "\nZałączone pliki testowe:\n- " + "\n- ".join(attached_files)
+    _send_email(
+        cfg,
+        subject,
+        body,
+        cfg["recipients"],
+        attachment_paths=attachment_paths,
+    )
     if cfg.get("transport") == TRANSPORT_ENTRA_API:
         sim_subject, sim_body, sim_html_body = _build_secret_expiry_test_simulation_payload(
             cfg
@@ -2216,6 +2292,42 @@ def send_test_email(config):
             ", ".join(cfg["recipients"]),
         )
     logger.info("Test email sent to %s", ", ".join(cfg["recipients"]))
+
+
+def send_critical_exception_email(
+    config,
+    source,
+    exc_type,
+    exc,
+    tb=None,
+    log_path=None,
+):
+    cfg = validate_mail_config(config, require_recipients=True)
+    attachment_paths = []
+    normalized_log_path = str(log_path or "").strip()
+    if normalized_log_path:
+        attachment_paths.append(normalized_log_path)
+    subject = _build_exception_subject(cfg, source)
+    body = _build_exception_body(source, exc_type, exc, tb, log_path=normalized_log_path)
+    html_body = _build_exception_html(
+        source,
+        exc_type,
+        exc,
+        tb,
+        log_path=normalized_log_path,
+    )
+    _send_email(
+        cfg,
+        subject,
+        body,
+        cfg["recipients"],
+        html_body=html_body,
+        attachment_paths=attachment_paths,
+    )
+    logger.info(
+        "Critical exception email sent to %s",
+        ", ".join(cfg["recipients"]),
+    )
 
 
 def send_generation_report(config, report):

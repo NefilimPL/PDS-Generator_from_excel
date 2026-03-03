@@ -12,6 +12,7 @@ from tkinter import messagebox
 from pds_generator.requirements_installer import install_missing_requirements
 
 LOG_RETENTION_DAYS = 7
+_CRITICAL_EXCEPTION_SIGNATURES = set()
 
 
 def _cleanup_old_logs(log_dir, days=LOG_RETENTION_DAYS):
@@ -73,26 +74,62 @@ def _show_exception(message, log_path):
         pass
 
 
-def _handle_exception(source, exc_type, exc, tb, log_path):
+def _send_critical_exception_email(app, source, exc_type, exc, tb, log_path):
+    if app is None:
+        return
+    signature = (
+        str(source or "").strip(),
+        getattr(exc_type, "__name__", str(exc_type)),
+        str(exc or "").strip(),
+        str(log_path or "").strip(),
+    )
+    if signature in _CRITICAL_EXCEPTION_SIGNATURES:
+        return
+    try:
+        from pds_generator.gui import mailer
+
+        cfg = mailer.normalize_mail_config(getattr(app, "mail_config", {}))
+        if not cfg.get("enabled"):
+            return
+        mailer.send_critical_exception_email(
+            cfg,
+            source,
+            exc_type,
+            exc,
+            tb=tb,
+            log_path=log_path,
+        )
+        _CRITICAL_EXCEPTION_SIGNATURES.add(signature)
+    except Exception:
+        logging.getLogger("exception").exception(
+            "Failed to send critical exception email"
+        )
+
+
+def _handle_exception(source, exc_type, exc, tb, log_path, app=None):
     logger = logging.getLogger("exception")
     logger.error("Unhandled exception in %s", source, exc_info=(exc_type, exc, tb))
+    _send_critical_exception_email(app, source, exc_type, exc, tb, log_path)
     details = _format_traceback(exc_type, exc, tb)
     _show_exception(f"{source}:\n{details}", log_path)
 
 
-def _install_exception_hooks(log_path):
+def _install_exception_hooks(log_path, get_app=None):
     def _sys_hook(exc_type, exc, tb):
-        _handle_exception("Główne wykonanie", exc_type, exc, tb, log_path)
+        app = get_app() if callable(get_app) else None
+        _handle_exception("Główne wykonanie", exc_type, exc, tb, log_path, app=app)
 
     sys.excepthook = _sys_hook
 
     def _thread_hook(args):
+        app = get_app() if callable(get_app) else None
         _handle_exception(
             f"Wątek {getattr(args.thread, 'name', 'unknown')}",
             args.exc_type,
             args.exc_value,
             args.exc_traceback,
             log_path,
+            app=app,
         )
 
     threading.excepthook = _thread_hook
@@ -100,15 +137,17 @@ def _install_exception_hooks(log_path):
 
 if __name__ == "__main__":
     log_path = setup_logging()
-    _install_exception_hooks(log_path)
+    app_ref = {"app": None}
+    _install_exception_hooks(log_path, get_app=lambda: app_ref["app"])
     install_missing_requirements()
     from pds_generator.gui import PDSGeneratorGUI
 
     app = PDSGeneratorGUI()
+    app_ref["app"] = app
     app.runtime_log_path = log_path
 
     def _tk_exception_handler(self, exc, val, tb):
-        _handle_exception("Tkinter callback", exc, val, tb, log_path)
+        _handle_exception("Tkinter callback", exc, val, tb, log_path, app=self)
 
     app.report_callback_exception = types.MethodType(_tk_exception_handler, app)
     app.mainloop()

@@ -33,6 +33,7 @@ LEGACY_CONFIG_FILE = Path(app_paths.get_legacy_backup_config_path())
 OLD_CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
 
 _ERROR_FLAG = False
+_CRITICAL_EXCEPTION_SIGNATURES = set()
 
 
 def _cleanup_old_logs(log_dir: Path, days: int = LOG_RETENTION_DAYS) -> int:
@@ -73,6 +74,40 @@ def setup_logging(log_dir: Path) -> Path:
     if removed:
         logging.info("Removed old log files: %s", removed)
     return log_path
+
+
+def _send_critical_exception_email(config, source, exc_type, exc, tb, log_path):
+    if not isinstance(config, dict):
+        return
+    mail_config = config.get("mail", config)
+    signature = (
+        str(source or "").strip(),
+        getattr(exc_type, "__name__", str(exc_type)),
+        str(exc or "").strip(),
+        str(log_path or "").strip(),
+    )
+    if signature in _CRITICAL_EXCEPTION_SIGNATURES:
+        return
+    try:
+        cfg = mailer.normalize_mail_config(mail_config)
+        if not cfg.get("enabled"):
+            return
+        mailer.send_critical_exception_email(
+            cfg,
+            source,
+            exc_type,
+            exc,
+            tb=tb,
+            log_path=log_path,
+        )
+        _CRITICAL_EXCEPTION_SIGNATURES.add(signature)
+    except ValueError as config_error:
+        logging.warning(
+            "Critical exception email skipped due to invalid config: %s",
+            config_error,
+        )
+    except Exception:
+        logging.exception("Failed to send critical exception email")
 
 
 class _HeadlessMessageBox:
@@ -397,76 +432,90 @@ def _load_excel(path: str) -> dict:
 
 
 def run_headless(excel_path: str | None, config_path: str | None, log_dir: Path) -> int:
+    global _ERROR_FLAG
     log_path = setup_logging(log_dir)
     logging.info("Headless run started. Log: %s", log_path)
+    config = None
+    try:
+        cfg_path = _resolve_config_path(excel_path, config_path)
+        if not cfg_path:
+            logging.error("Config not found. Provide --config or --excel.")
+            return 2
 
-    cfg_path = _resolve_config_path(excel_path, config_path)
-    if not cfg_path:
-        logging.error("Config not found. Provide --config or --excel.")
-        return 2
+        logging.info("Config: %s", cfg_path)
+        config = _load_config(cfg_path)
 
-    logging.info("Config: %s", cfg_path)
-    config = _load_config(cfg_path)
+        resolved_excel = excel_path or config.get("excel_path")
+        if not resolved_excel:
+            logging.error("Excel path missing. Provide --excel or set in config.")
+            return 2
+        if not os.path.exists(resolved_excel):
+            logging.error("Excel file not found: %s", resolved_excel)
+            return 2
 
-    resolved_excel = excel_path or config.get("excel_path")
-    if not resolved_excel:
-        logging.error("Excel path missing. Provide --excel or set in config.")
-        return 2
-    if not os.path.exists(resolved_excel):
-        logging.error("Excel file not found: %s", resolved_excel)
-        return 2
-
-    logging.info("Excel: %s", resolved_excel)
-    dataframes = _load_excel(resolved_excel)
-    formula_cols = detect_formula_columns(resolved_excel)
-    missing_formula_cols = {}
-    for sheet, cols in formula_cols.items():
-        df = dataframes.get(sheet)
-        if df is None:
-            continue
-        for col in cols:
-            if col not in df.columns:
+        logging.info("Excel: %s", resolved_excel)
+        dataframes = _load_excel(resolved_excel)
+        formula_cols = detect_formula_columns(resolved_excel)
+        missing_formula_cols = {}
+        for sheet, cols in formula_cols.items():
+            df = dataframes.get(sheet)
+            if df is None:
                 continue
-            series = df[col].head(200)
-            has_value = False
-            for val in series:
-                try:
-                    if pd.isna(val):
-                        continue
-                except Exception:
-                    pass
-                if val != "":
-                    has_value = True
-                    break
-            if not has_value:
-                missing_formula_cols.setdefault(sheet, []).append(col)
-    if missing_formula_cols:
-        preview = []
-        for sheet, cols in missing_formula_cols.items():
             for col in cols:
-                preview.append(f"{sheet}:{col}")
+                if col not in df.columns:
+                    continue
+                series = df[col].head(200)
+                has_value = False
+                for val in series:
+                    try:
+                        if pd.isna(val):
+                            continue
+                    except Exception:
+                        pass
+                    if val != "":
+                        has_value = True
+                        break
+                if not has_value:
+                    missing_formula_cols.setdefault(sheet, []).append(col)
+        if missing_formula_cols:
+            preview = []
+            for sheet, cols in missing_formula_cols.items():
+                for col in cols:
+                    preview.append(f"{sheet}:{col}")
+                    if len(preview) >= 6:
+                        break
                 if len(preview) >= 6:
                     break
-            if len(preview) >= 6:
-                break
-        logging.warning(
-            "Formula columns without cached values: %s",
-            ", ".join(preview),
+            logging.warning(
+                "Formula columns without cached values: %s",
+                ", ".join(preview),
+            )
+
+        app = HeadlessApp(config, resolved_excel, dataframes, log_path=log_path)
+        started = pdf_export.generate_pds(app)
+        if started:
+            logging.info("Generation started. Waiting for completion...")
+            app.wait_for_finish()
+        else:
+            logging.info("Generation did not start.")
+
+        if _ERROR_FLAG:
+            logging.error("Finished with errors.")
+            return 1
+        logging.info("Finished without errors.")
+        return 0
+    except Exception as exc:
+        _ERROR_FLAG = True
+        logging.exception("Unhandled exception in headless run")
+        _send_critical_exception_email(
+            config,
+            "Headless run",
+            type(exc),
+            exc,
+            exc.__traceback__,
+            log_path,
         )
-
-    app = HeadlessApp(config, resolved_excel, dataframes, log_path=log_path)
-    started = pdf_export.generate_pds(app)
-    if started:
-        logging.info("Generation started. Waiting for completion...")
-        app.wait_for_finish()
-    else:
-        logging.info("Generation did not start.")
-
-    if _ERROR_FLAG:
-        logging.error("Finished with errors.")
         return 1
-    logging.info("Finished without errors.")
-    return 0
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -491,11 +540,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     pdf_export.messagebox = _HeadlessMessageBox
     log_dir = Path(args.log_dir).resolve()
-    try:
-        return run_headless(args.excel, args.config, log_dir)
-    except Exception:
-        logging.exception("Unhandled exception in headless run")
-        return 1
+    return run_headless(args.excel, args.config, log_dir)
 
 
 if __name__ == "__main__":

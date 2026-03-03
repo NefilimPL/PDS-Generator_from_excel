@@ -1685,6 +1685,8 @@ class PDSGeneratorGUI(tk.Tk):
             test_cfg = collect(strict=True, require_recipients=True)
             if not test_cfg:
                 return
+            runtime_log_path = str(getattr(self, "runtime_log_path", "") or "").strip()
+            attachment_paths = [runtime_log_path] if runtime_log_path else None
             if test_cfg.get("transport") == mailer.TRANSPORT_ENTRA_API:
                 success_msg = (
                     "Wysłano testową wiadomość oraz dodatkową symulację "
@@ -1694,9 +1696,14 @@ class PDSGeneratorGUI(tk.Tk):
             else:
                 success_msg = "Wysłano testową wiadomość."
                 success_status = "Wysłano testową wiadomość"
+            if attachment_paths:
+                success_msg += " Dołączono bieżący log TXT."
             self._run_mail_action_async(
                 test_cfg,
-                mailer.send_test_email,
+                lambda config: mailer.send_test_email(
+                    config,
+                    attachment_paths=attachment_paths,
+                ),
                 success_msg,
                 "Wysyłanie testowej wiadomości...",
                 success_status,
