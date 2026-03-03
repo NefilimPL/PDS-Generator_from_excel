@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import time
+import os
 import urllib.request
 from pathlib import Path
 
@@ -213,8 +214,15 @@ def main() -> None:
         else:
             python_cmd = [str(Path(sys.executable))]
         script = _resolve_gui_script()
+        env = os.environ.copy()
+        env["PDS_LAUNCH_SOURCE"] = str(Path(sys.argv[0]).resolve())
         # Run from repository directory so update checks and relative paths work.
-        subprocess.run(python_cmd + [str(script)], check=True, cwd=BASE_DIR)
+        subprocess.run(
+            python_cmd + [str(script)],
+            check=True,
+            cwd=BASE_DIR,
+            env=env,
+        )
     except Exception as exc:
         if isinstance(exc, subprocess.CalledProcessError):
             message = f"Aplikacja zakończyła się błędem (kod {exc.returncode})."
