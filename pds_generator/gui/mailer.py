@@ -90,6 +90,9 @@ _SECRET_KEY_ID_MAX_LEN = 96
 _SECRET_KEY_ID_RE = re.compile(
     r"^entra-([a-f0-9]{20})(?:-(\d{8}t\d{6})(?:-([a-z0-9._-]+))?)?$"
 )
+_SECRET_EXPIRY_REMINDER_THRESHOLDS_DAYS = (30, 14, 7, 2, 1)
+_SECRET_EXPIRY_STATE_FILENAME = "secret_expiry_reminders.json"
+_SECRET_EXPIRY_TEST_SIM_DAYS = 7
 
 if os.name == "nt":
     class _DATA_BLOB(ctypes.Structure):
@@ -329,6 +332,40 @@ def _secret_store_dir():
 
 def get_secret_store_dir():
     return _secret_store_dir()
+
+
+def _secret_expiry_state_path():
+    return os.path.join(app_paths.get_app_storage_dir(), _SECRET_EXPIRY_STATE_FILENAME)
+
+
+def _load_secret_expiry_state():
+    path = _secret_expiry_state_path()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return {"entries": {}}
+    except Exception:
+        logger.warning("Failed to load secret expiry reminder state: %s", path, exc_info=True)
+        return {"entries": {}}
+    if not isinstance(data, dict):
+        return {"entries": {}}
+    entries = data.get("entries")
+    if not isinstance(entries, dict):
+        entries = {}
+    return {"entries": entries}
+
+
+def _save_secret_expiry_state(state):
+    path = _secret_expiry_state_path()
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    payload = state if isinstance(state, dict) else {"entries": {}}
+    if not isinstance(payload.get("entries"), dict):
+        payload["entries"] = {}
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
 
 
 def _normalize_secret_key_id(value):
@@ -1021,7 +1058,7 @@ def _parse_error_response(response):
     return details
 
 
-def _fetch_entra_token_from_client_credentials(cfg):
+def _fetch_entra_token_from_client_credentials(cfg, include_details=False):
     tenant_id = cfg.get("entra_tenant_id", "").strip()
     client_id = cfg.get("entra_client_id", "").strip()
     client_secret = cfg.get("entra_client_secret", "")
@@ -1058,6 +1095,9 @@ def _fetch_entra_token_from_client_credentials(cfg):
     token = str(payload.get("access_token") or "").strip()
     if not token:
         raise RuntimeError("Entra nie zwróciło access_token.")
+    expiry_details = _extract_token_expiry_details(payload, token)
+    if include_details:
+        return token, expiry_details, payload
     return token
 
 
@@ -1088,12 +1128,7 @@ def _decode_jwt_exp(token):
     return exp if exp > 0 else None
 
 
-def get_token_expiry_details(token, now_utc=None):
-    """Return decoded token expiry metadata or None when exp is unavailable."""
-    exp = _decode_jwt_exp(token)
-    if not exp:
-        return None
-    expires_at_utc = dt.datetime.fromtimestamp(exp, tz=dt.timezone.utc)
+def _build_expiry_details(expires_at_utc, now_utc=None):
     now = now_utc or dt.datetime.now(dt.timezone.utc)
     remaining_seconds = int((expires_at_utc - now).total_seconds())
     return {
@@ -1101,6 +1136,223 @@ def get_token_expiry_details(token, now_utc=None):
         "remaining_seconds": remaining_seconds,
         "remaining_days": remaining_seconds / 86400.0,
     }
+
+
+def _parse_expires_on_value(raw_value):
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+    try:
+        ts = int(float(text))
+        # Some providers can return milliseconds.
+        if ts > 10_000_000_000:
+            ts //= 1000
+        if ts > 0:
+            return dt.datetime.fromtimestamp(ts, tz=dt.timezone.utc)
+    except Exception:
+        pass
+    iso_text = text.replace("Z", "+00:00")
+    with suppress(Exception):
+        parsed = dt.datetime.fromisoformat(iso_text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed.astimezone(dt.timezone.utc)
+    return None
+
+
+def get_token_expiry_details(token, now_utc=None):
+    exp = _decode_jwt_exp(token)
+    if not exp:
+        return None
+    expires_at_utc = dt.datetime.fromtimestamp(exp, tz=dt.timezone.utc)
+    return _build_expiry_details(expires_at_utc, now_utc=now_utc)
+
+
+def _extract_token_expiry_details(payload, token, now_utc=None):
+    now = now_utc or dt.datetime.now(dt.timezone.utc)
+    min_reasonable_seconds = 30
+
+    # Prefer expiry from the token itself (JWT exp) when available.
+    token_expiry = get_token_expiry_details(token, now_utc=now)
+    if token_expiry and token_expiry.get("remaining_seconds", 0) > min_reasonable_seconds:
+        return token_expiry
+
+    expires_on_expiry = None
+    expires_on = payload.get("expires_on")
+    expires_at = _parse_expires_on_value(expires_on)
+    if expires_at:
+        expires_on_expiry = _build_expiry_details(expires_at, now_utc=now)
+        if expires_on_expiry.get("remaining_seconds", 0) > min_reasonable_seconds:
+            return expires_on_expiry
+
+    expires_in_expiry = None
+    with suppress(Exception):
+        expires_in = int(float(payload.get("expires_in", 0)))
+        if expires_in > 0:
+            expires_in_expiry = _build_expiry_details(
+                now + dt.timedelta(seconds=expires_in), now_utc=now
+            )
+            if expires_in_expiry.get("remaining_seconds", 0) > min_reasonable_seconds:
+                return expires_in_expiry
+
+    # Fallback for edge cases (clock skew, nearly expired token).
+    candidates = [token_expiry, expires_on_expiry, expires_in_expiry]
+    candidates = [item for item in candidates if item is not None]
+    if candidates:
+        return max(candidates, key=lambda item: int(item.get("remaining_seconds", -10**9)))
+    return None
+
+
+def _parse_graph_datetime_utc(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    with suppress(Exception):
+        parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed.astimezone(dt.timezone.utc)
+    return None
+
+
+def _select_client_secret_credential(password_credentials, client_secret, now_utc=None):
+    now = now_utc or dt.datetime.now(dt.timezone.utc)
+    credentials = []
+    for item in password_credentials or []:
+        if not isinstance(item, dict):
+            continue
+        end_date_utc = _parse_graph_datetime_utc(item.get("endDateTime"))
+        if not end_date_utc:
+            continue
+        credentials.append(
+            {
+                "key_id": str(item.get("keyId") or "").strip(),
+                "hint": str(item.get("hint") or "").strip(),
+                "display_name": str(item.get("displayName") or "").strip(),
+                "end_date_utc": end_date_utc,
+            }
+        )
+    if not credentials:
+        return None
+
+    secret_hint = str(client_secret or "").strip()[:3]
+    matched_by_hint = []
+    if secret_hint:
+        hint_lower = secret_hint.lower()
+        matched_by_hint = [
+            cred
+            for cred in credentials
+            if str(cred.get("hint", "")).strip().lower() == hint_lower
+        ]
+
+    pool = matched_by_hint or credentials
+
+    def _cred_rank(cred):
+        remaining = int((cred["end_date_utc"] - now).total_seconds())
+        active = 1 if remaining > 0 else 0
+        return (active, remaining, int(cred["end_date_utc"].timestamp()))
+
+    selected = max(pool, key=_cred_rank)
+    selection_reason = (
+        "hint_match"
+        if matched_by_hint
+        else ("single" if len(credentials) == 1 else "latest_end_date")
+    )
+    selected["selection_reason"] = selection_reason
+    selected["credentials_total"] = len(credentials)
+    selected["hint_matches"] = len(matched_by_hint)
+    return selected
+
+
+def _fetch_entra_client_secret_expiry_details(cfg, access_token):
+    client_id = str(cfg.get("entra_client_id", "") or "").strip()
+    client_secret = str(cfg.get("entra_client_secret", "") or "")
+    if not client_id:
+        return None, "Brak Client ID - nie można sprawdzić daty wygaśnięcia Secret Value."
+    if not access_token:
+        return None, "Brak access tokenu - nie można sprawdzić daty wygaśnięcia Secret Value."
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    select_fields = "appId,displayName,passwordCredentials"
+
+    app_payload = None
+    response = requests.get(
+        f"https://graph.microsoft.com/v1.0/applications(appId='{quote(client_id, safe='')}')",
+        headers=headers,
+        params={"$select": select_fields},
+        timeout=cfg["timeout_seconds"],
+    )
+    if response.status_code == 200:
+        try:
+            app_payload = response.json()
+        except ValueError:
+            return None, "Graph zwrócił nieprawidłową odpowiedź JSON dla aplikacji."
+    elif response.status_code in (400, 404):
+        fallback = requests.get(
+            "https://graph.microsoft.com/v1.0/applications",
+            headers=headers,
+            params={
+                "$filter": f"appId eq '{client_id}'",
+                "$select": select_fields,
+                "$top": "1",
+            },
+            timeout=cfg["timeout_seconds"],
+        )
+        if fallback.status_code != 200:
+            details = _parse_error_response(fallback)
+            return (
+                None,
+                "Nie udało się pobrać danych wpisów tajnych z Graph "
+                f"(HTTP {fallback.status_code}): {details}",
+            )
+        try:
+            fallback_payload = fallback.json()
+        except ValueError:
+            return None, "Graph zwrócił nieprawidłową odpowiedź JSON dla listy aplikacji."
+        items = fallback_payload.get("value") if isinstance(fallback_payload, dict) else []
+        app_payload = items[0] if items else None
+    else:
+        details = _parse_error_response(response)
+        return (
+            None,
+            "Nie udało się pobrać danych wpisów tajnych z Graph "
+            f"(HTTP {response.status_code}): {details}",
+        )
+
+    if not isinstance(app_payload, dict):
+        return (
+            None,
+            "Nie znaleziono aplikacji Entra dla podanego Client ID.",
+        )
+
+    password_credentials = app_payload.get("passwordCredentials")
+    if not isinstance(password_credentials, list) or not password_credentials:
+        return (
+            None,
+            "Aplikacja Entra nie ma żadnych wpisów tajnych klienta (Secret Value).",
+        )
+
+    selected = _select_client_secret_credential(password_credentials, client_secret)
+    if not selected:
+        return (
+            None,
+            "Nie udało się odczytać daty wygaśnięcia wpisów tajnych klienta.",
+        )
+
+    expiry = _build_expiry_details(selected["end_date_utc"])
+    expiry.update(
+        {
+            "selection_reason": selected.get("selection_reason", ""),
+            "credentials_total": selected.get("credentials_total", 0),
+            "hint_matches": selected.get("hint_matches", 0),
+            "credential_key_id": selected.get("key_id", ""),
+            "credential_hint": selected.get("hint", ""),
+            "credential_display_name": selected.get("display_name", ""),
+            "application_app_id": str(app_payload.get("appId") or "").strip(),
+            "application_display_name": str(app_payload.get("displayName") or "").strip(),
+        }
+    )
+    return expiry, ""
 
 
 def _is_token_expired(token, skew_seconds=90):
@@ -1126,6 +1378,46 @@ def get_entra_access_token(config):
 def request_entra_token(config):
     cfg = resolve_mail_config_secrets(config)
     return _fetch_entra_token_from_client_credentials(cfg)
+
+
+def request_entra_token_details(config):
+    cfg = resolve_mail_config_secrets(config)
+    token, token_expiry, _token_payload = _fetch_entra_token_from_client_credentials(
+        cfg, include_details=True
+    )
+    client_secret_expiry = None
+    client_secret_error = ""
+    try:
+        client_secret_expiry, client_secret_error = _fetch_entra_client_secret_expiry_details(
+            cfg, token
+        )
+    except Exception:
+        logger.exception("Failed to fetch Entra client secret expiry details")
+        client_secret_error = (
+            "Nie udało się pobrać daty wygaśnięcia Secret Value z Microsoft Graph."
+        )
+    return {
+        "token": token,
+        "token_expiry": token_expiry,
+        "client_secret_expiry": client_secret_expiry,
+        "client_secret_error": client_secret_error,
+    }
+
+
+def get_client_secret_expiry_details(config):
+    cfg = resolve_mail_config_secrets(config)
+    if cfg.get("transport") != TRANSPORT_ENTRA_API:
+        return None, "Transport e-mail nie jest ustawiony na Microsoft Entra API."
+    if not _has_entra_client_credentials(cfg):
+        return (
+            None,
+            "Brak kompletu danych: Tenant ID + Client ID + Secret Value.",
+        )
+    try:
+        access_token = _resolve_entra_access_token(cfg)
+    except Exception as exc:
+        return None, str(exc)
+    return _fetch_entra_client_secret_expiry_details(cfg, access_token)
 
 
 def _resolve_entra_access_token(cfg, force_refresh=False):
@@ -1619,6 +1911,246 @@ def _build_generation_body(report):
             )
 
     return "\n".join(lines)
+
+
+def _build_secret_expiry_state_key(cfg, expiry):
+    tenant = str(cfg.get("entra_tenant_id", "") or "").strip().lower()
+    client = str(cfg.get("entra_client_id", "") or "").strip().lower()
+    credential_key_id = str(expiry.get("credential_key_id", "") or "").strip().lower()
+    expires_at_utc = expiry.get("expires_at_utc")
+    if isinstance(expires_at_utc, dt.datetime):
+        expires_at_text = expires_at_utc.astimezone(dt.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+    else:
+        expires_at_text = ""
+    return f"{tenant}|{client}|{credential_key_id}|{expires_at_text}"
+
+
+def _normalize_threshold_list(values):
+    normalized = set()
+    for item in values or []:
+        with suppress(Exception):
+            normalized.add(int(item))
+    return sorted(normalized, reverse=True)
+
+
+def _find_due_secret_expiry_threshold(remaining_days, sent_thresholds):
+    due = [
+        threshold
+        for threshold in _SECRET_EXPIRY_REMINDER_THRESHOLDS_DAYS
+        if remaining_days <= float(threshold) and int(threshold) not in sent_thresholds
+    ]
+    if not due:
+        return None
+    return min(due)
+
+
+def _format_remaining_time_text(remaining_seconds):
+    seconds = int(remaining_seconds)
+    if seconds <= 0:
+        return "wygasł"
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    return f"{days} d {hours} h {minutes} min"
+
+
+def _build_secret_expiry_reminder_subject(cfg, expiry, threshold_days):
+    prefix = cfg.get("subject_prefix", "Raport PDS")
+    remaining_seconds = int(expiry.get("remaining_seconds", 0))
+    remaining_days_display = max(0, (remaining_seconds + 86399) // 86400)
+    return (
+        f"{prefix} [PRZYPOMNIENIE] Secret Value wygasa za "
+        f"{remaining_days_display} dni (próg {threshold_days}d)"
+    )
+
+
+def _build_secret_expiry_reminder_body(expiry, threshold_days):
+    expires_at_utc = expiry["expires_at_utc"]
+    expires_at_utc_text = expires_at_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+    expires_at_local_text = expires_at_utc.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    remaining_text = _format_remaining_time_text(expiry.get("remaining_seconds", 0))
+    return "\n".join(
+        [
+            "Przypomnienie o wygaśnięciu wpisu tajnego klienta (Secret Value).",
+            "Ta wiadomość nie zawiera danych wrażliwych (Secret Value, token, keyId).",
+            "",
+            f"Próg przypomnienia: {threshold_days} dni",
+            f"Data wygaśnięcia Secret Value (UTC): {expires_at_utc_text}",
+            f"Data wygaśnięcia Secret Value (lokalnie): {expires_at_local_text}",
+            f"Pozostało: {remaining_text}",
+            "",
+            "Wymagane uprawnienia aplikacji Entra (Application):",
+            "- Mail.Send",
+            "- Application.Read.All",
+            "- Grant admin consent dla tenantu",
+            "",
+            "Jak odnowić (utworzyć nowy Secret Value i odświeżyć token):",
+            "1. Microsoft Entra ID -> App registrations -> Twoja aplikacja.",
+            "2. Certificates & secrets -> Client secrets -> New client secret.",
+            "3. Skopiuj nową wartość 'Value' (widoczna tylko raz po utworzeniu).",
+            "4. W PDS Generator: Konfiguracja e-mail -> Secret Value -> wklej nową wartość.",
+            "5. Kliknij 'Pobierz token', a następnie 'Zapisz'.",
+            "6. Wykonaj 'Test połączenia'. Po potwierdzeniu usuń stary secret z Entra.",
+        ]
+    )
+
+
+def _build_secret_expiry_reminder_html(expiry, threshold_days):
+    expires_at_utc = expiry["expires_at_utc"]
+    expires_at_utc_text = expires_at_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+    expires_at_local_text = expires_at_utc.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    remaining_text = _format_remaining_time_text(expiry.get("remaining_seconds", 0))
+    return (
+        "<!doctype html>"
+        "<html><head><meta charset='utf-8'>"
+        "<style>"
+        "body{font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#1f2937;line-height:1.45;}"
+        "h2{margin:0 0 12px 0;font-size:16px;}"
+        "table{border-collapse:collapse;margin:0 0 14px 0;}"
+        "th,td{border:1px solid #cbd5e1;padding:8px;text-align:left;vertical-align:top;}"
+        "th{background:#f59e0b;color:#111827;}"
+        "li{margin:4px 0;}"
+        "</style></head><body>"
+        "<h2>Przypomnienie o wygaśnięciu Secret Value</h2>"
+        "<p style='background:#eef2ff;border:1px solid #c7d2fe;padding:8px;'>"
+        "<b>Uwaga:</b> ta wiadomość nie zawiera danych wrażliwych "
+        "(Secret Value, token, keyId)."
+        "</p>"
+        "<table>"
+        "<tbody>"
+        f"<tr><th>Próg przypomnienia</th><td>{_html_escape(threshold_days)} dni</td></tr>"
+        f"<tr><th>Data wygaśnięcia (UTC)</th><td>{_html_escape(expires_at_utc_text)}</td></tr>"
+        f"<tr><th>Data wygaśnięcia (lokalnie)</th><td>{_html_escape(expires_at_local_text)}</td></tr>"
+        f"<tr><th>Pozostało</th><td>{_html_escape(remaining_text)}</td></tr>"
+        "</tbody></table>"
+        "<h3>Wymagane uprawnienia aplikacji Entra (Application)</h3>"
+        "<ul>"
+        "<li>Mail.Send</li>"
+        "<li>Application.Read.All</li>"
+        "<li>Grant admin consent dla tenantu</li>"
+        "</ul>"
+        "<h3>Jak odnowić (utworzyć nowy Secret Value i odświeżyć token)</h3>"
+        "<ol>"
+        "<li>Microsoft Entra ID -> App registrations -> Twoja aplikacja.</li>"
+        "<li>Certificates &amp; secrets -> Client secrets -> New client secret.</li>"
+        "<li>Skopiuj nową wartość <b>Value</b> (widoczna tylko raz po utworzeniu).</li>"
+        "<li>W PDS Generator: Konfiguracja e-mail -> Secret Value -> wklej nową wartość.</li>"
+        "<li>Kliknij <b>Pobierz token</b>, a następnie <b>Zapisz</b>.</li>"
+        "<li>Wykonaj Test połączenia. Po potwierdzeniu usuń stary secret z Entra.</li>"
+        "</ol>"
+        "</body></html>"
+    )
+
+
+def _build_secret_expiry_test_simulation_payload(cfg, simulate_days=None):
+    days = int(simulate_days or _SECRET_EXPIRY_TEST_SIM_DAYS)
+    if days <= 0:
+        days = _SECRET_EXPIRY_TEST_SIM_DAYS
+
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    expires_at_utc = now_utc + dt.timedelta(days=days)
+    expiry = _build_expiry_details(expires_at_utc, now_utc=now_utc)
+    expiry.update(
+        {
+            "application_display_name": "SIMULACJA TESTOWA",
+            "application_app_id": "-",
+            "credential_display_name": "Symulowany Secret Value",
+            "credential_key_id": "simulation",
+        }
+    )
+
+    prefix = cfg.get("subject_prefix", "Raport PDS")
+    subject = (
+        f"{prefix} [TEST][SYMULACJA] Przypomnienie: Secret Value "
+        f"wygasa za {days} dni"
+    )
+    body = (
+        "UWAGA: To jest symulacja przypomnienia o wygaśnięciu Secret Value "
+        "(mail testowy).\n\n"
+        + _build_secret_expiry_reminder_body(expiry, days)
+    )
+    html_body = (
+        "<!doctype html><html><head><meta charset='utf-8'></head><body>"
+        "<p style='font-family:Segoe UI,Arial,sans-serif;background:#fff3cd;"
+        "padding:10px;border:1px solid #ffec99;color:#5c4b00;'>"
+        "<b>UWAGA:</b> To jest symulacja przypomnienia o wygaśnięciu Secret Value "
+        "(mail testowy)."
+        "</p>"
+        + _build_secret_expiry_reminder_html(expiry, days).split("<body>", 1)[-1]
+    )
+    return subject, body, html_body
+
+
+def send_secret_expiry_reminder_if_due(config):
+    cfg = validate_mail_config(config, require_recipients=True)
+    if cfg.get("transport") != TRANSPORT_ENTRA_API:
+        return {"sent": False, "reason": "transport_not_entra"}
+    if not _has_entra_client_credentials(cfg):
+        return {"sent": False, "reason": "missing_client_credentials"}
+
+    expiry, expiry_error = get_client_secret_expiry_details(cfg)
+    if not expiry:
+        return {"sent": False, "reason": "expiry_unavailable", "error": expiry_error}
+
+    remaining_seconds = int(expiry.get("remaining_seconds", 0))
+    if remaining_seconds <= 0:
+        return {"sent": False, "reason": "already_expired", "expiry": expiry}
+
+    remaining_days = float(expiry.get("remaining_days", 0.0))
+    state = _load_secret_expiry_state()
+    entries = state.setdefault("entries", {})
+    reminder_key = _build_secret_expiry_state_key(cfg, expiry)
+    entry = entries.get(reminder_key)
+    if not isinstance(entry, dict):
+        entry = {}
+
+    sent_thresholds = _normalize_threshold_list(entry.get("sent_thresholds", []))
+    due_threshold = _find_due_secret_expiry_threshold(remaining_days, sent_thresholds)
+    if due_threshold is None:
+        return {
+            "sent": False,
+            "reason": "no_due_threshold",
+            "expiry": expiry,
+            "sent_thresholds": sent_thresholds,
+        }
+
+    subject = _build_secret_expiry_reminder_subject(cfg, expiry, due_threshold)
+    body = _build_secret_expiry_reminder_body(expiry, due_threshold)
+    html_body = _build_secret_expiry_reminder_html(expiry, due_threshold)
+    _send_email(cfg, subject, body, cfg["recipients"], html_body=html_body)
+
+    updated_thresholds = _normalize_threshold_list(sent_thresholds + [due_threshold])
+    entries[reminder_key] = {
+        "sent_thresholds": updated_thresholds,
+        "updated_at_utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "expires_at_utc": expiry["expires_at_utc"]
+        .astimezone(dt.timezone.utc)
+        .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "credential_key_id": str(expiry.get("credential_key_id", "") or "").strip(),
+    }
+
+    scope_prefix = (
+        f"{str(cfg.get('entra_tenant_id', '') or '').strip().lower()}|"
+        f"{str(cfg.get('entra_client_id', '') or '').strip().lower()}|"
+    )
+    for key in list(entries.keys()):
+        if key == reminder_key:
+            continue
+        if str(key).startswith(scope_prefix):
+            entries.pop(key, None)
+
+    try:
+        _save_secret_expiry_state(state)
+    except Exception:
+        logger.warning("Failed to persist secret expiry reminder state.", exc_info=True)
+    return {
+        "sent": True,
+        "threshold_days": int(due_threshold),
+        "expiry": expiry,
+        "recipients": list(cfg.get("recipients") or []),
+    }
 
 
 def _prepare_attachments(attachment_paths):
