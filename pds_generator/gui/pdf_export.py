@@ -607,9 +607,11 @@ def _get_filename_value(df, name_column, idx):
 def draw_pdf_element(app, c, element, value, x, y):
     value_str = value if isinstance(value, str) else str(value)
     if getattr(element, "is_image", False) and value_str:
+        image_error = None
         if value_str.lower().startswith("http"):
             try:
                 resp = requests.get(value_str, timeout=5)
+                resp.raise_for_status()
                 img = Image.open(BytesIO(resp.content))
                 c.drawImage(
                     ImageReader(img),
@@ -619,7 +621,8 @@ def draw_pdf_element(app, c, element, value, x, y):
                     height=element.height / app.scale,
                 )
                 return
-            except (requests.RequestException, OSError):
+            except (requests.RequestException, OSError) as exc:
+                image_error = exc
                 logger.exception("Failed to load remote image %s", value_str)
         local_path = app.find_local_image(value_str)
         if local_path:
@@ -633,8 +636,12 @@ def draw_pdf_element(app, c, element, value, x, y):
                     height=element.height / app.scale,
                 )
                 return
-            except OSError:
+            except OSError as exc:
+                image_error = exc
                 logger.exception("Failed to load local image %s", local_path)
+        if local_path is None and image_error is None:
+            image_error = FileNotFoundError(f"Image not found: {value_str}")
+        raise RuntimeError(f"Nie można załadować obrazu: {value_str}") from image_error
     if element.bg_visible:
         c.setFillColor(to_reportlab_color(element.bg_color))
         c.rect(
@@ -705,7 +712,10 @@ class RenderAppProxy:
             return None
         key = name.lower()
         if key in self._image_cache:
-            return self._image_cache[key]
+            cached_path = self._image_cache[key]
+            if cached_path and os.path.isfile(cached_path):
+                return cached_path
+            self._image_cache.pop(key, None)
 
         roots = [self.excel_dir] + list(self.image_dirs or [])
         seen = set()
@@ -1020,17 +1030,48 @@ def generate_pds(app):
         "critical_exception": False,
     }
 
+    def show_message(method_name, title, text):
+        _ui_call(app, getattr(messagebox, method_name), title, text)
+
     def finish_now(status_label, status_code):
-        if hasattr(app, "finish_generation_ui"):
-            app.finish_generation_ui(status_label)
-        else:
-            _ui_finish(app, status_label)
+        _ui_finish(app, status_label)
         report["status"] = status_code
         _notify_generation_complete(app, report)
 
+    def get_cached_image_index(roots):
+        roots_key = tuple(roots or [])
+        if not roots_key:
+            return None
+
+        lock = getattr(app, "image_index_lock", None)
+        if lock is not None:
+            with lock:
+                index_data = getattr(app, "image_index_data", None)
+                cached_roots = tuple(getattr(app, "image_index_roots", ()) or ())
+        else:
+            index_data = getattr(app, "image_index_data", None)
+            cached_roots = tuple(getattr(app, "image_index_roots", ()) or ())
+
+        if not isinstance(index_data, dict):
+            return None
+        is_expired = getattr(image_index_utils, "_index_is_expired", None)
+        if callable(is_expired):
+            try:
+                if is_expired(index_data, 24):
+                    return None
+            except Exception:
+                return None
+        if cached_roots and cached_roots == roots_key:
+            return index_data
+
+        indexed_roots = tuple(index_data.get("roots", []) or ())
+        if indexed_roots == roots_key:
+            return index_data
+        return None
+
     if not app.excel_path or not app.dataframes:
         report["errors"].append("Brak danych do generowania.")
-        messagebox.showerror("Błąd", "Brak danych do generowania")
+        show_message("showerror", "Błąd", "Brak danych do generowania")
         finish_now("Brak danych", "no_data")
         return False
 
@@ -1038,7 +1079,7 @@ def generate_pds(app):
     total_rows = len(first_df)
     report["total_rows"] = total_rows
     if total_rows == 0:
-        messagebox.showinfo("Info", "Brak wierszy w pliku Excel")
+        show_message("showinfo", "Info", "Brak wierszy w pliku Excel")
         finish_now("Brak wierszy", "no_rows")
         return False
 
@@ -1047,6 +1088,13 @@ def generate_pds(app):
     element_specs, element_order = _collect_element_specs(app)
     group_specs = _collect_group_specs(app)
     conditions = [tuple(cond) for cond in app.conditions]
+    static_entries = _collect_static_entries(app)
+    scale = app.scale
+    page_width = app.page_width
+    page_height = app.page_height
+    excel_dir = os.path.dirname(app.excel_path)
+    image_fields = sorted(getattr(app, "image_fields", set()))
+    image_dirs = list(getattr(app, "image_dirs", []))
 
     dynamic_fields = set()
 
@@ -1071,7 +1119,6 @@ def generate_pds(app):
     image_sheet_fields = _resolve_image_sheet_fields(
         getattr(app, "image_fields", set()) or []
     )
-    image_missing_checker = _build_image_missing_checker(app)
     excluded_fields = getattr(app, "tracking_excluded", set())
     for field in dynamic_fields:
         sheet, col = field.split(":", 1)
@@ -1081,228 +1128,6 @@ def generate_pds(app):
         if field in excluded_fields:
             continue
         sheet_fields_tracking.setdefault(sheet, set()).add(col)
-
-    cache_rows = None
-    cache_changed_cols = {}
-    excel_rows = None
-    tracking_mode = "none"
-
-    try:
-        cache_rows, cache_changed_cols = update_tracking_cache(
-            app.excel_path, app.dataframes, total_rows, sheet_fields=sheet_fields_tracking
-        )
-    except Exception:
-        logger.exception("Failed to update tracking cache")
-        report["critical_exception"] = True
-        report["errors"].append(
-            "Nie udało się zaktualizować lokalnego cache śledzenia zmian."
-        )
-        cache_rows = None
-        cache_changed_cols = {}
-
-    try:
-        excel_rows = update_tracking_column(
-            app.excel_path,
-            app.dataframes,
-            total_rows,
-            sheet_fields=sheet_fields_tracking,
-            image_fields=image_sheet_fields,
-            is_image_missing=image_missing_checker,
-        )
-        tracking_mode = "excel"
-    except Exception:
-        logger.exception("Failed to update tracking column")
-        report["critical_exception"] = True
-        report["errors"].append(
-            "Nie udało się zaktualizować kolumny kontrolnej w Excelu."
-        )
-        if cache_rows is None:
-            messagebox.showwarning(
-                "Uwaga",
-                "Nie udało się zaktualizować kolumny kontrolnej w Excelu "
-                "(sprawdź, czy plik nie jest otwarty). "
-                "Pliki PDF zostaną wygenerowane ponownie.",
-            )
-        else:
-            tracking_mode = "cache"
-            messagebox.showinfo(
-                "Info",
-                "Nie udało się zaktualizować kolumny kontrolnej w Excelu "
-                "(sprawdź, czy plik nie jest otwarty). "
-                "Używam lokalnego pliku śledzenia, więc wygenerują się "
-                "tylko zmienione PDF-y.",
-            )
-
-    if excel_rows is None:
-        changed_rows = cache_rows
-        tracking_mode = "cache" if cache_rows is not None else tracking_mode
-    else:
-        changed_rows = excel_rows
-        if cache_rows is not None and len(excel_rows) == total_rows and len(cache_rows) < total_rows:
-            logger.info(
-                "Excel tracking indicates all rows changed; using cache (%s/%s).",
-                len(cache_rows),
-                total_rows,
-            )
-            changed_rows = cache_rows
-            tracking_mode = "cache"
-
-    tracked_columns = sum(len(cols) for cols in sheet_fields_tracking.values())
-    cache_count = len(cache_rows) if cache_rows is not None else None
-    excel_count = len(excel_rows) if excel_rows is not None else None
-    if changed_rows is None:
-        logger.info(
-            "Tracking mode=%s; tracked_columns=%s; cache_rows=%s; excel_rows=%s; generating all rows=%s",
-            tracking_mode,
-            tracked_columns,
-            cache_count,
-            excel_count,
-            total_rows,
-        )
-    else:
-        logger.info(
-            "Tracking mode=%s; tracked_columns=%s; cache_rows=%s; excel_rows=%s; changed_rows=%s/%s",
-            tracking_mode,
-            tracked_columns,
-            cache_count,
-            excel_count,
-            len(changed_rows),
-            total_rows,
-        )
-        if len(changed_rows) >= max(1, total_rows - 1) and cache_changed_cols:
-            changed_preview = []
-            for sheet, cols in cache_changed_cols.items():
-                for col in cols:
-                    changed_preview.append(f"{sheet}:{col}")
-                    if len(changed_preview) >= 6:
-                        break
-                if len(changed_preview) >= 6:
-                    break
-            logger.info(
-                "Most rows changed; changed columns (sample): %s",
-                ", ".join(changed_preview),
-            )
-
-    output_dir = os.path.join(os.path.dirname(app.excel_path), "PDS")
-    os.makedirs(output_dir, exist_ok=True)
-    report["output_dir"] = output_dir
-
-    page_width = app.page_width
-    page_height = app.page_height
-
-    static_entries = _collect_static_entries(app)
-
-    sheet_columns = {
-        sheet: {col for col in df.columns if col != TRACKING_COLUMN}
-        for sheet, df in app.dataframes.items()
-    }
-
-    name_column = _first_data_column(first_df)
-    filename_counters = {}
-    tasks = []
-    for idx in range(total_rows):
-        first_val = _get_filename_value(first_df, name_column, idx)
-        filename = sanitize_filename(first_val) or f"pds_{idx + 1}"
-        count = filename_counters.get(filename, 0)
-        filename_counters[filename] = count + 1
-        if count:
-            unique_name = f"{filename}_{count + 1}"
-        else:
-            unique_name = filename
-        pdf_path = os.path.join(output_dir, f"{unique_name}.pdf")
-        existed_before = os.path.exists(pdf_path)
-        if existed_before and changed_rows is not None and idx not in changed_rows:
-            continue
-        row_values = {}
-        for sheet, columns in sheet_fields_all.items():
-            df = app.dataframes.get(sheet)
-            if df is None or idx >= len(df):
-                for col in columns:
-                    row_values[f"{sheet}:{col}"] = ""
-                continue
-            row_series = df.iloc[idx]
-            available = sheet_columns.get(sheet, set())
-            for col in columns:
-                if col in available:
-                    value = row_series[col]
-                else:
-                    value = ""
-                if pd.isna(value):
-                    value = ""
-                else:
-                    value = round_numeric_value(value)
-                row_values[f"{sheet}:{col}"] = value
-        tasks.append(
-            {
-                "idx": idx,
-                "pdf_path": pdf_path,
-                "name": unique_name,
-                "row_values": row_values,
-                "existed_before": existed_before,
-            }
-        )
-
-    if not tasks:
-        try:
-            mark_execution_error_rows(
-                app.excel_path,
-                first_sheet_name,
-                [],
-                total_rows=total_rows,
-            )
-        except Exception:
-            logger.exception("Failed to clear execution error markers in Excel")
-        report["total_tasks"] = 0
-        report["skipped_rows"] = total_rows
-        messagebox.showinfo(
-            "Info", "Brak zmian - wszystkie pliki PDF są aktualne."
-        )
-        if report["warnings"]:
-            messagebox.showwarning(
-                "Uwaga",
-                "Brak zmian w PDF, ale wykryto ostrzeżenia jakości danych: "
-                f"{len(report['warnings'])}.",
-            )
-        _ui_counts(app, total_rows=total_rows, total_tasks=0, processed=0, skipped=total_rows)
-        finish_now("Brak zmian", "no_changes")
-        return False
-
-    skipped_rows = total_rows - len(tasks) if changed_rows is not None else 0
-    report["total_tasks"] = len(tasks)
-    report["skipped_rows"] = skipped_rows
-    _ui_counts(
-        app,
-        total_rows=total_rows,
-        total_tasks=len(tasks),
-        processed=0,
-        skipped=skipped_rows,
-    )
-    _ui_progress_mode(app, False)
-    _ui_status(app, "Sprawdzanie danych i generowanie PDF...")
-
-    if _is_cancelled(app):
-        finish_now("Anulowano", "cancelled")
-        return False
-
-    worker_payload = {
-        "static_entries": static_entries,
-        "elements": element_specs,
-        "element_order": element_order,
-        "groups": group_specs,
-        "conditions": conditions,
-        "scale": app.scale,
-        "page_width": page_width,
-        "page_height": page_height,
-        "excel_dir": os.path.dirname(app.excel_path),
-        "image_fields": sorted(getattr(app, "image_fields", set())),
-        "image_dirs": list(getattr(app, "image_dirs", [])),
-        "tasks": tasks,
-        "output_dir": output_dir,
-        "total_tasks": len(tasks),
-        "total_rows": total_rows,
-        "skipped_rows": skipped_rows,
-        "image_index_path": image_index_utils.get_default_index_path(),
-    }
 
     def worker(payload):
         start_time = time.time()
@@ -1342,14 +1167,25 @@ def generate_pds(app):
                         status = f"Aktualizacja indeksu obrazów: {processed} plików{eta_text}"
                     _ui_status(app, status)
 
-                index_data = image_index_utils.ensure_index(
-                    roots,
-                    index_path=payload.get("image_index_path") or None,
-                    max_age_hours=24,
-                    force_rebuild=False,
-                    progress_callback=index_progress,
-                    progress_interval_seconds=1.0,
-                )
+                index_data = get_cached_image_index(roots)
+                if index_data:
+                    index_progress(
+                        {
+                            "phase": "cached",
+                            "processed": int(index_data.get("file_count", 0) or 0),
+                            "total_estimate": int(index_data.get("file_count", 0) or 0),
+                            "eta_seconds": 0.0,
+                        }
+                    )
+                else:
+                    index_data = image_index_utils.ensure_index(
+                        roots,
+                        index_path=payload.get("image_index_path") or None,
+                        max_age_hours=24,
+                        force_rebuild=False,
+                        progress_callback=index_progress,
+                        progress_interval_seconds=1.0,
+                    )
                 _cache_image_index_for_app(app, roots, index_data)
             except Exception:
                 logger.exception("Failed to build/load image index for generation")
@@ -1525,7 +1361,7 @@ def generate_pds(app):
                 )
                 _notify_generation_complete(app, report)
 
-            app.after(0, finish_only_skipped)
+            _ui_call(app, finish_only_skipped)
             return
 
         max_workers = max(1, min(len(tasks_local), os.cpu_count() or 1))
@@ -1566,20 +1402,13 @@ def generate_pds(app):
                 elapsed = time.time() - start_time
                 remaining = (elapsed / completed) * (total - completed) if completed else 0
                 remaining_seconds = max(0, int(remaining))
-                app.progress.after(
-                    0, lambda p=progress: app.progress.config(value=p)
-                )
+                _ui_call(app, app.progress.config, value=progress)
                 _ui_counts(
                     app,
                     total_tasks=total,
                     processed=completed,
                 )
-                app.time_label.after(
-                    0,
-                    lambda r=remaining_seconds: app.time_label.config(
-                        text=f"Pozostały czas: {r} s"
-                    ),
-                )
+                _ui_call(app, app.time_label.config, text=f"Pozostały czas: {remaining_seconds} s")
         except Exception as exc:  # pragma: no cover - executor level failure
             report["critical_exception"] = True
             failures.append((-1, "", str(exc)))
@@ -1680,7 +1509,268 @@ def generate_pds(app):
                         )
                 _notify_generation_complete(app, report)
 
-            app.after(0, finish)
+            _ui_call(app, finish)
 
-    threading.Thread(target=worker, args=(worker_payload,), daemon=True).start()
+    def prepare_generation():
+        try:
+            image_missing_checker = _build_image_missing_checker(app)
+            static_image_fields = sorted(
+                field
+                for field in (getattr(app, "image_fields", set()) or [])
+                if ":" not in str(field)
+            )
+            cache_rows = None
+            cache_changed_cols = {}
+            excel_rows = None
+            tracking_mode = "none"
+
+            try:
+                cache_rows, cache_changed_cols = update_tracking_cache(
+                    app.excel_path,
+                    app.dataframes,
+                    total_rows,
+                    sheet_fields=sheet_fields_tracking,
+                    image_fields=image_sheet_fields,
+                    is_image_missing=image_missing_checker,
+                    static_image_fields=static_image_fields,
+                    static_entries=static_entries,
+                )
+            except Exception:
+                logger.exception("Failed to update tracking cache")
+                report["critical_exception"] = True
+                report["errors"].append(
+                    "Nie udało się zaktualizować lokalnego cache śledzenia zmian."
+                )
+                cache_rows = None
+                cache_changed_cols = {}
+
+            try:
+                excel_rows = update_tracking_column(
+                    app.excel_path,
+                    app.dataframes,
+                    total_rows,
+                    sheet_fields=sheet_fields_tracking,
+                    image_fields=image_sheet_fields,
+                    is_image_missing=image_missing_checker,
+                    static_image_fields=static_image_fields,
+                    static_entries=static_entries,
+                )
+                tracking_mode = "excel"
+            except Exception:
+                logger.exception("Failed to update tracking column")
+                report["critical_exception"] = True
+                report["errors"].append(
+                    "Nie udało się zaktualizować kolumny kontrolnej w Excelu."
+                )
+                if cache_rows is None:
+                    show_message(
+                        "showwarning",
+                        "Uwaga",
+                        "Nie udało się zaktualizować kolumny kontrolnej w Excelu "
+                        "(sprawdź, czy plik nie jest otwarty). "
+                        "Pliki PDF zostaną wygenerowane ponownie.",
+                    )
+                else:
+                    tracking_mode = "cache"
+                    show_message(
+                        "showinfo",
+                        "Info",
+                        "Nie udało się zaktualizować kolumny kontrolnej w Excelu "
+                        "(sprawdź, czy plik nie jest otwarty). "
+                        "Używam lokalnego pliku śledzenia, więc wygenerują się "
+                        "tylko zmienione PDF-y.",
+                    )
+
+            if excel_rows is None:
+                changed_rows = cache_rows
+                tracking_mode = "cache" if cache_rows is not None else tracking_mode
+            else:
+                changed_rows = excel_rows
+                if (
+                    cache_rows is not None
+                    and len(excel_rows) == total_rows
+                    and len(cache_rows) < total_rows
+                ):
+                    logger.info(
+                        "Excel tracking indicates all rows changed; using cache (%s/%s).",
+                        len(cache_rows),
+                        total_rows,
+                    )
+                    changed_rows = cache_rows
+                    tracking_mode = "cache"
+
+            tracked_columns = sum(len(cols) for cols in sheet_fields_tracking.values())
+            cache_count = len(cache_rows) if cache_rows is not None else None
+            excel_count = len(excel_rows) if excel_rows is not None else None
+            if changed_rows is None:
+                logger.info(
+                    "Tracking mode=%s; tracked_columns=%s; cache_rows=%s; excel_rows=%s; generating all rows=%s",
+                    tracking_mode,
+                    tracked_columns,
+                    cache_count,
+                    excel_count,
+                    total_rows,
+                )
+            else:
+                logger.info(
+                    "Tracking mode=%s; tracked_columns=%s; cache_rows=%s; excel_rows=%s; changed_rows=%s/%s",
+                    tracking_mode,
+                    tracked_columns,
+                    cache_count,
+                    excel_count,
+                    len(changed_rows),
+                    total_rows,
+                )
+                if len(changed_rows) >= max(1, total_rows - 1) and cache_changed_cols:
+                    changed_preview = []
+                    for sheet, cols in cache_changed_cols.items():
+                        for col in cols:
+                            changed_preview.append(f"{sheet}:{col}")
+                            if len(changed_preview) >= 6:
+                                break
+                        if len(changed_preview) >= 6:
+                            break
+                    logger.info(
+                        "Most rows changed; changed columns (sample): %s",
+                        ", ".join(changed_preview),
+                    )
+
+            output_dir = os.path.join(os.path.dirname(app.excel_path), "PDS")
+            os.makedirs(output_dir, exist_ok=True)
+            report["output_dir"] = output_dir
+
+            sheet_columns = {
+                sheet: {col for col in df.columns if col != TRACKING_COLUMN}
+                for sheet, df in app.dataframes.items()
+            }
+
+            name_column = _first_data_column(first_df)
+            filename_counters = {}
+            tasks = []
+            for idx in range(total_rows):
+                first_val = _get_filename_value(first_df, name_column, idx)
+                filename = sanitize_filename(first_val) or f"pds_{idx + 1}"
+                count = filename_counters.get(filename, 0)
+                filename_counters[filename] = count + 1
+                if count:
+                    unique_name = f"{filename}_{count + 1}"
+                else:
+                    unique_name = filename
+                pdf_path = os.path.join(output_dir, f"{unique_name}.pdf")
+                existed_before = os.path.exists(pdf_path)
+                if existed_before and changed_rows is not None and idx not in changed_rows:
+                    continue
+                row_values = {}
+                for sheet, columns in sheet_fields_all.items():
+                    df = app.dataframes.get(sheet)
+                    if df is None or idx >= len(df):
+                        for col in columns:
+                            row_values[f"{sheet}:{col}"] = ""
+                        continue
+                    row_series = df.iloc[idx]
+                    available = sheet_columns.get(sheet, set())
+                    for col in columns:
+                        if col in available:
+                            value = row_series[col]
+                        else:
+                            value = ""
+                        if pd.isna(value):
+                            value = ""
+                        else:
+                            value = round_numeric_value(value)
+                        row_values[f"{sheet}:{col}"] = value
+                tasks.append(
+                    {
+                        "idx": idx,
+                        "pdf_path": pdf_path,
+                        "name": unique_name,
+                        "row_values": row_values,
+                        "existed_before": existed_before,
+                    }
+                )
+
+            if not tasks:
+                try:
+                    mark_execution_error_rows(
+                        app.excel_path,
+                        first_sheet_name,
+                        [],
+                        total_rows=total_rows,
+                    )
+                except Exception:
+                    logger.exception("Failed to clear execution error markers in Excel")
+                report["total_tasks"] = 0
+                report["skipped_rows"] = total_rows
+                show_message(
+                    "showinfo",
+                    "Info",
+                    "Brak zmian - wszystkie pliki PDF są aktualne.",
+                )
+                if report["warnings"]:
+                    show_message(
+                        "showwarning",
+                        "Uwaga",
+                        "Brak zmian w PDF, ale wykryto ostrzeżenia jakości danych: "
+                        f"{len(report['warnings'])}.",
+                    )
+                _ui_counts(
+                    app,
+                    total_rows=total_rows,
+                    total_tasks=0,
+                    processed=0,
+                    skipped=total_rows,
+                )
+                finish_now("Brak zmian", "no_changes")
+                return
+
+            skipped_rows = total_rows - len(tasks) if changed_rows is not None else 0
+            report["total_tasks"] = len(tasks)
+            report["skipped_rows"] = skipped_rows
+            _ui_counts(
+                app,
+                total_rows=total_rows,
+                total_tasks=len(tasks),
+                processed=0,
+                skipped=skipped_rows,
+            )
+            _ui_progress_mode(app, False)
+            _ui_status(app, "Sprawdzanie danych i generowanie PDF...")
+
+            if _is_cancelled(app):
+                finish_now("Anulowano", "cancelled")
+                return
+
+            worker_payload = {
+                "static_entries": static_entries,
+                "elements": element_specs,
+                "element_order": element_order,
+                "groups": group_specs,
+                "conditions": conditions,
+                "scale": scale,
+                "page_width": page_width,
+                "page_height": page_height,
+                "excel_dir": excel_dir,
+                "image_fields": image_fields,
+                "image_dirs": image_dirs,
+                "tasks": tasks,
+                "output_dir": output_dir,
+                "total_tasks": len(tasks),
+                "total_rows": total_rows,
+                "skipped_rows": skipped_rows,
+            }
+            worker(worker_payload)
+        except Exception:
+            logger.exception("Failed while preparing PDF generation")
+            report["critical_exception"] = True
+            report["errors"].append(
+                "Nie udało się przygotować danych do generowania PDF."
+            )
+            show_message(
+                "showerror",
+                "Błąd",
+                "Nie udało się przygotować danych do generowania PDF. Sprawdź logi.",
+            )
+            finish_now("Błąd", "error")
+
+    threading.Thread(target=prepare_generation, daemon=True).start()
     return True

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 TRACKING_COLUMN = "__PDS_ROW_TRACKING__"
 _EXCEL_CELL_LIMIT = 32767
 _HASH_PREFIX = "sha256:"
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2
 _WARNING_FILL_RGB = "FFF8E1"
 _LEGACY_WARNING_FILL_RGB = "FF0000"
 _ERROR_FILL_RGB = "FFC7CE"
@@ -79,6 +79,61 @@ def _combined_signature(parts):
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         return f"{_HASH_PREFIX}{digest}"
     return payload
+
+
+def _normalize_image_field_map(image_fields):
+    mapping = {}
+    if not isinstance(image_fields, dict):
+        return mapping
+    for sheet, columns in image_fields.items():
+        if not sheet:
+            continue
+        col_set = {
+            str(col)
+            for col in (columns or set())
+            if col is not None and str(col) != TRACKING_COLUMN
+        }
+        if col_set:
+            mapping[str(sheet)] = col_set
+    return mapping
+
+
+def _image_tracking_state(value, is_image_missing=None):
+    text = str(value or "").strip()
+    if not text:
+        return "", False, ""
+    missing = False
+    if callable(is_image_missing):
+        try:
+            missing = bool(is_image_missing(text))
+        except Exception:
+            logger.exception("Failed to validate image existence for %s", text)
+            missing = False
+    token = _combined_signature([text, "missing" if missing else "ok"])
+    return text, missing, token
+
+
+def _build_static_image_tracking_parts(
+    static_entries=None,
+    static_image_fields=None,
+    is_image_missing=None,
+):
+    parts = []
+    if not static_image_fields:
+        return parts
+    static_map = static_entries if isinstance(static_entries, dict) else {}
+    fields = sorted(
+        {
+            str(field).strip()
+            for field in (static_image_fields or [])
+            if field is not None and ":" not in str(field)
+        }
+    )
+    for field in fields:
+        value = static_map.get(field, "")
+        _text, _missing, token = _image_tracking_state(value, is_image_missing)
+        parts.append(_combined_signature([field, token]))
+    return parts
 
 
 def _update_cell_protection(cell, locked):
@@ -175,6 +230,8 @@ def update_tracking_column(
     sheet_fields=None,
     image_fields=None,
     is_image_missing=None,
+    static_image_fields=None,
+    static_entries=None,
 ):
     if not excel_path or not dataframes:
         return set()
@@ -186,16 +243,12 @@ def update_tracking_column(
 
     changed_rows = set()
     workbook_dirty = False
-    image_field_map = {}
-    if isinstance(image_fields, dict):
-        for sheet, cols in image_fields.items():
-            if not sheet:
-                continue
-            col_set = {
-                str(col) for col in (cols or set()) if col is not None and str(col) != TRACKING_COLUMN
-            }
-            if col_set:
-                image_field_map[str(sheet)] = col_set
+    image_field_map = _normalize_image_field_map(image_fields)
+    static_image_parts = _build_static_image_tracking_parts(
+        static_entries=static_entries,
+        static_image_fields=static_image_fields,
+        is_image_missing=is_image_missing,
+    )
 
     for sheet_name, df in dataframes.items():
         if sheet_name not in wb.sheetnames:
@@ -259,22 +312,14 @@ def update_tracking_column(
                     except Exception:
                         pass
                     if col in image_columns:
-                        values.append(value)
+                        text, should_mark, image_token = _image_tracking_state(
+                            value,
+                            is_image_missing=is_image_missing,
+                        )
+                        values.append(image_token)
                         col_idx = column_indices.get(col)
                         if col_idx:
                             cell = ws.cell(row=row_idx + 2, column=col_idx)
-                            text = str(value or "").strip()
-                            should_mark = False
-                            if text and callable(is_image_missing):
-                                try:
-                                    should_mark = bool(is_image_missing(text))
-                                except Exception:
-                                    logger.exception(
-                                        "Failed to validate image for %s!%s row %s",
-                                        sheet_name,
-                                        col,
-                                        row_idx + 2,
-                                    )
                             if should_mark:
                                 if not _is_tracking_error_fill(cell.fill):
                                     cell.fill = _clone_fill(_ERROR_FILL)
@@ -321,6 +366,8 @@ def update_tracking_column(
             else:
                 values = ["" for _ in columns]
             new_sig = _row_signature(values)
+            if static_image_parts:
+                new_sig = _combined_signature([new_sig] + static_image_parts)
             if new_sig != "":
                 nonempty_new += 1
             cell = ws.cell(row=row_idx + 2, column=1)
@@ -480,9 +527,23 @@ def _resolve_sheet_columns(dataframes, sheet_fields=None):
     return columns_map
 
 
-def _compute_cache_signatures(dataframes, total_rows, sheet_fields=None):
+def _compute_cache_signatures(
+    dataframes,
+    total_rows,
+    sheet_fields=None,
+    image_fields=None,
+    is_image_missing=None,
+    static_image_fields=None,
+    static_entries=None,
+):
     sheet_names = sorted(dataframes.keys())
     columns_map = _resolve_sheet_columns(dataframes, sheet_fields)
+    image_field_map = _normalize_image_field_map(image_fields)
+    static_image_parts = _build_static_image_tracking_parts(
+        static_entries=static_entries,
+        static_image_fields=static_image_fields,
+        is_image_missing=is_image_missing,
+    )
     row_signatures = []
     for row_idx in range(total_rows):
         per_sheet = []
@@ -492,43 +553,72 @@ def _compute_cache_signatures(dataframes, total_rows, sheet_fields=None):
                 per_sheet.append(_row_signature([]))
                 continue
             columns = columns_map.get(sheet, [])
+            image_columns = image_field_map.get(sheet, set())
             if row_idx < len(df):
                 row_series = df.iloc[row_idx]
-                values = [
-                    row_series[col] if col in df.columns else ""
-                    for col in columns
-                ]
+                values = []
+                for col in columns:
+                    value = row_series[col] if col in df.columns else ""
+                    if col in image_columns:
+                        _text, _missing, image_token = _image_tracking_state(
+                            value,
+                            is_image_missing=is_image_missing,
+                        )
+                        values.append(image_token)
+                    else:
+                        values.append(value)
             else:
                 values = ["" for _ in columns]
             per_sheet.append(_row_signature(values))
+        if static_image_parts:
+            per_sheet.extend(static_image_parts)
         row_signatures.append(_combined_signature(per_sheet))
 
     column_signatures = {}
     for sheet in sheet_names:
         df = dataframes.get(sheet)
         columns = columns_map.get(sheet, [])
+        image_columns = image_field_map.get(sheet, set())
         sigs = {}
         for col in columns:
             values = []
             if df is not None:
                 for row_idx in range(total_rows):
                     if row_idx < len(df) and col in df.columns:
-                        values.append(df.iloc[row_idx][col])
+                        value = df.iloc[row_idx][col]
                     else:
-                        values.append("")
+                        value = ""
+                    if col in image_columns:
+                        _text, _missing, image_token = _image_tracking_state(
+                            value,
+                            is_image_missing=is_image_missing,
+                        )
+                        values.append(image_token)
+                    else:
+                        values.append(value)
             sigs[col] = _row_signature(values)
         column_signatures[sheet] = sigs
 
     return sheet_names, columns_map, row_signatures, column_signatures
 
 
-def update_tracking_cache(excel_path, dataframes, total_rows, sheet_fields=None):
+def update_tracking_cache(
+    excel_path,
+    dataframes,
+    total_rows,
+    sheet_fields=None,
+    image_fields=None,
+    is_image_missing=None,
+    static_image_fields=None,
+    static_entries=None,
+):
     if not excel_path or not dataframes:
         return set(), {}
     cache_paths = _tracking_cache_paths(excel_path)
     previous, cache_path = _load_tracking_cache(cache_paths)
     if not cache_path:
         cache_path = cache_paths[0]
+    prev_version = previous.get("version") if isinstance(previous, dict) else None
     prev_rows = previous.get("rows") if isinstance(previous, dict) else None
     prev_sheets = previous.get("sheets") if isinstance(previous, dict) else None
     prev_columns = previous.get("columns") if isinstance(previous, dict) else None
@@ -543,9 +633,20 @@ def update_tracking_cache(excel_path, dataframes, total_rows, sheet_fields=None)
         prev_columns = None
     if not isinstance(prev_column_signatures, dict):
         prev_column_signatures = None
+    if prev_version != _CACHE_VERSION:
+        prev_rows = []
+        prev_sheets = []
+        prev_columns = None
+        prev_column_signatures = None
 
     sheet_names, columns_map, new_rows, column_signatures = _compute_cache_signatures(
-        dataframes, total_rows, sheet_fields
+        dataframes,
+        total_rows,
+        sheet_fields,
+        image_fields=image_fields,
+        is_image_missing=is_image_missing,
+        static_image_fields=static_image_fields,
+        static_entries=static_entries,
     )
     changed_rows = set()
     if prev_sheets and prev_sheets != sheet_names:

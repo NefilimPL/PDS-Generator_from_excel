@@ -211,14 +211,10 @@ class HeadlessApp:
                 bool(self.mail_config.get("enabled")),
                 report.get("status"),
             )
-            has_issues = bool(
-                report.get("warnings")
-                or report.get("errors")
-                or report.get("skipped_image_files")
-                or report.get("skipped_image_global_issues")
-            )
-            if report.get("status") == "no_changes" and not has_issues:
-                logging.info("Skipping report email: no PDF changes detected.")
+            if not mailer.should_send_generation_report(report):
+                logging.info(
+                    "Skipping report email: no PDF changes and no critical exception."
+                )
                 return
             if not self.mail_config.get("enabled"):
                 return

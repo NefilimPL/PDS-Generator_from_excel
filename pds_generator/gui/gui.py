@@ -564,7 +564,10 @@ class PDSGeneratorGUI(tk.Tk):
             return None
         key = name.lower()
         if key in self.image_cache:
-            return self.image_cache[key]
+            cached_path = self.image_cache[key]
+            if cached_path and os.path.isfile(cached_path):
+                return cached_path
+            self.image_cache.pop(key, None)
 
         search_roots = self._image_search_roots()
 
@@ -1526,6 +1529,19 @@ class PDSGeneratorGUI(tk.Tk):
                 "Wysyłka testowej wiadomości nie powiodła się",
             )
 
+        def send_test_exception_report():
+            test_cfg = collect(strict=True, require_recipients=True)
+            if not test_cfg:
+                return
+            self._run_mail_action_async(
+                test_cfg,
+                mailer.send_test_exception_report,
+                "Wysłano testowy raport wyjątku.",
+                "Wysyłanie testowego raportu wyjątku...",
+                "Wysłano testowy raport wyjątku",
+                "Wysyłka testowego raportu wyjątku nie powiodła się",
+            )
+
         def close():
             self.mail_settings_win = None
             win.destroy()
@@ -1536,6 +1552,11 @@ class PDSGeneratorGUI(tk.Tk):
         ttk.Button(btns, text="Wyślij testową wiadomość", command=send_test_message).grid(
             row=0, column=1, sticky="ew", padx=(6, 0)
         )
+        ttk.Button(
+            btns,
+            text="Wyślij testowy raport wyjątku",
+            command=send_test_exception_report,
+        ).grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=(6, 0))
         ttk.Button(btns, text="Zapisz", command=save_only).grid(
             row=0, column=2, sticky="ew", padx=(6, 0)
         )
@@ -1551,14 +1572,10 @@ class PDSGeneratorGUI(tk.Tk):
         if runtime_log_path and not report_to_send.get("log_path"):
             report_to_send["log_path"] = runtime_log_path
         self.last_generation_report = deepcopy(report_to_send)
-        has_issues = bool(
-            report_to_send.get("warnings")
-            or report_to_send.get("errors")
-            or report_to_send.get("skipped_image_files")
-            or report_to_send.get("skipped_image_global_issues")
-        )
-        if report_to_send.get("status") == "no_changes" and not has_issues:
-            logger.info("Skipping report email: no PDF changes detected.")
+        if not mailer.should_send_generation_report(report_to_send):
+            logger.info(
+                "Skipping report email: no PDF changes and no critical exception."
+            )
             return
         cfg = mailer.normalize_mail_config(getattr(self, "mail_config", {}))
         if not cfg.get("enabled"):

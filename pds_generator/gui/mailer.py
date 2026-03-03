@@ -7,9 +7,13 @@ import json
 import logging
 import mimetypes
 import os
+import random
 import re
 import smtplib
 import ssl
+import tempfile
+import traceback
+import uuid
 from urllib.parse import quote
 from contextlib import suppress
 from email.message import EmailMessage
@@ -129,6 +133,28 @@ _STATUS_LABELS = {
 }
 _ROW_WARNING_RE = re.compile(r"^Wiersz\s+(\d+)(?:\s*\([^)]*\))?\s*:\s*(.*)$", re.IGNORECASE)
 _ROW_ERROR_RE = re.compile(r"^Wiersz\s+(\d+)(?:\s*\(([^)]*)\))?\s*:\s*(.*)$", re.IGNORECASE)
+_TEST_EXCEPTION_SAMPLES = (
+    (
+        RuntimeError,
+        "Nie udało się zainicjalizować procesu renderowania PDF.",
+    ),
+    (
+        FileNotFoundError,
+        "Nie znaleziono pliku tymczasowego podczas finalizacji eksportu.",
+    ),
+    (
+        PermissionError,
+        "Brak uprawnień do zapisu pliku PDF w katalogu docelowym.",
+    ),
+    (
+        TimeoutError,
+        "Przekroczono limit czasu podczas pobierania zasobu testowego.",
+    ),
+    (
+        ValueError,
+        "Wykryto nieprawidlowy format danych w testowym przebiegu.",
+    ),
+)
 
 
 def _report_has_error_entries(report):
@@ -137,6 +163,10 @@ def _report_has_error_entries(report):
         or report.get("skipped_image_files")
         or report.get("skipped_image_global_issues")
     )
+
+
+def _report_has_pdf_changes(report):
+    return bool(report.get("new_pdfs") or report.get("updated_pdfs"))
 
 
 def _report_has_critical_exception(report):
@@ -151,6 +181,12 @@ def _report_has_critical_exception(report):
         if _ROW_ERROR_RE.match(text):
             return True
     return False
+
+
+def should_send_generation_report(report):
+    if _report_has_pdf_changes(report) or _report_has_critical_exception(report):
+        return True
+    return (report.get("status") or "") != "no_changes" and _report_has_error_entries(report)
 
 
 def _report_status_text(report):
@@ -1662,13 +1698,117 @@ def _send_email(cfg, subject, body, recipients, html_body=None, attachment_paths
 
 def send_test_email(config):
     cfg = validate_mail_config(config, require_recipients=True)
+    report, log_path, test_id = _build_test_exception_report()
     subject = f"{cfg['subject_prefix']} [TEST]"
     body = (
         "To jest testowa wiadomość z aplikacji PDS Generator.\n"
+        "W załączniku znajduje się testowy plik logów z prawdziwym, "
+        "celowo wywołanym wyjątkiem skryptu.\n"
+        f"Id testu: {test_id}\n"
+        f"Symulowany wyjątek: {report['errors'][0]}\n"
         f"Czas wysyłki: {dt.datetime.now():%Y-%m-%d %H:%M:%S}."
     )
-    _send_email(cfg, subject, body, cfg["recipients"])
-    logger.info("Test email sent to %s", ", ".join(cfg["recipients"]))
+    try:
+        _send_email(
+            cfg,
+            subject,
+            body,
+            cfg["recipients"],
+            attachment_paths=[log_path],
+        )
+    finally:
+        _cleanup_test_log_attachment(log_path)
+    logger.info("Test email sent to %s (test_id=%s)", ", ".join(cfg["recipients"]), test_id)
+
+
+def _raise_test_exception(exc_type, message):
+    raise exc_type(message)
+
+
+def _write_test_log_attachment(test_id, exc_text, trace_text, created_at):
+    fd, path = tempfile.mkstemp(
+        prefix=f"pds_test_exception_{test_id.lower()}_",
+        suffix=".txt",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(
+                f"{created_at:%Y-%m-%d %H:%M:%S} | ERROR | pds_generator.mailer | "
+                f"Simulated critical script exception. test_id={test_id}\n"
+            )
+            fh.write(
+                f"{created_at:%Y-%m-%d %H:%M:%S} | INFO | pds_generator.mailer | "
+                "This is a generated test log attachment for email verification.\n\n"
+            )
+            fh.write("Traceback (most recent call last):\n")
+            fh.write(trace_text.strip())
+            fh.write("\n")
+            fh.write(f"\nException summary: {exc_text}\n")
+            fh.write(f"Generated at: {created_at:%Y-%m-%d %H:%M:%S}\n")
+            fh.write(f"Test ID: {test_id}\n")
+    except Exception:
+        with suppress(OSError):
+            os.close(fd)
+        with suppress(OSError):
+            os.remove(path)
+        raise
+    return path
+
+
+def _cleanup_test_log_attachment(path):
+    with suppress(OSError):
+        os.remove(path)
+
+
+def _build_test_exception_report():
+    exc_type, exc_message = random.choice(_TEST_EXCEPTION_SAMPLES)
+    test_id = uuid.uuid4().hex[:8].upper()
+    created_at = dt.datetime.now()
+    try:
+        _raise_test_exception(
+            exc_type,
+            f"{exc_message} [test_id={test_id}]",
+        )
+    except Exception as exc:
+        exc_text = f"{type(exc).__name__}: {exc}"
+        trace_text = traceback.format_exc()
+    log_path = _write_test_log_attachment(test_id, exc_text, trace_text, created_at)
+    report = {
+        "status": "error",
+        "excel_path": "TEST_GUI_EXCEPTION",
+        "log_path": log_path,
+        "output_dir": "",
+        "total_rows": 0,
+        "total_tasks": 0,
+        "processed_rows": 0,
+        "skipped_rows": 0,
+        "new_pdfs": [],
+        "updated_pdfs": [],
+        "errors": [
+            f"Błąd wykonawcy: {exc_text}"
+        ],
+        "warnings": [
+            "To jest testowy raport wyjątku wysłany ręcznie z ustawień GUI."
+        ],
+        "skipped_image_files": [],
+        "skipped_image_global_issues": [],
+        "critical_exception": True,
+    }
+    return report, log_path, test_id
+
+
+def send_test_exception_report(config):
+    cfg = validate_mail_config(config, require_recipients=True)
+    report, log_path, test_id = _build_test_exception_report()
+    try:
+        send_generation_report(cfg, report)
+        logger.info(
+            "Test exception report email sent to %s (test_id=%s)",
+            ", ".join(cfg["recipients"]),
+            test_id,
+        )
+    finally:
+        _cleanup_test_log_attachment(log_path)
 
 
 def send_generation_report(config, report):
