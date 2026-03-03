@@ -219,6 +219,18 @@ class HeadlessApp:
             if not self.mail_config.get("enabled"):
                 return
             cfg = mailer.validate_mail_config(self.mail_config, require_recipients=True)
+            reminder_result = mailer.send_secret_expiry_reminder_if_due(cfg)
+            if reminder_result.get("sent"):
+                logging.info(
+                    "Secret expiry reminder sent (threshold=%sd) to %s",
+                    reminder_result.get("threshold_days"),
+                    ", ".join(reminder_result.get("recipients") or []),
+                )
+            if skip_report:
+                logging.info(
+                    "Skipping report email: no PDF changes detected (reminder check done)."
+                )
+                return
             mailer.send_generation_report(cfg, report)
             logging.info("Mail report sent.")
         except ValueError as exc:
