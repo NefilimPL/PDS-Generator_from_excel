@@ -1302,6 +1302,10 @@ def generate_pds(app):
         "total_rows": total_rows,
         "skipped_rows": skipped_rows,
         "image_index_path": image_index_utils.get_default_index_path(),
+        "image_index_mode": str(
+            getattr(app, "image_index_mode", "refresh") or "refresh"
+        ).strip().lower(),
+        "image_index_max_age_hours": getattr(app, "image_index_max_age_hours", 24),
     }
 
     def worker(payload):
@@ -1310,47 +1314,73 @@ def generate_pds(app):
             [payload["excel_dir"]] + list(payload.get("image_dirs", []))
         )
         if roots:
-            _ui_status(app, "Aktualizacja indeksu obrazów...")
+            image_index_mode = str(payload.get("image_index_mode") or "refresh").lower()
             try:
-                progress_state = {"last_emit": 0.0, "last_processed": 0}
+                if image_index_mode == "refresh":
+                    _ui_status(app, "Aktualizacja indeksu obrazów...")
+                    progress_state = {"last_emit": 0.0, "last_processed": 0}
 
-                def index_progress(progress):
-                    now = time.time()
-                    phase = str(progress.get("phase") or "")
-                    processed = int(progress.get("processed", 0) or 0)
-                    if (
-                        phase != "done"
-                        and now - progress_state["last_emit"] < 2.0
-                        and processed - int(progress_state["last_processed"]) < 1000
-                    ):
-                        return
-                    progress_state["last_emit"] = now
-                    progress_state["last_processed"] = processed
-                    total_estimate = progress.get("total_estimate")
-                    eta_seconds = progress.get("eta_seconds")
-                    eta_text = ""
-                    if eta_seconds is not None:
-                        eta_text = f", ETA ~{max(0, int(eta_seconds))}s"
-                    if phase == "cached":
-                        status = f"Aktualizacja indeksu obrazów: użyto cache ({processed} plików)"
-                    elif total_estimate:
-                        status = (
-                            "Aktualizacja indeksu obrazów: "
-                            f"{processed}/{int(total_estimate)} plików{eta_text}"
+                    def index_progress(progress):
+                        now = time.time()
+                        phase = str(progress.get("phase") or "")
+                        processed = int(progress.get("processed", 0) or 0)
+                        if (
+                            phase != "done"
+                            and now - progress_state["last_emit"] < 2.0
+                            and processed - int(progress_state["last_processed"]) < 1000
+                        ):
+                            return
+                        progress_state["last_emit"] = now
+                        progress_state["last_processed"] = processed
+                        total_estimate = progress.get("total_estimate")
+                        eta_seconds = progress.get("eta_seconds")
+                        eta_text = ""
+                        if eta_seconds is not None:
+                            eta_text = f", ETA ~{max(0, int(eta_seconds))}s"
+                        if phase == "cached":
+                            status = f"Aktualizacja indeksu obrazów: użyto cache ({processed} plików)"
+                        elif phase == "cancelled":
+                            status = f"Aktualizacja indeksu obrazów przerwana po {processed} plikach"
+                        elif total_estimate:
+                            status = (
+                                "Aktualizacja indeksu obrazów: "
+                                f"{processed}/{int(total_estimate)} plików{eta_text}"
+                            )
+                        else:
+                            status = f"Aktualizacja indeksu obrazów: {processed} plików{eta_text}"
+                        _ui_status(app, status)
+
+                    index_data = image_index_utils.ensure_index(
+                        roots,
+                        index_path=payload.get("image_index_path") or None,
+                        max_age_hours=payload.get("image_index_max_age_hours", 24),
+                        force_rebuild=False,
+                        progress_callback=index_progress,
+                        progress_interval_seconds=1.0,
+                        stop_requested=lambda: _is_cancelled(app),
+                    )
+                    _cache_image_index_for_app(app, roots, index_data)
+                elif image_index_mode == "cache-only":
+                    _ui_status(app, "Ładowanie cache indeksu obrazów...")
+                    index_data = image_index_utils.load_index_for_roots(
+                        roots,
+                        index_path=payload.get("image_index_path") or None,
+                    )
+                    if index_data:
+                        _cache_image_index_for_app(app, roots, index_data)
+                        _ui_status(
+                            app,
+                            "Załadowano cache indeksu obrazów "
+                            f"({int(index_data.get('file_count', 0) or 0)} plików).",
                         )
                     else:
-                        status = f"Aktualizacja indeksu obrazów: {processed} plików{eta_text}"
-                    _ui_status(app, status)
-
-                index_data = image_index_utils.ensure_index(
-                    roots,
-                    index_path=payload.get("image_index_path") or None,
-                    max_age_hours=24,
-                    force_rebuild=False,
-                    progress_callback=index_progress,
-                    progress_interval_seconds=1.0,
-                )
-                _cache_image_index_for_app(app, roots, index_data)
+                        logger.info("Image index cache not found for current roots")
+                        _ui_status(
+                            app,
+                            "Brak zgodnego cache indeksu obrazów, generacja przejdzie bez odświeżania.",
+                        )
+                else:
+                    logger.info("Image index refresh skipped (mode=%s)", image_index_mode)
             except Exception:
                 logger.exception("Failed to build/load image index for generation")
             _ui_status(app, "Sprawdzanie danych i generowanie PDF...")

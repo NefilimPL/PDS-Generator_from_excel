@@ -7,6 +7,7 @@ import json
 import logging
 import multiprocessing as mp
 import os
+import signal
 import sys
 import threading
 import time
@@ -28,12 +29,15 @@ from pds_generator import app_paths, image_index as image_index_utils
 
 LOG_PREFIX = "pds_headless_"
 LOG_RETENTION_DAYS = 7
+SERVICE_INTERVAL_SECONDS = 300
+SERVICE_WAIT_SLICE_SECONDS = 1
 CONFIG_FILE = Path(app_paths.get_backup_config_path())
 LEGACY_CONFIG_FILE = Path(app_paths.get_legacy_backup_config_path())
 OLD_CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
 
 _ERROR_FLAG = False
 _CRITICAL_EXCEPTION_SIGNATURES = set()
+_SERVICE_STOP_EVENT = threading.Event()
 
 
 def _cleanup_old_logs(log_dir: Path, days: int = LOG_RETENTION_DAYS) -> int:
@@ -161,7 +165,16 @@ class _HeadlessWidget:
 
 
 class HeadlessApp:
-    def __init__(self, config, excel_path, dataframes, log_path=None):
+    def __init__(
+        self,
+        config,
+        excel_path,
+        dataframes,
+        log_path=None,
+        cancel_event=None,
+        image_index_mode="refresh",
+        image_index_max_age_hours=24,
+    ):
         self.excel_path = excel_path
         self.dataframes = dataframes
         self.runtime_log_path = str(log_path) if log_path else ""
@@ -173,6 +186,8 @@ class HeadlessApp:
         self.mail_config = mailer.load_mail_config(config.get("mail", {}))
         self.image_fields = set(config.get("image_fields", []))
         self.image_dirs = list(config.get("image_dirs", []))
+        self.image_index_mode = str(image_index_mode or "refresh").strip().lower()
+        self.image_index_max_age_hours = image_index_max_age_hours
         self.image_index_data = None
         self.elements = _build_elements(config.get("elements", []), self.image_fields)
         self.groups = _build_groups(config.get("groups", []))
@@ -183,7 +198,7 @@ class HeadlessApp:
 
         self.progress = _HeadlessWidget("progress")
         self.time_label = _HeadlessWidget("time_label")
-        self.cancel_event = None
+        self.cancel_event = cancel_event
 
         self._done_event = threading.Event()
         self.status = None
@@ -191,7 +206,7 @@ class HeadlessApp:
         roots = image_index_utils.normalize_roots(
             [os.path.dirname(self.excel_path)] + list(self.image_dirs or [])
         )
-        if roots:
+        if roots and self.image_index_mode != "skip":
             try:
                 self.image_index_data = image_index_utils.load_index_for_roots(roots)
                 if self.image_index_data:
@@ -431,9 +446,60 @@ def _load_excel(path: str) -> dict:
     return read_excel_data(path)
 
 
-def run_headless(excel_path: str | None, config_path: str | None, log_dir: Path) -> int:
+def _request_service_stop(reason: str) -> None:
+    if _SERVICE_STOP_EVENT.is_set():
+        return
+    logging.info("Service stop requested: %s", reason)
+    _SERVICE_STOP_EVENT.set()
+
+
+def _register_signal_handlers() -> None:
+    def _handle_signal(signum, _frame):
+        try:
+            signame = signal.Signals(signum).name
+        except Exception:
+            signame = str(signum)
+        _request_service_stop(f"signal {signame}")
+
+    for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, _handle_signal)
+        except (ValueError, OSError, RuntimeError):
+            logging.debug("Unable to register handler for %s", name, exc_info=True)
+
+
+def _sleep_until_next_iteration(interval_seconds: int) -> bool:
+    remaining = max(0, int(interval_seconds))
+    while remaining > 0:
+        if _SERVICE_STOP_EVENT.wait(min(SERVICE_WAIT_SLICE_SECONDS, remaining)):
+            return True
+        remaining -= SERVICE_WAIT_SLICE_SECONDS
+    return _SERVICE_STOP_EVENT.is_set()
+
+
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("Value must be greater than 0.")
+    return parsed
+
+
+def run_headless(
+    excel_path: str | None,
+    config_path: str | None,
+    log_dir: Path,
+    *,
+    log_path: Path | None = None,
+    cancel_event: threading.Event | None = None,
+    image_index_mode: str = "refresh",
+    image_index_max_age_hours: float = 24,
+) -> int:
     global _ERROR_FLAG
-    log_path = setup_logging(log_dir)
+    _ERROR_FLAG = False
+    log_path = Path(log_path) if log_path else setup_logging(log_dir)
     logging.info("Headless run started. Log: %s", log_path)
     config = None
     try:
@@ -491,7 +557,15 @@ def run_headless(excel_path: str | None, config_path: str | None, log_dir: Path)
                 ", ".join(preview),
             )
 
-        app = HeadlessApp(config, resolved_excel, dataframes, log_path=log_path)
+        app = HeadlessApp(
+            config,
+            resolved_excel,
+            dataframes,
+            log_path=log_path,
+            cancel_event=cancel_event,
+            image_index_mode=image_index_mode,
+            image_index_max_age_hours=image_index_max_age_hours,
+        )
         started = pdf_export.generate_pds(app)
         if started:
             logging.info("Generation started. Waiting for completion...")
@@ -499,6 +573,9 @@ def run_headless(excel_path: str | None, config_path: str | None, log_dir: Path)
         else:
             logging.info("Generation did not start.")
 
+        if cancel_event is not None and cancel_event.is_set():
+            logging.warning("Headless run interrupted by stop request.")
+            return 0
         if _ERROR_FLAG:
             logging.error("Finished with errors.")
             return 1
@@ -518,6 +595,63 @@ def run_headless(excel_path: str | None, config_path: str | None, log_dir: Path)
         return 1
 
 
+def run_service(
+    excel_path: str | None,
+    config_path: str | None,
+    log_dir: Path,
+    interval_seconds: int,
+    *,
+    image_index_mode: str = "refresh",
+    image_index_max_age_hours: float = 24,
+) -> int:
+    _SERVICE_STOP_EVENT.clear()
+    log_path = setup_logging(log_dir)
+    _register_signal_handlers()
+
+    logging.info(
+        "Service mode enabled. Interval: %ss. Log: %s",
+        interval_seconds,
+        log_path,
+    )
+
+    iteration = 0
+    while not _SERVICE_STOP_EVENT.is_set():
+        iteration += 1
+        started_at = time.time()
+        logging.info("Service iteration %s started.", iteration)
+        exit_code = run_headless(
+            excel_path,
+            config_path,
+            log_dir,
+            log_path=log_path,
+            cancel_event=_SERVICE_STOP_EVENT,
+            image_index_mode=image_index_mode,
+            image_index_max_age_hours=image_index_max_age_hours,
+        )
+        elapsed = round(time.time() - started_at, 2)
+        logging.info(
+            "Service iteration %s finished with exit code %s in %.2fs.",
+            iteration,
+            exit_code,
+            elapsed,
+        )
+        if _SERVICE_STOP_EVENT.is_set():
+            break
+        logging.info("Sleeping %ss before next iteration.", interval_seconds)
+        if _sleep_until_next_iteration(interval_seconds):
+            break
+
+    logging.info("Service mode stopped.")
+    return 0
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("Value must be greater than 0.")
+    return parsed
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Headless PDS generator")
     parser.add_argument(
@@ -533,6 +667,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="logs",
         help="Directory for log files (default: logs).",
     )
+    parser.add_argument(
+        "--service",
+        action="store_true",
+        help="Run continuously in a service loop for NSSM or similar service managers.",
+    )
+    parser.add_argument(
+        "--interval-seconds",
+        type=_positive_int,
+        default=SERVICE_INTERVAL_SECONDS,
+        help=(
+            "Delay between headless runs in service mode "
+            f"(default: {SERVICE_INTERVAL_SECONDS}s)."
+        ),
+    )
+    parser.add_argument(
+        "--image-index-mode",
+        choices=("refresh", "cache-only", "skip"),
+        default="refresh",
+        help=(
+            "Image index behaviour during PDF generation: "
+            "refresh (default), cache-only, or skip."
+        ),
+    )
+    parser.add_argument(
+        "--image-index-max-age-hours",
+        type=_positive_float,
+        default=24,
+        help="Maximum cache age for image index refresh mode (default: 24h).",
+    )
     return parser.parse_args(argv)
 
 
@@ -541,7 +704,22 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     pdf_export.messagebox = _HeadlessMessageBox
     log_dir = Path(args.log_dir).resolve()
-    return run_headless(args.excel, args.config, log_dir)
+    if args.service:
+        return run_service(
+            args.excel,
+            args.config,
+            log_dir,
+            interval_seconds=args.interval_seconds,
+            image_index_mode=args.image_index_mode,
+            image_index_max_age_hours=args.image_index_max_age_hours,
+        )
+    return run_headless(
+        args.excel,
+        args.config,
+        log_dir,
+        image_index_mode=args.image_index_mode,
+        image_index_max_age_hours=args.image_index_max_age_hours,
+    )
 
 
 if __name__ == "__main__":

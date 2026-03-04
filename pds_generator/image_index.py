@@ -28,6 +28,7 @@ IMAGE_EXTENSIONS = {
 }
 
 ProgressCallback = Callable[[dict], None]
+StopRequestedCallback = Callable[[], bool]
 
 
 def get_default_index_path() -> str:
@@ -185,6 +186,7 @@ def build_index(
     progress_callback: ProgressCallback | None = None,
     estimated_total: int | None = None,
     progress_interval_seconds: float = 1.0,
+    stop_requested: StopRequestedCallback | None = None,
 ) -> dict:
     normalized = normalize_roots(roots)
     by_relative: dict[str, str] = {}
@@ -211,6 +213,17 @@ def build_index(
     )
 
     for root, rel_path, base_name, stem, abs_path in _iter_indexable_files(normalized):
+        if stop_requested is not None and stop_requested():
+            elapsed = max(0.0, time.monotonic() - started)
+            _emit_progress(
+                progress_callback,
+                phase="cancelled",
+                processed=processed,
+                elapsed=elapsed,
+                total_estimate=estimate,
+                current_root=current_root,
+            )
+            raise InterruptedError("Image index build cancelled")
         current_root = root
         if rel_path not in by_relative:
             by_relative[rel_path] = abs_path
@@ -269,6 +282,7 @@ def ensure_index(
     force_rebuild: bool = False,
     progress_callback: ProgressCallback | None = None,
     progress_interval_seconds: float = 1.0,
+    stop_requested: StopRequestedCallback | None = None,
 ) -> dict:
     normalized = normalize_roots(roots)
     if not normalized:
@@ -332,6 +346,7 @@ def ensure_index(
         progress_callback=progress_callback,
         estimated_total=estimated_total,
         progress_interval_seconds=progress_interval_seconds,
+        stop_requested=stop_requested,
     )
     save_index(rebuilt, index_path=target_path)
     return rebuilt

@@ -139,6 +139,144 @@
 |---|---|
 | 1. Upewnij się, że masz zapisany układ (`config.json`).<br>2. Uruchom ręcznie `pds_headless.bat` (opcjonalnie z `--excel "C:\\sciezka\\plik.xlsx"` lub `--config "C:\\sciezka\\config.json"`), aby sprawdzić logi w `logs`.<br>3. Otwórz **Harmonogram zadań** → **Utwórz zadanie...**.<br>4. Zakładka **Akcje** → **Nowa**: **Program/skrypt** = pełna ścieżka do `pds_headless.bat`.<br>5. (Opcjonalnie) **Dodaj argumenty**: `--excel "C:\\sciezka\\plik.xlsx"` lub `--config "C:\\sciezka\\config.json"`.<br>6. **Rozpocznij w**: katalog projektu (np. `C:\\_GitHub_\\PDS-Generator_from_excel`).<br>7. Ustaw wyzwalacz (godzina/dni) i zapisz zadanie. | 1. Make sure you saved the layout (`config.json`).<br>2. Run `pds_headless.bat` once (optionally with `--excel "C:\\path\\file.xlsx"` or `--config "C:\\path\\config.json"`) and check logs in `logs`.<br>3. Open **Task Scheduler** → **Create Task...**.<br>4. **Actions** tab → **New**: **Program/script** = full path to `pds_headless.bat`.<br>5. (Optional) **Add arguments**: `--excel "C:\\path\\file.xlsx"` or `--config "C:\\path\\config.json"`.<br>6. **Start in**: project directory (e.g. `C:\\_GitHub_\\PDS-Generator_from_excel`).<br>7. Set the trigger (time/days) and save the task. |
 
+## Usługa Windows z NSSM / Windows Service with NSSM
+
+### Polski
+1. Wszystkie pliki związane z usługami Windows są teraz w katalogu:
+   `windows_services`
+2. Repo zawiera **dwie osobne usługi Windows**:
+   `PDSGeneratorPdfService` = nazwa techniczna usługi PDF
+   `PDSGeneratorImageIndexService` = nazwa techniczna usługi indeksowania
+3. W `services.msc` będą widoczne jako:
+   `PDS Generator - PDF Generation Service`
+   `PDS Generator - Image Index Service`
+4. Rejestracja usługi idzie bezpośrednio przez `python.exe` + skrypt Pythona, więc po zainstalowaniu widzisz normalną usługę Windows w Menedżerze usług, a nie osobne okno skryptu. Okno konsoli pojawi się tylko wtedy, gdy ręcznie uruchomisz testowy `.bat`.
+5. `windows_services\install_windows_services.bat` jest przygotowany jako **one-click installer**:
+   sam prosi o UAC/Admin,
+   sam pobiera `nssm.exe`, jeśli go nie ma,
+   sam instaluje lokalny `python_runtime`, jeśli go nie ma,
+   sam instaluje pakiety z `requirements.txt`,
+   sam rejestruje i uruchamia usługi.
+6. Usługa PDF może działać w trybie `cache-only`, więc korzysta wyłącznie z gotowego cache indeksu zamiast odświeżać go przy każdym przebiegu. To jest domyślny tryb w instalatorze usług rozdzielonych.
+7. Najpierw możesz przetestować je ręcznie:
+   `windows_services\run_pdf_generation_service.bat --config "C:\\sciezka\\config.json"`
+   oraz
+   `windows_services\run_image_index_service.bat --config "C:\\sciezka\\config.json"`
+   Jeśli chcesz, możesz też uruchomić bezpośrednio Pythona:
+   `python pds_headless.py --service --config "C:\\sciezka\\config.json" --interval-seconds 300 --image-index-mode cache-only`
+   oraz
+   `python rebuild_image_index.py --service --config "C:\\sciezka\\config.json" --interval-seconds 1800`
+8. Najprościej użyć gotowego instalatora, który tworzy obie usługi naraz:
+
+```bat
+windows_services\install_windows_services.bat --config "C:\Dane\PDS\config.json"
+```
+
+9. Domyślne interwały:
+   `PDSGeneratorPdfService` = `300` sekund
+   `PDSGeneratorImageIndexService` = `1800` sekund
+10. Możesz je ustawić osobno:
+
+```bat
+windows_services\install_windows_services.bat --config "C:\Dane\PDS\config.json" --pdf-interval-seconds 120 --index-interval-seconds 3600
+```
+
+11. Jeśli chcesz utworzyć tylko jedną z usług:
+
+```bat
+windows_services\install_windows_services.bat --only pdf --config "C:\Dane\PDS\config.json"
+windows_services\install_windows_services.bat --only index --config "C:\Dane\PDS\config.json"
+```
+
+12. Jeśli `config.json` zawiera sekrety zaszyfrowane DPAPI, ustaw usługi na to samo konto Windows, które zapisywało konfigurację:
+
+```bat
+windows_services\install_windows_services.bat --config "C:\Dane\PDS\config.json" --run-user ".\TwojUzytkownik" --run-password "TwojeHaslo"
+```
+
+13. Jeżeli usługi mają działać na innym koncie, ustaw sekrety przez ENV (`PDS_SMTP_PASSWORD`, `PDS_ENTRA_TOKEN`, `PDS_ENTRA_CLIENT_SECRET`) oraz w razie potrzeby wskaż wspólny klucz przez `PDS_SECRET_KEY_FILE` lub `PDS_SHARED_SECRET_KEY`.
+14. Dodatkowe opcje instalatora:
+    `--pdf-service-name`, `--index-service-name`, `--pdf-display-name`, `--index-display-name`, `--pdf-description`, `--index-description`, `--config`, `--excel`, `--index-dir`, `--pdf-interval-seconds`, `--index-interval-seconds`, `--pdf-image-index-mode`, `--python`, `--nssm`, `--run-user`, `--run-password`, `--startup auto|manual`, `--only pdf|index|both`.
+15. Usunięcie usług:
+
+```bat
+windows_services\uninstall_windows_services.bat
+windows_services\uninstall_windows_services.bat --only pdf
+windows_services\uninstall_windows_services.bat --only index
+```
+
+16. Logi usług trafiają do `logs\\windows_services`. Instalator zapisuje też bootstrap log w:
+    `logs\\windows_services\\install_windows_services.log`
+17. Skrypt uninstall też sam poprosi o UAC/Admin.
+
+### English
+1. All Windows-service-related files are now in:
+   `windows_services`
+2. The repository now uses **two separate Windows services**:
+   `PDSGeneratorPdfService` = technical service name for PDF generation
+   `PDSGeneratorImageIndexService` = technical service name for image indexing
+3. In `services.msc` they appear as:
+   `PDS Generator - PDF Generation Service`
+   `PDS Generator - Image Index Service`
+4. Service registration points directly to `python.exe` + the Python script, so after installation it shows up as a normal Windows service in Services, not as a script window. A console window only appears if you start the test `.bat` manually.
+5. `windows_services\install_windows_services.bat` is designed as a **one-click installer**:
+   it self-elevates through UAC,
+   downloads `nssm.exe` if missing,
+   installs local `python_runtime` if missing,
+   installs packages from `requirements.txt`,
+   registers and starts the services.
+6. The PDF service can run in `cache-only` mode, so it only uses the prepared image-index cache instead of rebuilding it on each run. This is the default mode in the split-service installer.
+7. You can test them manually first:
+   `windows_services\run_pdf_generation_service.bat --config "C:\\path\\config.json"`
+   and
+   `windows_services\run_image_index_service.bat --config "C:\\path\\config.json"`
+   If needed, you can also start them directly with Python:
+   `python pds_headless.py --service --config "C:\\path\\config.json" --interval-seconds 300 --image-index-mode cache-only`
+   and
+   `python rebuild_image_index.py --service --config "C:\\path\\config.json" --interval-seconds 1800`
+8. The simplest option is to use the automation script that creates both services:
+
+```bat
+windows_services\install_windows_services.bat --config "C:\Data\PDS\config.json"
+```
+
+9. Default intervals:
+   `PDSGeneratorPdfService` = `300` seconds
+   `PDSGeneratorImageIndexService` = `1800` seconds
+10. You can configure them independently:
+
+```bat
+windows_services\install_windows_services.bat --config "C:\Data\PDS\config.json" --pdf-interval-seconds 120 --index-interval-seconds 3600
+```
+
+11. If you want to create only one service:
+
+```bat
+windows_services\install_windows_services.bat --only pdf --config "C:\Data\PDS\config.json"
+windows_services\install_windows_services.bat --only index --config "C:\Data\PDS\config.json"
+```
+
+12. If `config.json` contains DPAPI-encrypted secrets, run the services under the same Windows account that saved the configuration:
+
+```bat
+windows_services\install_windows_services.bat --config "C:\Data\PDS\config.json" --run-user ".\YourUser" --run-password "YourPassword"
+```
+
+13. If the services must run under a different account, provide secrets through ENV (`PDS_SMTP_PASSWORD`, `PDS_ENTRA_TOKEN`, `PDS_ENTRA_CLIENT_SECRET`) and, if needed, point to a shared key with `PDS_SECRET_KEY_FILE` or `PDS_SHARED_SECRET_KEY`.
+14. Additional installer options:
+    `--pdf-service-name`, `--index-service-name`, `--pdf-display-name`, `--index-display-name`, `--pdf-description`, `--index-description`, `--config`, `--excel`, `--index-dir`, `--pdf-interval-seconds`, `--index-interval-seconds`, `--pdf-image-index-mode`, `--python`, `--nssm`, `--run-user`, `--run-password`, `--startup auto|manual`, `--only pdf|index|both`.
+15. Remove the services with:
+
+```bat
+windows_services\uninstall_windows_services.bat
+windows_services\uninstall_windows_services.bat --only pdf
+windows_services\uninstall_windows_services.bat --only index
+```
+
+16. Service logs go to `logs\\windows_services`. The installer also writes a bootstrap log to:
+    `logs\\windows_services\\install_windows_services.log`
+17. The uninstall script also self-elevates through UAC.
+
 ## Wymagane biblioteki / Required Libraries
 
 | Polski | English |
