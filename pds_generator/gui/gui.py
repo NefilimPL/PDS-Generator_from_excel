@@ -4,6 +4,7 @@ import sys
 import time
 import webbrowser
 import threading
+import datetime as dt
 from copy import deepcopy
 
 import pandas as pd
@@ -1024,11 +1025,22 @@ class PDSGeneratorGUI(tk.Tk):
         subject_var = tk.StringVar(value=cfg["subject_prefix"])
         timeout_var = tk.StringVar(value=str(cfg["timeout_seconds"]))
         show_sensitive_var = tk.BooleanVar(value=False)
+        saved_secret_expiry_cache = mailer.get_secret_expiry_cache_status(cfg)
         token_expiry_cache = {
             "token": "",
             "token_expiry": None,
-            "client_secret_expiry": None,
-            "client_secret_error": "",
+            "client_secret_expiry": saved_secret_expiry_cache.get("expiry"),
+            "client_secret_error": str(
+                saved_secret_expiry_cache.get("last_refresh_error", "") or ""
+            ).strip(),
+            "last_refresh_utc": saved_secret_expiry_cache.get("last_refresh_utc"),
+            "last_refresh_status": saved_secret_expiry_cache.get(
+                "last_refresh_status",
+                "never",
+            ),
+            "source": "saved"
+            if saved_secret_expiry_cache.get("expiry")
+            else "",
         }
 
         ttk.Checkbutton(
@@ -1348,6 +1360,8 @@ class PDSGeneratorGUI(tk.Tk):
                 token_value = token_value[7:].strip()
             return token_value
 
+        token_expiry_cache["token"] = _normalize_token_value(cfg.get("entra_token", ""))
+
         def _set_token_expiry_label_state(text, color="#4a4a4a"):
             token_expiry_var.set(text)
             token_expiry_label.configure(foreground=color)
@@ -1361,40 +1375,77 @@ class PDSGeneratorGUI(tk.Tk):
             minutes = rem // 60
             return f"{days} d {hours} h {minutes} min"
 
+        def _format_last_refresh_info(error_text):
+            status = str(
+                token_expiry_cache.get("last_refresh_status", "never") or "never"
+            ).strip().lower()
+            refresh_at = token_expiry_cache.get("last_refresh_utc")
+            status_label = {
+                "success": "sukces",
+                "error": "błąd",
+                "never": "brak",
+            }.get(status, status)
+            if isinstance(refresh_at, dt.datetime):
+                refresh_text = refresh_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+                lines = [f"Ostatnie odświeżenie: {refresh_text} ({status_label})"]
+            else:
+                lines = [f"Ostatnie odświeżenie: brak ({status_label})"]
+            if status == "error":
+                details = error_text or str(
+                    token_expiry_cache.get("client_secret_error", "") or ""
+                ).strip()
+                if details:
+                    lines.append(f"Szczegóły: {details}")
+            source = str(token_expiry_cache.get("source", "") or "").strip().lower()
+            if source == "saved":
+                lines.append("Źródło ważności: zapisane w konfiguracji.")
+            elif source == "live":
+                lines.append("Źródło ważności: odświeżone w bieżącej sesji.")
+            return lines
+
+        def _record_secret_expiry_refresh_result(expiry, error, source):
+            token_expiry_cache["token"] = _normalize_token_value(entra_token_var.get())
+            if expiry:
+                token_expiry_cache["client_secret_expiry"] = expiry
+                token_expiry_cache["last_refresh_status"] = "success"
+                token_expiry_cache["client_secret_error"] = ""
+                token_expiry_cache["source"] = source
+            else:
+                token_expiry_cache["last_refresh_status"] = "error"
+                token_expiry_cache["client_secret_error"] = str(error or "").strip()
+                if (
+                    token_expiry_cache.get("client_secret_expiry")
+                    and not token_expiry_cache.get("source")
+                ):
+                    token_expiry_cache["source"] = "saved"
+            token_expiry_cache["last_refresh_utc"] = dt.datetime.now(dt.timezone.utc)
+
         def _clear_secret_expiry_cache(*_args):
             token_expiry_cache["token"] = ""
             token_expiry_cache["token_expiry"] = None
             token_expiry_cache["client_secret_expiry"] = None
             token_expiry_cache["client_secret_error"] = ""
+            token_expiry_cache["last_refresh_utc"] = None
+            token_expiry_cache["last_refresh_status"] = "never"
+            token_expiry_cache["source"] = ""
             refresh_token_expiry_info()
 
         def refresh_token_expiry_info(*_args):
-            token_value = _normalize_token_value(entra_token_var.get())
-            cached_token = token_expiry_cache.get("token", "")
             expiry = token_expiry_cache.get("client_secret_expiry")
             error = str(token_expiry_cache.get("client_secret_error", "") or "").strip()
+            refresh_lines = _format_last_refresh_info(error)
 
-            if not token_value and not expiry:
-                if error:
-                    _set_token_expiry_label_state(f"Ważność Secret Value: {error}")
-                else:
-                    _set_token_expiry_label_state(
-                        "Ważność Secret Value: brak danych (uzupełnij Entra i kliknij 'Pobierz token')."
-                    )
-                return
-            if token_value and cached_token != token_value:
-                _set_token_expiry_label_state(
-                    "Ważność Secret Value: brak danych dla tego tokenu "
-                    "(kliknij 'Pobierz token')."
-                )
-                return
             if not expiry:
                 if error:
-                    _set_token_expiry_label_state(f"Ważność Secret Value: {error}")
+                    base_text = f"Ważność Secret Value: {error}"
                 else:
-                    _set_token_expiry_label_state(
+                    base_text = (
                         "Ważność Secret Value: brak danych (kliknij 'Pobierz token')."
                     )
+                _set_token_expiry_label_state(
+                    "\n".join([base_text] + refresh_lines),
+                    color="#4a4a4a",
+                )
                 return
 
             expires_at_utc = expiry["expires_at_utc"]
@@ -1416,7 +1467,8 @@ class PDSGeneratorGUI(tk.Tk):
             _set_token_expiry_label_state(
                 (
                     f"{secret_caption} wygasa (UTC): {expires_at_utc_text}\n"
-                    f"Lokalnie: {expires_at_local} | Pozostało: {remaining_text}"
+                    f"Lokalnie: {expires_at_local} | Pozostało: {remaining_text}\n"
+                    + "\n".join(refresh_lines)
                 ),
                 color=color,
             )
@@ -1454,9 +1506,11 @@ class PDSGeneratorGUI(tk.Tk):
                     )
                     if current_scope != request_scope:
                         return
-                    token_expiry_cache["token"] = _normalize_token_value(entra_token_var.get())
-                    token_expiry_cache["client_secret_expiry"] = expiry
-                    token_expiry_cache["client_secret_error"] = error
+                    _record_secret_expiry_refresh_result(
+                        expiry,
+                        error,
+                        source="live",
+                    )
                     refresh_token_expiry_info()
 
                 self.ui_call(on_done)
@@ -1579,15 +1633,21 @@ class PDSGeneratorGUI(tk.Tk):
 
                 def on_success():
                     entra_token_var.set(token)
-                    token_expiry_cache["token"] = token
+                    token_expiry_cache["token"] = _normalize_token_value(token)
                     token_expiry_cache["token_expiry"] = token_expiry
-                    token_expiry_cache["client_secret_expiry"] = client_secret_expiry
-                    token_expiry_cache["client_secret_error"] = client_secret_error
+                    _record_secret_expiry_refresh_result(
+                        client_secret_expiry,
+                        client_secret_error,
+                        source="live",
+                    )
                     refresh_token_expiry_info()
                     apply_transport_state()
                     remembered_cfg = collect(strict=False, require_recipients=False)
                     if remembered_cfg:
-                        self.mail_config = remembered_cfg
+                        self.mail_config = mailer.apply_secret_expiry_cache_status(
+                            remembered_cfg,
+                            token_expiry_cache,
+                        )
                     info_lines = [
                         "Pobrano token Entra API i wstawiono do pola Token Bearer."
                     ]
@@ -1678,7 +1738,10 @@ class PDSGeneratorGUI(tk.Tk):
                     secret_key_id_var.set(key_id)
                     remembered_cfg = collect(strict=False, require_recipients=False)
                     if remembered_cfg:
-                        self.mail_config = remembered_cfg
+                        self.mail_config = mailer.apply_secret_expiry_cache_status(
+                            remembered_cfg,
+                            token_expiry_cache,
+                        )
                     self.set_status("Certyfikat szyfrowania gotowy")
                     if created:
                         messagebox.showinfo(
@@ -1704,7 +1767,10 @@ class PDSGeneratorGUI(tk.Tk):
             new_cfg = collect(strict=False, require_recipients=False)
             if not new_cfg:
                 return
-            self.mail_config = new_cfg
+            self.mail_config = mailer.apply_secret_expiry_cache_status(
+                new_cfg,
+                token_expiry_cache,
+            )
             # Persist mail settings immediately (same path/mechanism as main Save Config).
             self.save_config()
 
