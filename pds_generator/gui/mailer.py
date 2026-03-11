@@ -58,6 +58,15 @@ DEFAULT_MAIL_CONFIG = {
     "entra_sender": "",
     "entra_endpoint": "",
     "secret_key_id": "",
+    "secret_expiry_expires_at_utc": "",
+    "secret_expiry_credential_display_name": "",
+    "secret_expiry_credential_key_id": "",
+    "secret_expiry_application_display_name": "",
+    "secret_expiry_application_app_id": "",
+    "secret_expiry_selection_reason": "",
+    "secret_expiry_last_refresh_utc": "",
+    "secret_expiry_last_refresh_status": "never",
+    "secret_expiry_last_refresh_error": "",
 }
 
 SENSITIVE_MAIL_FIELDS = (
@@ -92,6 +101,19 @@ _SECRET_KEY_ID_RE = re.compile(
 _SECRET_EXPIRY_REMINDER_THRESHOLDS_DAYS = (30, 14, 7, 2, 1)
 _SECRET_EXPIRY_STATE_FILENAME = "secret_expiry_reminders.json"
 _SECRET_EXPIRY_TEST_SIM_DAYS = 7
+_SECRET_EXPIRY_REFRESH_STATUS_NEVER = "never"
+_SECRET_EXPIRY_REFRESH_STATUS_SUCCESS = "success"
+_SECRET_EXPIRY_REFRESH_STATUS_ERROR = "error"
+_SECRET_EXPIRY_REFRESH_STATUS_VALUES = {
+    _SECRET_EXPIRY_REFRESH_STATUS_NEVER,
+    _SECRET_EXPIRY_REFRESH_STATUS_SUCCESS,
+    _SECRET_EXPIRY_REFRESH_STATUS_ERROR,
+}
+_GRAPH_DATETIME_RE = re.compile(
+    r"^(?P<prefix>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"
+    r"(?:\.(?P<fraction>\d+))?"
+    r"(?P<tz>Z|[+-]\d{2}:?\d{2})?$"
+)
 _RUNTIME_MAIL_CONTEXT_CACHE = None
 
 if os.name == "nt":
@@ -416,7 +438,199 @@ def normalize_mail_config(config):
     cfg["entra_sender"] = str(cfg.get("entra_sender", "") or "").strip()
     cfg["entra_endpoint"] = str(cfg.get("entra_endpoint", "") or "").strip()
     cfg["secret_key_id"] = _normalize_secret_key_id(cfg.get("secret_key_id", ""))
+    cfg["secret_expiry_expires_at_utc"] = str(
+        cfg.get("secret_expiry_expires_at_utc", "") or ""
+    ).strip()
+    cfg["secret_expiry_credential_display_name"] = str(
+        cfg.get("secret_expiry_credential_display_name", "") or ""
+    ).strip()
+    cfg["secret_expiry_credential_key_id"] = str(
+        cfg.get("secret_expiry_credential_key_id", "") or ""
+    ).strip()
+    cfg["secret_expiry_application_display_name"] = str(
+        cfg.get("secret_expiry_application_display_name", "") or ""
+    ).strip()
+    cfg["secret_expiry_application_app_id"] = str(
+        cfg.get("secret_expiry_application_app_id", "") or ""
+    ).strip()
+    cfg["secret_expiry_selection_reason"] = str(
+        cfg.get("secret_expiry_selection_reason", "") or ""
+    ).strip()
+    cfg["secret_expiry_last_refresh_utc"] = str(
+        cfg.get("secret_expiry_last_refresh_utc", "") or ""
+    ).strip()
+    refresh_status = str(
+        cfg.get(
+            "secret_expiry_last_refresh_status",
+            _SECRET_EXPIRY_REFRESH_STATUS_NEVER,
+        )
+        or _SECRET_EXPIRY_REFRESH_STATUS_NEVER
+    ).strip().lower()
+    if refresh_status not in _SECRET_EXPIRY_REFRESH_STATUS_VALUES:
+        refresh_status = _SECRET_EXPIRY_REFRESH_STATUS_NEVER
+    cfg["secret_expiry_last_refresh_status"] = refresh_status
+    cfg["secret_expiry_last_refresh_error"] = str(
+        cfg.get("secret_expiry_last_refresh_error", "") or ""
+    ).strip()
 
+    return cfg
+
+
+def _format_datetime_utc_iso(value):
+    if not isinstance(value, dt.datetime):
+        return ""
+    return value.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _expiry_to_cached_fields(cfg, expiry):
+    if not isinstance(cfg, dict):
+        return
+    if not isinstance(expiry, dict):
+        return
+    cfg["secret_expiry_expires_at_utc"] = _format_datetime_utc_iso(
+        expiry.get("expires_at_utc")
+    )
+    cfg["secret_expiry_credential_display_name"] = str(
+        expiry.get("credential_display_name", "") or ""
+    ).strip()
+    cfg["secret_expiry_credential_key_id"] = str(
+        expiry.get("credential_key_id", "") or ""
+    ).strip()
+    cfg["secret_expiry_application_display_name"] = str(
+        expiry.get("application_display_name", "") or ""
+    ).strip()
+    cfg["secret_expiry_application_app_id"] = str(
+        expiry.get("application_app_id", "") or ""
+    ).strip()
+    cfg["secret_expiry_selection_reason"] = str(
+        expiry.get("selection_reason", "") or ""
+    ).strip()
+
+
+def _cached_expiry_from_cfg(cfg, now_utc=None):
+    if not isinstance(cfg, dict):
+        return None
+    expires_at = _parse_graph_datetime_utc(cfg.get("secret_expiry_expires_at_utc", ""))
+    if not expires_at:
+        return None
+    expiry = _build_expiry_details(expires_at, now_utc=now_utc)
+    expiry.update(
+        {
+            "credential_display_name": str(
+                cfg.get("secret_expiry_credential_display_name", "") or ""
+            ).strip(),
+            "credential_key_id": str(
+                cfg.get("secret_expiry_credential_key_id", "") or ""
+            ).strip(),
+            "application_display_name": str(
+                cfg.get("secret_expiry_application_display_name", "") or ""
+            ).strip(),
+            "application_app_id": str(
+                cfg.get("secret_expiry_application_app_id", "") or ""
+            ).strip(),
+            "selection_reason": str(
+                cfg.get("secret_expiry_selection_reason", "") or ""
+            ).strip(),
+        }
+    )
+    return expiry
+
+
+def get_secret_expiry_cache_status(config):
+    cfg = normalize_mail_config(config)
+    return {
+        "expiry": _cached_expiry_from_cfg(cfg),
+        "last_refresh_utc": _parse_graph_datetime_utc(
+            cfg.get("secret_expiry_last_refresh_utc", "")
+        ),
+        "last_refresh_status": cfg.get(
+            "secret_expiry_last_refresh_status",
+            _SECRET_EXPIRY_REFRESH_STATUS_NEVER,
+        ),
+        "last_refresh_error": str(
+            cfg.get("secret_expiry_last_refresh_error", "") or ""
+        ).strip(),
+    }
+
+
+def apply_secret_expiry_refresh_result(
+    config,
+    expiry=None,
+    error="",
+    refreshed_at_utc=None,
+):
+    cfg = normalize_mail_config(config)
+    refresh_dt = refreshed_at_utc
+    if not isinstance(refresh_dt, dt.datetime):
+        refresh_dt = dt.datetime.now(dt.timezone.utc)
+    cfg["secret_expiry_last_refresh_utc"] = _format_datetime_utc_iso(refresh_dt)
+    if expiry:
+        _expiry_to_cached_fields(cfg, expiry)
+        cfg["secret_expiry_last_refresh_status"] = (
+            _SECRET_EXPIRY_REFRESH_STATUS_SUCCESS
+        )
+        cfg["secret_expiry_last_refresh_error"] = ""
+    else:
+        cfg["secret_expiry_last_refresh_status"] = (
+            _SECRET_EXPIRY_REFRESH_STATUS_ERROR
+        )
+        cfg["secret_expiry_last_refresh_error"] = str(error or "").strip()
+    return cfg
+
+
+def apply_secret_expiry_cache_status(config, cache_status):
+    cfg = normalize_mail_config(config)
+    if not isinstance(cache_status, dict):
+        return cfg
+
+    status_value = str(
+        cache_status.get(
+            "last_refresh_status",
+            cfg.get(
+                "secret_expiry_last_refresh_status",
+                _SECRET_EXPIRY_REFRESH_STATUS_NEVER,
+            ),
+        )
+        or _SECRET_EXPIRY_REFRESH_STATUS_NEVER
+    ).strip().lower()
+    if status_value not in _SECRET_EXPIRY_REFRESH_STATUS_VALUES:
+        status_value = _SECRET_EXPIRY_REFRESH_STATUS_NEVER
+
+    expiry = cache_status.get("client_secret_expiry")
+    if not expiry:
+        expiry = cache_status.get("expiry")
+    if expiry:
+        _expiry_to_cached_fields(cfg, expiry)
+    elif status_value == _SECRET_EXPIRY_REFRESH_STATUS_NEVER:
+        cfg["secret_expiry_expires_at_utc"] = ""
+        cfg["secret_expiry_credential_display_name"] = ""
+        cfg["secret_expiry_credential_key_id"] = ""
+        cfg["secret_expiry_application_display_name"] = ""
+        cfg["secret_expiry_application_app_id"] = ""
+        cfg["secret_expiry_selection_reason"] = ""
+
+    refresh_dt = cache_status.get("last_refresh_utc")
+    parsed_refresh_dt = None
+    if isinstance(refresh_dt, dt.datetime):
+        parsed_refresh_dt = refresh_dt
+    elif refresh_dt:
+        parsed_refresh_dt = _parse_graph_datetime_utc(refresh_dt)
+    if parsed_refresh_dt:
+        cfg["secret_expiry_last_refresh_utc"] = _format_datetime_utc_iso(parsed_refresh_dt)
+
+    cfg["secret_expiry_last_refresh_status"] = status_value
+
+    error_text = str(
+        cache_status.get(
+            "client_secret_error",
+            cache_status.get("last_refresh_error", ""),
+        )
+        or ""
+    ).strip()
+    if status_value == _SECRET_EXPIRY_REFRESH_STATUS_SUCCESS:
+        cfg["secret_expiry_last_refresh_error"] = ""
+    elif error_text or status_value == _SECRET_EXPIRY_REFRESH_STATUS_ERROR:
+        cfg["secret_expiry_last_refresh_error"] = error_text
     return cfg
 
 
@@ -1318,6 +1532,24 @@ def _parse_graph_datetime_utc(value):
     text = str(value or "").strip()
     if not text:
         return None
+    match = _GRAPH_DATETIME_RE.match(text)
+    if match:
+        prefix = match.group("prefix")
+        fraction = match.group("fraction") or ""
+        tz_part = match.group("tz") or "Z"
+        if tz_part == "Z":
+            tz_part = "+00:00"
+        elif len(tz_part) == 5 and tz_part[3] != ":":
+            tz_part = f"{tz_part[:3]}:{tz_part[3:]}"
+        normalized = prefix
+        if fraction:
+            normalized += f".{(fraction + '000000')[:6]}"
+        normalized += tz_part
+        with suppress(Exception):
+            parsed = dt.datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=dt.timezone.utc)
+            return parsed.astimezone(dt.timezone.utc)
     with suppress(Exception):
         parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
@@ -2264,12 +2496,27 @@ def send_secret_expiry_reminder_if_due(config):
         return {"sent": False, "reason": "missing_client_credentials"}
 
     expiry, expiry_error = get_client_secret_expiry_details(cfg)
+    using_saved_expiry = False
     if not expiry:
-        return {"sent": False, "reason": "expiry_unavailable", "error": expiry_error}
+        cache_status = get_secret_expiry_cache_status(cfg)
+        expiry = cache_status.get("expiry")
+        using_saved_expiry = bool(expiry)
+    if not expiry:
+        return {
+            "sent": False,
+            "reason": "expiry_unavailable",
+            "error": expiry_error,
+            "using_saved_expiry": False,
+        }
 
     remaining_seconds = int(expiry.get("remaining_seconds", 0))
     if remaining_seconds <= 0:
-        return {"sent": False, "reason": "already_expired", "expiry": expiry}
+        return {
+            "sent": False,
+            "reason": "already_expired",
+            "expiry": expiry,
+            "using_saved_expiry": using_saved_expiry,
+        }
 
     remaining_days = float(expiry.get("remaining_days", 0.0))
     state = _load_secret_expiry_state()
@@ -2287,6 +2534,7 @@ def send_secret_expiry_reminder_if_due(config):
             "reason": "no_due_threshold",
             "expiry": expiry,
             "sent_thresholds": sent_thresholds,
+            "using_saved_expiry": using_saved_expiry,
         }
 
     subject = _build_secret_expiry_reminder_subject(cfg, expiry, due_threshold)
@@ -2323,6 +2571,8 @@ def send_secret_expiry_reminder_if_due(config):
         "threshold_days": int(due_threshold),
         "expiry": expiry,
         "recipients": list(cfg.get("recipients") or []),
+        "using_saved_expiry": using_saved_expiry,
+        "live_expiry_error": expiry_error,
     }
 
 

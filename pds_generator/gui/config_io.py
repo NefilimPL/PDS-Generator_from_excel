@@ -61,6 +61,46 @@ def _same_path(path_a, path_b):
     return _normalize_path(path_a) == _normalize_path(path_b)
 
 
+def _apply_element_config(app, element, elconf):
+    scale = app.scale if app.scale else 1.0
+    default_text = getattr(element, "text", element.name)
+    element.text = str(elconf.get("text", default_text) or "")
+    element.x = elconf.get("x", element.x / scale) * scale
+    element.y = elconf.get("y", element.y / scale) * scale
+    element.width = elconf.get("width", element.width / scale) * scale
+    element.height = elconf.get("height", element.height / scale) * scale
+    element.font_size = elconf.get("font_size", element.font_size / scale) * scale
+    element.max_font_size = (
+        elconf.get(
+            "max_font_size",
+            elconf.get("font_size", element.font_size / scale),
+        )
+        * scale
+    )
+    element.bold = elconf.get("bold", element.bold)
+    element.text_color = elconf.get("text_color", element.text_color)
+    element.bg_color = elconf.get("bg_color", element.bg_color)
+    element.bg_visible = elconf.get("bg_visible", element.bg_visible)
+    element.align = elconf.get("align", element.align)
+    element.auto_font = elconf.get("auto_font", element.auto_font)
+    element.layer = elconf.get("layer", element.layer)
+    if elconf.get("is_image"):
+        app.image_fields.add(element.name)
+    element.is_image = element.name in app.image_fields
+    element.sync_canvas()
+
+
+def _clear_groups(app):
+    for group in list(app.groups.values()):
+        for item in (group.rect, group.handle) + tuple(
+            getattr(group, "preview_items", [])
+        ):
+            app.canvas.delete(item)
+    app.groups = {}
+    if hasattr(app, "groups_list"):
+        app.groups_list.delete(0, "end")
+
+
 def save_config(app):
     if not app.excel_path:
         messagebox.showerror("Błąd", "Najpierw wybierz plik Excel")
@@ -194,7 +234,16 @@ def load_config(app, startup=False, path=None):
             logger.exception("Failed to update backup config from %s", cfg_path)
 
     excel_cfg = config.get("excel_path")
-    if path and excel_cfg and not _same_path(excel_cfg, path):
+    selected_cfg_path = _excel_config_path(path) if path else None
+    loaded_selected_excel_config = bool(
+        selected_cfg_path and _same_path(cfg_path, selected_cfg_path)
+    )
+    if (
+        path
+        and excel_cfg
+        and not _same_path(excel_cfg, path)
+        and not loaded_selected_excel_config
+    ):
         logger.info(
             "Skipping config load due to excel path mismatch: selected=%s config=%s",
             path,
@@ -209,6 +258,13 @@ def load_config(app, startup=False, path=None):
                 "Dostępna kopia zapasowa dotyczy innego pliku, więc nie została załadowana.",
             )
         return
+    if path and excel_cfg and not _same_path(excel_cfg, path):
+        logger.info(
+            "Loading config from selected Excel directory despite excel_path mismatch: "
+            "selected=%s config=%s",
+            path,
+            excel_cfg,
+        )
 
     app.ignore_updates = config.get("ignore_updates", False)
     app.update_test = config.get("update_test", False)
@@ -255,36 +311,46 @@ def load_config(app, startup=False, path=None):
         else:
             app.static_entries[name].set(val)
     app.conditions = config.get("conditions", [])
-    for elconf in config.get("elements", []):
+    for var in app.columns_vars.values():
+        var.set(False)
+    for var in app.static_vars.values():
+        var.set(False)
+
+    element_configs = []
+    target_element_names = set()
+    for raw_conf in config.get("elements", []):
+        if not isinstance(raw_conf, dict):
+            continue
+        name = str(raw_conf.get("name") or "").strip()
+        if not name:
+            continue
+        elconf = dict(raw_conf)
+        elconf["name"] = name
+        element_configs.append(elconf)
+        target_element_names.add(name)
+
+    for name in list(app.elements.keys()):
+        if name not in target_element_names:
+            app.remove_element(name)
+
+    for elconf in element_configs:
         name = elconf["name"]
         if name not in app.elements:
-            element = DraggableElement(app, app.canvas, name, elconf.get("text", name))
-            element.x = elconf.get("x", element.x) * app.scale
-            element.y = elconf.get("y", element.y) * app.scale
-            element.width = elconf.get("width", element.width) * app.scale
-            element.height = elconf.get("height", element.height) * app.scale
-            element.font_size = elconf.get("font_size", element.font_size) * app.scale
-            element.max_font_size = (
-                elconf.get("max_font_size", elconf.get("font_size", element.font_size / app.scale))
-                * app.scale
+            app.elements[name] = DraggableElement(
+                app,
+                app.canvas,
+                name,
+                elconf.get("text", name),
             )
-            element.bold = elconf.get("bold", element.bold)
-            element.text_color = elconf.get("text_color", element.text_color)
-            element.bg_color = elconf.get("bg_color", element.bg_color)
-            element.bg_visible = elconf.get("bg_visible", element.bg_visible)
-            element.align = elconf.get("align", element.align)
-            element.auto_font = elconf.get("auto_font", element.auto_font)
-            element.layer = elconf.get("layer", element.layer)
-            if elconf.get("is_image"):
-                app.image_fields.add(name)
-            element.is_image = name in app.image_fields
-            element.sync_canvas()
-            app.elements[name] = element
-            if name in app.columns_vars:
-                app.columns_vars[name].set(True)
-            if name in app.static_vars:
-                app.static_vars[name].set(True)
-                app.static_entries[name].set(elconf.get("text", ""))
+        element = app.elements[name]
+        _apply_element_config(app, element, elconf)
+        if name in app.columns_vars:
+            app.columns_vars[name].set(True)
+        if name in app.static_vars:
+            app.static_vars[name].set(True)
+            app.static_entries[name].set(element.text)
+
+    _clear_groups(app)
     for gconf in config.get("groups", []):
         group = GroupArea(app, app.canvas, gconf.get("name", f"Group{len(app.groups)+1}"))
         group.x = gconf.get("x", group.x) * app.scale
