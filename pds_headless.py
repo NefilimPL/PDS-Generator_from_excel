@@ -365,13 +365,16 @@ def _build_elements(elements_conf, image_fields):
         name = el.get("name")
         if not name:
             continue
+        font_size = el.get("font_size", 12)
         elements[name] = SimpleNamespace(
             name=name,
+            text=str(el.get("text", name) or ""),
             x=el.get("x", 0),
             y=el.get("y", 0),
             width=el.get("width", 0),
             height=el.get("height", 0),
-            font_size=el.get("font_size", 12),
+            font_size=font_size,
+            max_font_size=el.get("max_font_size", font_size),
             bold=el.get("bold", False),
             text_color=el.get("text_color", "black"),
             bg_color=el.get("bg_color", "white"),
@@ -382,6 +385,26 @@ def _build_elements(elements_conf, image_fields):
             is_image=el.get("is_image", name in image_fields),
         )
     return elements
+
+
+def _normalize_group_field_conf(conf):
+    font_size = conf.get("font_size", 12)
+    normalized = {
+        "width": conf.get("width", 100),
+        "height": conf.get("height", 40),
+        "font_size": font_size,
+        "max_font_size": conf.get("max_font_size", font_size),
+        "bold": conf.get("bold", False),
+        "text_color": conf.get("text_color", "black"),
+        "bg_color": conf.get("bg_color", "white"),
+        "bg_visible": conf.get("bg_visible", True),
+        "align": conf.get("align", "left"),
+        "auto_font": conf.get("auto_font", True),
+        "layer": conf.get("layer", 1),
+    }
+    if "is_image" in conf:
+        normalized["is_image"] = conf.get("is_image")
+    return normalized
 
 
 def _build_groups(groups_conf):
@@ -401,7 +424,8 @@ def _build_groups(groups_conf):
             fields=fields,
             field_pos=field_pos,
             field_conf={
-                k: dict(v) for k, v in (gconf.get("field_conf") or {}).items()
+                k: _normalize_group_field_conf(v)
+                for k, v in (gconf.get("field_conf") or {}).items()
             },
             conditions=[tuple(c) for c in gconf.get("conditions", [])],
         )

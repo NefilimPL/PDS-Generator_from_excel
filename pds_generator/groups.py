@@ -667,9 +667,9 @@ class GroupEditor(tk.Toplevel):
             return
         state = bool(self.auto_font_var.get())
         for el in self.selected_elements:
-            el.auto_font = state
-            if state and not hasattr(el, "max_font_size"):
+            if state:
                 el.max_font_size = el.font_size
+            el.auto_font = state
             el.sync_canvas()
 
     def set_layer(self):

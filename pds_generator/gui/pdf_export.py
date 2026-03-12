@@ -70,6 +70,7 @@ from tkinter import messagebox
 
 from ..number_format import round_numeric_value
 from .. import image_index as image_index_utils
+from ..text_layout import fit_text_lines, pdf_font_name, wrap_text_lines
 
 from .excel_tracking import (
     TRACKING_COLUMN,
@@ -497,92 +498,11 @@ def sanitize_filename(name: str) -> str:
 
 
 def _wrap_text_lines(text, font_name, font_size, max_width):
-    if text is None:
-        return [""]
-    text = str(text)
-    if not text:
-        return [""]
-    lines = []
-    for para in text.splitlines():
-        if not para:
-            lines.append("")
-            continue
-        words = para.split()
-        if not words:
-            lines.append("")
-            continue
-        current = words[0]
-        for word in words[1:]:
-            candidate = f"{current} {word}"
-            if pdfmetrics.stringWidth(candidate, font_name, font_size) <= max_width:
-                current = candidate
-                continue
-            lines.append(current)
-            if pdfmetrics.stringWidth(word, font_name, font_size) <= max_width:
-                current = word
-            else:
-                part = ""
-                for ch in word:
-                    candidate_part = f"{part}{ch}"
-                    if part and pdfmetrics.stringWidth(candidate_part, font_name, font_size) > max_width:
-                        lines.append(part)
-                        part = ch
-                    else:
-                        part = candidate_part
-                current = part
-        lines.append(current)
-    return lines
+    return wrap_text_lines(text, font_name, font_size, max_width)
 
 
 def _fit_text_lines(text, font_name, max_font_size, box_width, box_height, pad=2):
-    max_size = max(1, int(round(max_font_size)))
-    max_width = max(1, box_width - pad * 2)
-    max_height = max(1, box_height - pad * 2)
-    first_shrink = 3
-    second_shrink = 3
-    min_size_stage1 = max(1, max_size - first_shrink)
-    min_size_stage2 = max(1, max_size - first_shrink - second_shrink)
-
-    def split_lines(value):
-        if value is None:
-            return [""]
-        value = str(value)
-        if not value:
-            return [""]
-        lines = value.splitlines()
-        return lines if lines else [""]
-
-    def lines_fit_no_wrap(lines, size):
-        line_height = pdfmetrics.getAscent(font_name, size) - pdfmetrics.getDescent(font_name, size)
-        if line_height * len(lines) > max_height:
-            return False
-        for line in lines:
-            if pdfmetrics.stringWidth(line, font_name, size) > max_width:
-                return False
-        return True
-
-    raw_lines = split_lines(text)
-    for size in range(max_size, min_size_stage1 - 1, -1):
-        if lines_fit_no_wrap(raw_lines, size):
-            return size, raw_lines
-
-    fallback_size = min_size_stage1
-    fallback_lines = _wrap_text_lines(text, font_name, fallback_size, max_width)
-    for size in range(max_size, min_size_stage1 - 1, -1):
-        lines = _wrap_text_lines(text, font_name, size, max_width)
-        if lines_fit_no_wrap(lines, size):
-            return size, lines
-        fallback_size = size
-        fallback_lines = lines
-
-    for size in range(min_size_stage1 - 1, min_size_stage2 - 1, -1):
-        lines = _wrap_text_lines(text, font_name, size, max_width)
-        if lines_fit_no_wrap(lines, size):
-            return size, lines
-        fallback_size = size
-        fallback_lines = lines
-
-    return max(1, fallback_size), fallback_lines
+    return fit_text_lines(text, font_name, max_font_size, box_width, box_height, pad=pad)
 
 
 def _first_data_column(df):
@@ -646,7 +566,7 @@ def draw_pdf_element(app, c, element, value, x, y):
             stroke=0,
         )
     c.setFillColor(to_reportlab_color(element.text_color))
-    font_name = "Helvetica-Bold" if element.bold else "Helvetica"
+    font_name = pdf_font_name(getattr(element, "bold", False))
     box_width = element.width / app.scale
     box_height = element.height / app.scale
     base_font_size = element.font_size / app.scale

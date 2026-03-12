@@ -150,6 +150,10 @@ class PDSGeneratorGUI(tk.Tk):
         self._highlighted_fields = set()
         self.panel_bg = self.cget("background")
         self.highlight_color = "#ffd46a"
+        self._resize_after_id = None
+        self._last_canvas_view_state = None
+        self._right_panel_resize_after_id = None
+        self.fit_mode = True
         self.tooltip = Tooltip(self)
         self._configure_styles()
         self.setup_ui()
@@ -177,9 +181,9 @@ class PDSGeneratorGUI(tk.Tk):
                 continue
 
         for font_name, size in (
-            ("TkDefaultFont", 10),
-            ("TkTextFont", 10),
-            ("TkMenuFont", 10),
+            ("TkDefaultFont", 9),
+            ("TkTextFont", 9),
+            ("TkMenuFont", 9),
         ):
             try:
                 tkfont.nametofont(font_name).configure(size=size)
@@ -188,26 +192,28 @@ class PDSGeneratorGUI(tk.Tk):
 
         try:
             heading_font = tkfont.nametofont("TkHeadingFont")
-            heading_font.configure(size=10, weight="bold")
+            heading_font.configure(size=9, weight="bold")
         except tk.TclError:
             heading_font = tkfont.nametofont("TkDefaultFont").copy()
             heading_font.configure(weight="bold")
 
-        app_bg = "#eef2f6"
-        panel_bg = "#f8fafc"
-        accent_fg = "#1f2937"
-        muted_fg = "#5b6575"
+        app_bg = "#edf1f7"
+        panel_bg = "#f7f9fc"
+        accent_fg = "#172033"
+        muted_fg = "#5c6677"
 
         self.configure(bg=app_bg)
         self.option_add("*TCombobox*Listbox.font", tkfont.nametofont("TkDefaultFont"))
 
         style.configure("Toolbar.TFrame", background=app_bg)
+        style.configure("Toolbar.TLabel", background=app_bg, foreground=accent_fg)
         style.configure("Panel.TFrame", background=panel_bg)
         style.configure("Panel.TLabel", background=panel_bg)
+        style.configure("TLabel", foreground=accent_fg)
         style.configure(
             "Card.TLabelframe",
             background=panel_bg,
-            padding=(12, 10),
+            padding=(9, 8),
         )
         style.configure(
             "Card.TLabelframe.Label",
@@ -226,12 +232,14 @@ class PDSGeneratorGUI(tk.Tk):
             background=panel_bg,
             foreground=muted_fg,
         )
-        style.configure("Action.TButton", padding=(12, 7))
-        style.configure("TButton", padding=(10, 6))
-        style.configure("TEntry", padding=4)
-        style.configure("TCombobox", padding=4)
+        style.configure("Action.TButton", padding=(9, 5))
+        style.configure("TButton", padding=(7, 4))
+        style.configure("Compact.TButton", padding=(5, 2))
+        style.configure("TCheckbutton", padding=(0, 0))
+        style.configure("TEntry", padding=3)
+        style.configure("TCombobox", padding=3)
         style.configure("TNotebook", background=app_bg)
-        style.configure("Vertical.TScrollbar", arrowsize=14)
+        style.configure("Vertical.TScrollbar", arrowsize=12)
 
     @staticmethod
     def _scroll_units_from_event(event):
@@ -252,6 +260,14 @@ class PDSGeneratorGUI(tk.Tk):
             return None
         widget.yview_scroll(units, "units")
         return "break"
+
+    def schedule_resize_canvas(self, event=None):
+        if self._resize_after_id is not None:
+            try:
+                self.after_cancel(self._resize_after_id)
+            except tk.TclError:
+                pass
+        self._resize_after_id = self.after(150, self.resize_canvas)
 
     def _present_modal_window(self, win):
         try:
@@ -2277,6 +2293,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.canvas.tag_lower("page")
         self.canvas.tag_lower("grid")
         self.canvas.tag_raise("grid", "page")
+        self.canvas.tag_raise("ruler", "grid")
         if self.selected_element:
             self.layer_var.set(str(int(self.selected_element.layer)))
         
@@ -2737,17 +2754,25 @@ class PDSGeneratorGUI(tk.Tk):
 
     # ------------------------------------------------------------------
     def resize_canvas(self, event=None):
+        self._resize_after_id = None
         container_w = self.canvas_container.winfo_width()
         container_h = self.canvas_container.winfo_height()
         if container_w <= 0 or container_h <= 0:
             return
         self.min_scale = min(1.0, container_w / self.page_width, container_h / self.page_height)
-        if self.scale < self.min_scale:
+        self.canvas.config(width=container_w, height=container_h)
+        if self.fit_mode:
             self.fit_to_window()
         else:
-            self.canvas.config(width=container_w, height=container_h)
-            self.draw_grid()
-            self.center_page()
+            view_state = (
+                container_w,
+                container_h,
+                round(self.scale, 4),
+                self.page_width,
+                self.page_height,
+            )
+            if view_state != self._last_canvas_view_state:
+                self.draw_grid()
 
     def draw_grid(self):
         self.canvas.delete("grid")
@@ -2759,7 +2784,6 @@ class PDSGeneratorGUI(tk.Tk):
         h = self.page_height * self.scale
         # keep only a small constant margin so the page can be panned
         # slightly without introducing large grey areas around it
-        self.canvas_container.update_idletasks()
         self.margin = 20
         self.canvas.configure(
             scrollregion=(
@@ -2771,23 +2795,62 @@ class PDSGeneratorGUI(tk.Tk):
         )
         self.canvas.create_rectangle(0, 0, w, h, fill="white", outline="", tags="page")
         # draw rulers background
-        self.canvas.create_rectangle(0, -20, w, 0, fill="#e0e0e0", outline="black", tags="ruler")
-        self.canvas.create_rectangle(-20, 0, 0, h, fill="#e0e0e0", outline="black", tags="ruler")
+        self.canvas.create_rectangle(
+            0,
+            -20,
+            w,
+            0,
+            fill="#dde4ee",
+            outline="#7b8799",
+            tags="ruler",
+        )
+        self.canvas.create_rectangle(
+            -20,
+            0,
+            0,
+            h,
+            fill="#dde4ee",
+            outline="#7b8799",
+            tags="ruler",
+        )
         cols = int(w / step) + 1
         rows = int(h / step) + 1
         for i in range(cols):
             x = i * step
-            self.canvas.create_line(x, 0, x, h, fill="#9b9b9b", tags="grid")
-            self.canvas.create_line(x, -20, x, 0, fill="black", tags="ruler")
+            line_color = "#cfd6e2" if i % 5 else "#aab6c7"
+            self.canvas.create_line(x, 0, x, h, fill=line_color, tags="grid")
+            self.canvas.create_line(x, -20, x, 0, fill="#667085", tags="ruler")
             if i % 5 == 0:
-                self.canvas.create_text(x + 2, -18, text=str(int(x / self.scale)), anchor="nw", tags="ruler")
+                self.canvas.create_text(
+                    x + 2,
+                    -18,
+                    text=str(int(x / self.scale)),
+                    anchor="nw",
+                    fill="#465467",
+                    tags="ruler",
+                )
         for i in range(rows):
             y = i * step
-            self.canvas.create_line(0, y, w, y, fill="#9b9b9b", tags="grid")
-            self.canvas.create_line(-20, y, 0, y, fill="black", tags="ruler")
+            line_color = "#cfd6e2" if i % 5 else "#aab6c7"
+            self.canvas.create_line(0, y, w, y, fill=line_color, tags="grid")
+            self.canvas.create_line(-20, y, 0, y, fill="#667085", tags="ruler")
             if i % 5 == 0:
-                self.canvas.create_text(-18, y + 2, text=str(int(y / self.scale)), anchor="nw", tags="ruler")
-        self.canvas.create_rectangle(0, 0, w, h, outline="black", tags="grid")
+                self.canvas.create_text(
+                    -18,
+                    y + 2,
+                    text=str(int(y / self.scale)),
+                    anchor="nw",
+                    fill="#465467",
+                    tags="ruler",
+                )
+        self.canvas.create_rectangle(0, 0, w, h, outline="#687588", tags="grid")
+        self._last_canvas_view_state = (
+            self.canvas_container.winfo_width(),
+            self.canvas_container.winfo_height(),
+            round(self.scale, 4),
+            self.page_width,
+            self.page_height,
+        )
         self.canvas.tag_lower("page")
         self.canvas.tag_lower("grid")
         self.canvas.tag_raise("grid", "page")
@@ -2843,7 +2906,6 @@ class PDSGeneratorGUI(tk.Tk):
         return snap_dx, snap_dy
 
     def center_page(self):
-        self.canvas.update_idletasks()
         w = self.page_width * self.scale
         h = self.page_height * self.scale
         container_w = self.canvas_container.winfo_width()
@@ -2861,6 +2923,7 @@ class PDSGeneratorGUI(tk.Tk):
     def ctrl_zoom(self, event, delta=None):
         if delta is None:
             delta = event.delta
+        self.fit_mode = False
         factor = 1.1 if delta > 0 else 0.9
         new_scale = self.scale * factor
         new_scale = max(self.min_scale, min(self.max_scale, new_scale))
@@ -2905,6 +2968,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.canvas.yview_moveto((y * factor - event.y + self.margin + 20) / total_h)
 
     def fit_to_window(self):
+        self.fit_mode = True
         container_w = self.canvas_container.winfo_width()
         container_h = self.canvas_container.winfo_height()
         if container_w <= 0 or container_h <= 0:
@@ -2946,6 +3010,7 @@ class PDSGeneratorGUI(tk.Tk):
             self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
 
     def start_pan(self, event):
+        self.fit_mode = False
         self.canvas.scan_mark(event.x, event.y)
 
     def pan_canvas(self, event):
@@ -3097,9 +3162,9 @@ class PDSGeneratorGUI(tk.Tk):
             return
         state = bool(self.auto_font_var.get())
         for el in self.selected_elements:
-            el.auto_font = state
-            if state and not hasattr(el, "max_font_size"):
+            if state:
                 el.max_font_size = el.font_size
+            el.auto_font = state
             el.sync_canvas()
         self.push_history()
 

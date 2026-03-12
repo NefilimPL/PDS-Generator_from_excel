@@ -6,7 +6,8 @@ import pandas as pd
 import requests
 from PIL import Image, ImageTk, UnidentifiedImageError
 import tkinter as tk
-from tkinter import font as tkfont
+
+from .text_layout import DEFAULT_FONT_FAMILY, fit_text_lines, pdf_font_name
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class DraggableElement:
         self.font_size = 12
         self.max_font_size = self.font_size
         self.bold = False
-        self.font_family = "Arial"
+        self.font_family = getattr(parent, "ui_font_family", DEFAULT_FONT_FAMILY)
         self.auto_font = True
         self.text_color = "black"
         self.bg_color = "white"
@@ -375,113 +376,33 @@ class DraggableElement:
 
     def apply_font(self):
         weight = "bold" if self.bold else "normal"
-        self.canvas.itemconfig(self.label, font=(self.font_family, int(self.font_size), weight))
-
-    def _wrap_text(self, text, font, max_width):
-        if text is None:
-            return [""]
-        text = str(text)
-        if not text:
-            return [""]
-        lines = []
-        for para in text.splitlines():
-            if not para:
-                lines.append("")
-                continue
-            words = para.split()
-            if not words:
-                lines.append("")
-                continue
-            current = words[0]
-            for word in words[1:]:
-                candidate = f"{current} {word}"
-                if font.measure(candidate) <= max_width:
-                    current = candidate
-                    continue
-                lines.append(current)
-                if font.measure(word) <= max_width:
-                    current = word
-                else:
-                    part = ""
-                    for ch in word:
-                        candidate_part = f"{part}{ch}"
-                        if part and font.measure(candidate_part) > max_width:
-                            lines.append(part)
-                            part = ch
-                        else:
-                            part = candidate_part
-                    current = part
-            lines.append(current)
-        return lines
+        self.canvas.itemconfig(
+            self.label,
+            font=(self.font_family, int(round(self.font_size)), weight),
+        )
 
     def fit_text(self):
         if hasattr(self, "image_id") or not self.auto_font:
             return
-        max_size = int(round(getattr(self, "max_font_size", self.font_size)))
-        max_size = max(1, max_size)
-        weight = "bold" if self.bold else "normal"
-        max_width = max(1, int(self.width - 4))
-        max_height = max(1, int(self.height - 4))
-        test_font = tkfont.Font(family=self.font_family, size=max_size, weight=weight)
-        first_shrink = 3
-        second_shrink = 3
-        min_size_stage1 = max(1, max_size - first_shrink)
-        min_size_stage2 = max(1, max_size - first_shrink - second_shrink)
-
-        def split_lines(text):
-            if text is None:
-                return [""]
-            text = str(text)
-            if not text:
-                return [""]
-            lines = text.splitlines()
-            return lines if lines else [""]
-
-        def lines_fit_no_wrap(lines):
-            line_height = test_font.metrics("linespace")
-            if line_height * len(lines) > max_height:
-                return False
-            for line in lines:
-                if test_font.measure(line) > max_width:
-                    return False
-            return True
-
-        raw_lines = split_lines(self.text)
-        for size in range(max_size, min_size_stage1 - 1, -1):
-            test_font.configure(size=size)
-            if lines_fit_no_wrap(raw_lines):
-                self.font_size = size
-                self.apply_font()
-                self.canvas.itemconfig(self.label, text="\n".join(raw_lines))
-                return
-
-        fallback_size = min_size_stage1
-        fallback_lines = self._wrap_text(self.text, test_font, max_width)
-        for size in range(max_size, min_size_stage1 - 1, -1):
-            test_font.configure(size=size)
-            lines = self._wrap_text(self.text, test_font, max_width)
-            if lines_fit_no_wrap(lines):
-                self.font_size = size
-                self.apply_font()
-                self.canvas.itemconfig(self.label, text="\n".join(lines))
-                return
-            fallback_size = size
-            fallback_lines = lines
-
-        for size in range(min_size_stage1 - 1, min_size_stage2 - 1, -1):
-            test_font.configure(size=size)
-            lines = self._wrap_text(self.text, test_font, max_width)
-            if lines_fit_no_wrap(lines):
-                self.font_size = size
-                self.apply_font()
-                self.canvas.itemconfig(self.label, text="\n".join(lines))
-                return
-            fallback_size = size
-            fallback_lines = lines
-
-        self.font_size = max(1, fallback_size)
+        scale = getattr(self.parent, "scale", 1.0) or 1.0
+        font_name = pdf_font_name(self.bold)
+        max_size = max(
+            1,
+            getattr(self, "max_font_size", self.font_size) / scale,
+        )
+        box_width = self.width / scale
+        box_height = self.height / scale
+        size, lines = fit_text_lines(
+            self.text,
+            font_name,
+            max_size,
+            box_width,
+            box_height,
+            pad=2,
+        )
+        self.font_size = max(1, size * scale)
         self.apply_font()
-        self.canvas.itemconfig(self.label, text="\n".join(fallback_lines))
+        self.canvas.itemconfig(self.label, text="\n".join(lines))
 
     def update_colors(self):
         if hasattr(self, "image_id"):
