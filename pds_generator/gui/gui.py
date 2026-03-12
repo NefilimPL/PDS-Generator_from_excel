@@ -70,7 +70,15 @@ class PDSGeneratorGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("PDS Generator")
-        self.geometry("1200x800")
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        window_w = min(1380, max(980, screen_w - 80))
+        window_h = min(900, max(680, screen_h - 90))
+        window_w = min(window_w, max(760, screen_w - 30))
+        window_h = min(window_h, max(560, screen_h - 40))
+        pos_x = max((screen_w - window_w) // 2, 10)
+        pos_y = max((screen_h - window_h) // 2, 10)
+        self.geometry(f"{window_w}x{window_h}+{pos_x}+{pos_y}")
         self.repo_dir = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..")
         )
@@ -143,6 +151,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.panel_bg = self.cget("background")
         self.highlight_color = "#ffd46a"
         self.tooltip = Tooltip(self)
+        self._configure_styles()
         self.setup_ui()
         self.bind_all("<Control-z>", self.undo)
         self.bind_all("<Control-x>", self.redo)
@@ -157,6 +166,92 @@ class PDSGeneratorGUI(tk.Tk):
     # ------------------------------------------------------------------
     def setup_ui(self):
         build_ui(self)
+
+    def _configure_styles(self):
+        style = ttk.Style(self)
+        for theme_name in ("vista", "clam", "alt", "default"):
+            try:
+                style.theme_use(theme_name)
+                break
+            except tk.TclError:
+                continue
+
+        for font_name, size in (
+            ("TkDefaultFont", 10),
+            ("TkTextFont", 10),
+            ("TkMenuFont", 10),
+        ):
+            try:
+                tkfont.nametofont(font_name).configure(size=size)
+            except tk.TclError:
+                continue
+
+        try:
+            heading_font = tkfont.nametofont("TkHeadingFont")
+            heading_font.configure(size=10, weight="bold")
+        except tk.TclError:
+            heading_font = tkfont.nametofont("TkDefaultFont").copy()
+            heading_font.configure(weight="bold")
+
+        app_bg = "#eef2f6"
+        panel_bg = "#f8fafc"
+        accent_fg = "#1f2937"
+        muted_fg = "#5b6575"
+
+        self.configure(bg=app_bg)
+        self.option_add("*TCombobox*Listbox.font", tkfont.nametofont("TkDefaultFont"))
+
+        style.configure("Toolbar.TFrame", background=app_bg)
+        style.configure("Panel.TFrame", background=panel_bg)
+        style.configure("Panel.TLabel", background=panel_bg)
+        style.configure(
+            "Card.TLabelframe",
+            background=panel_bg,
+            padding=(12, 10),
+        )
+        style.configure(
+            "Card.TLabelframe.Label",
+            background=panel_bg,
+            foreground=accent_fg,
+            font=heading_font,
+        )
+        style.configure(
+            "DialogTitle.TLabel",
+            background=app_bg,
+            foreground=accent_fg,
+            font=heading_font,
+        )
+        style.configure(
+            "Muted.TLabel",
+            background=panel_bg,
+            foreground=muted_fg,
+        )
+        style.configure("Action.TButton", padding=(12, 7))
+        style.configure("TButton", padding=(10, 6))
+        style.configure("TEntry", padding=4)
+        style.configure("TCombobox", padding=4)
+        style.configure("TNotebook", background=app_bg)
+        style.configure("Vertical.TScrollbar", arrowsize=14)
+
+    @staticmethod
+    def _scroll_units_from_event(event):
+        button_num = getattr(event, "num", None)
+        if button_num == 4:
+            return -1
+        if button_num == 5:
+            return 1
+        delta = int(getattr(event, "delta", 0) or 0)
+        if delta == 0:
+            return 0
+        steps = max(1, int(abs(delta) / 120))
+        return -steps if delta > 0 else steps
+
+    def _scroll_widget_y(self, widget, event):
+        units = self._scroll_units_from_event(event)
+        if not units:
+            return None
+        widget.yview_scroll(units, "units")
+        return "break"
 
     def _present_modal_window(self, win):
         try:
@@ -1001,7 +1096,20 @@ class PDSGeneratorGUI(tk.Tk):
         win = tk.Toplevel(self)
         self.mail_settings_win = win
         win.title("Konfiguracja e-mail")
-        win.columnconfigure(1, weight=1)
+        win.configure(bg=self.cget("background"))
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(0, weight=1)
+
+        screen_w = win.winfo_screenwidth()
+        screen_h = win.winfo_screenheight()
+        dialog_w = min(940, max(700, screen_w - 120))
+        dialog_h = min(820, max(560, screen_h - 150))
+        dialog_w = min(dialog_w, max(660, screen_w - 30))
+        dialog_h = min(dialog_h, max(520, screen_h - 50))
+        dialog_x = max((screen_w - dialog_w) // 2, 10)
+        dialog_y = max((screen_h - dialog_h) // 2, 10)
+        win.geometry(f"{dialog_w}x{dialog_h}+{dialog_x}+{dialog_y}")
+        win.minsize(660, 520)
 
         enabled_var = tk.BooleanVar(value=cfg["enabled"])
         transport_var = tk.StringVar(value=cfg["transport"])
@@ -1043,17 +1151,96 @@ class PDSGeneratorGUI(tk.Tk):
             else "",
         }
 
+        outer = ttk.Frame(win, style="Toolbar.TFrame")
+        outer.grid(row=0, column=0, sticky="nsew")
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)
+
+        scroll_canvas = tk.Canvas(
+            outer,
+            highlightthickness=0,
+            bd=0,
+            bg=self.cget("background"),
+        )
+        scroll_canvas.grid(row=0, column=0, sticky="nsew")
+        form_scroll = ttk.Scrollbar(
+            outer, orient="vertical", command=scroll_canvas.yview
+        )
+        form_scroll.grid(row=0, column=1, sticky="ns")
+        scroll_canvas.configure(yscrollcommand=form_scroll.set)
+
+        form = ttk.Frame(
+            scroll_canvas,
+            padding=(16, 16, 16, 18),
+            style="Toolbar.TFrame",
+        )
+        form_window = scroll_canvas.create_window((0, 0), window=form, anchor="nw")
+        form.columnconfigure(0, weight=1)
+
+        ttk.Separator(outer, orient="horizontal").grid(
+            row=1, column=0, columnspan=2, sticky="ew"
+        )
+        btns = ttk.Frame(outer, padding=(16, 12), style="Toolbar.TFrame")
+        btns.grid(row=2, column=0, columnspan=2, sticky="ew")
+        for col_idx in range(2):
+            btns.columnconfigure(col_idx, weight=1)
+
+        wrap_width = max(440, dialog_w - 260)
+        recipients_box = None
+
+        def sync_scroll_region(_event=None):
+            scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all"))
+
+        def sync_form_width(event):
+            scroll_canvas.itemconfigure(form_window, width=max(event.width, 1))
+            sync_scroll_region()
+
+        def scroll_form(event):
+            if recipients_box is not None and event.widget == recipients_box:
+                return None
+            units = self._scroll_units_from_event(event)
+            if not units:
+                return None
+            scroll_canvas.yview_scroll(units, "units")
+            return "break"
+
+        form.bind("<Configure>", sync_scroll_region)
+        scroll_canvas.bind("<Configure>", sync_form_width)
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            win.bind(sequence, scroll_form, add="+")
+
+        title_frame = ttk.Frame(form, style="Toolbar.TFrame")
+        title_frame.pack(fill="x", pady=(0, 12))
+        ttk.Label(
+            title_frame,
+            text="Konfiguracja wysyłki raportów",
+            style="DialogTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            title_frame,
+            text=(
+                "Ustaw SMTP albo Microsoft Entra API. Formularz jest przewijany, "
+                "a przyciski akcji zostają zawsze widoczne u dołu okna."
+            ),
+            justify="left",
+            wraplength=wrap_width,
+        ).pack(anchor="w", pady=(4, 0))
+
+        general_frame = ttk.LabelFrame(form, text="Ogólne", style="Card.TLabelframe")
+        general_frame.pack(fill="x", pady=(0, 12))
+        general_frame.columnconfigure(1, weight=1)
+
         ttk.Checkbutton(
-            win,
+            general_frame,
             text="Włącz wysyłkę raportów po generowaniu PDF",
             variable=enabled_var,
-        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 8))
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 8))
 
-        ttk.Label(win, text="Metoda wysyłki:").grid(
-            row=1, column=0, sticky="w", padx=10, pady=2
+        ttk.Label(general_frame, text="Metoda wysyłki:").grid(
+            row=1, column=0, sticky="nw", padx=4, pady=2
         )
-        transport_frame = ttk.Frame(win)
-        transport_frame.grid(row=1, column=1, sticky="w", padx=10, pady=2)
+        transport_frame = ttk.Frame(general_frame, style="Panel.TFrame")
+        transport_frame.grid(row=1, column=1, sticky="w", padx=4, pady=2)
         ttk.Radiobutton(
             transport_frame,
             text="SMTP",
@@ -1062,33 +1249,48 @@ class PDSGeneratorGUI(tk.Tk):
         ).pack(side="left")
         ttk.Radiobutton(
             transport_frame,
-            text="Microsoft Entra API (token)",
+            text="Microsoft Entra API",
             value=mailer.TRANSPORT_ENTRA_API,
             variable=transport_var,
-        ).pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=(10, 0))
 
-        smtp_frame = ttk.LabelFrame(win, text="Ustawienia SMTP")
-        smtp_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(6, 2))
+        ttk.Label(
+            general_frame,
+            text=(
+                "SMTP sprawdzi się przy klasycznej skrzynce. "
+                "Microsoft Entra API pozwala wysyłać przez aplikację w Azure/Entra."
+            ),
+            justify="left",
+            wraplength=wrap_width - 40,
+        ).grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            padx=4,
+            pady=(6, 0),
+        )
+
+        smtp_frame = ttk.LabelFrame(
+            form, text="Ustawienia SMTP", style="Card.TLabelframe"
+        )
+        smtp_frame.pack(fill="x", pady=(0, 12))
         smtp_frame.columnconfigure(1, weight=1)
 
         ttk.Label(smtp_frame, text="Serwer SMTP:").grid(
-            row=0, column=0, sticky="w", padx=8, pady=2
+            row=0, column=0, sticky="w", padx=4, pady=3
         )
         host_entry = ttk.Entry(smtp_frame, textvariable=host_var)
-        host_entry.grid(
-            row=0, column=1, sticky="ew", padx=8, pady=2
-        )
+        host_entry.grid(row=0, column=1, sticky="ew", padx=4, pady=3)
 
         ttk.Label(smtp_frame, text="Port SMTP:").grid(
-            row=1, column=0, sticky="w", padx=8, pady=2
+            row=1, column=0, sticky="w", padx=4, pady=3
         )
         port_entry = ttk.Entry(smtp_frame, textvariable=port_var, width=10)
-        port_entry.grid(
-            row=1, column=1, sticky="w", padx=8, pady=2
-        )
+        port_entry.grid(row=1, column=1, sticky="w", padx=4, pady=3)
 
         ttk.Label(smtp_frame, text="Zabezpieczenie:").grid(
-            row=2, column=0, sticky="w", padx=8, pady=2
+            row=2, column=0, sticky="w", padx=4, pady=3
         )
         security_box = ttk.Combobox(
             smtp_frame,
@@ -1096,171 +1298,174 @@ class PDSGeneratorGUI(tk.Tk):
             values=(mailer.SECURITY_STARTTLS, mailer.SECURITY_SSL, mailer.SECURITY_NONE),
             state="readonly",
         )
-        security_box.grid(row=2, column=1, sticky="w", padx=8, pady=2)
+        security_box.grid(row=2, column=1, sticky="w", padx=4, pady=3)
 
         ttk.Label(smtp_frame, text="Login SMTP:").grid(
-            row=3, column=0, sticky="w", padx=8, pady=2
+            row=3, column=0, sticky="w", padx=4, pady=3
         )
         username_entry = ttk.Entry(smtp_frame, textvariable=username_var)
-        username_entry.grid(
-            row=3, column=1, sticky="ew", padx=8, pady=2
-        )
+        username_entry.grid(row=3, column=1, sticky="ew", padx=4, pady=3)
 
         ttk.Label(smtp_frame, text="Hasło SMTP:").grid(
-            row=4, column=0, sticky="w", padx=8, pady=2
+            row=4, column=0, sticky="w", padx=4, pady=3
         )
         password_entry = ttk.Entry(smtp_frame, textvariable=password_var, show="*")
-        password_entry.grid(
-            row=4, column=1, sticky="ew", padx=8, pady=2
-        )
+        password_entry.grid(row=4, column=1, sticky="ew", padx=4, pady=3)
 
         ttk.Label(smtp_frame, text="Adres nadawcy:").grid(
-            row=5, column=0, sticky="w", padx=8, pady=2
+            row=5, column=0, sticky="w", padx=4, pady=3
         )
         sender_entry = ttk.Entry(smtp_frame, textvariable=sender_var)
-        sender_entry.grid(
-            row=5, column=1, sticky="ew", padx=8, pady=2
-        )
+        sender_entry.grid(row=5, column=1, sticky="ew", padx=4, pady=3)
 
-        api_frame = ttk.LabelFrame(win, text="Microsoft Entra API")
-        api_frame.grid(row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=(6, 2))
+        api_frame = ttk.LabelFrame(
+            form, text="Microsoft Entra API", style="Card.TLabelframe"
+        )
+        api_frame.pack(fill="x", pady=(0, 12))
         api_frame.columnconfigure(1, weight=1)
 
         ttk.Label(
             api_frame,
             text=(
                 "Uwierzytelnianie: użyj gotowego tokenu Bearer ALBO danych aplikacji.\n"
-                "Mapowanie: Aplikacja(klient)=Client ID, Dzierżawa=Tenant ID, "
-                "Wartość klucza=Secret Value.\n"
-                "Identyfikator obiektu i Identyfikator wpisu tajnego nie są wymagane."
+                "Mapowanie: Aplikacja (Client ID), Dzierżawa (Tenant ID), "
+                "Wartość klucza (Secret Value).\n"
+                "Identyfikator obiektu i identyfikator wpisu tajnego nie są wymagane."
             ),
             justify="left",
-            wraplength=620,
-        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(2, 6))
+            wraplength=wrap_width - 40,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 8))
 
         ttk.Label(api_frame, text="Token Bearer:").grid(
-            row=1, column=0, sticky="w", padx=8, pady=2
+            row=1, column=0, sticky="w", padx=4, pady=3
         )
         token_entry = ttk.Entry(api_frame, textvariable=entra_token_var, show="*")
-        token_entry.grid(row=1, column=1, sticky="ew", padx=8, pady=2)
+        token_entry.grid(row=1, column=1, sticky="ew", padx=4, pady=3)
         token_expiry_label = ttk.Label(
             api_frame,
             textvariable=token_expiry_var,
             justify="left",
-            wraplength=320,
+            wraplength=wrap_width - 40,
         )
-        token_expiry_label.grid(row=1, column=2, sticky="w", padx=(0, 8), pady=2)
+        token_expiry_label.grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 6)
+        )
 
         ttk.Label(api_frame, text="Tenant ID (dzierżawy):").grid(
-            row=2, column=0, sticky="w", padx=8, pady=2
+            row=3, column=0, sticky="w", padx=4, pady=3
         )
         entra_tenant_entry = ttk.Entry(api_frame, textvariable=entra_tenant_var)
-        entra_tenant_entry.grid(
-            row=2, column=1, sticky="ew", padx=8, pady=2
-        )
+        entra_tenant_entry.grid(row=3, column=1, sticky="ew", padx=4, pady=3)
 
         ttk.Label(api_frame, text="Client ID (aplikacji):").grid(
-            row=3, column=0, sticky="w", padx=8, pady=2
+            row=4, column=0, sticky="w", padx=4, pady=3
         )
         entra_client_entry = ttk.Entry(api_frame, textvariable=entra_client_var)
-        entra_client_entry.grid(
-            row=3, column=1, sticky="ew", padx=8, pady=2
-        )
+        entra_client_entry.grid(row=4, column=1, sticky="ew", padx=4, pady=3)
 
         ttk.Label(api_frame, text="Secret Value (wartość klucza):").grid(
-            row=4, column=0, sticky="w", padx=8, pady=2
+            row=5, column=0, sticky="w", padx=4, pady=3
         )
         entra_client_secret_entry = ttk.Entry(
             api_frame, textvariable=entra_client_secret_var, show="*"
         )
-        entra_client_secret_entry.grid(
-            row=4, column=1, sticky="ew", padx=8, pady=2
-        )
+        entra_client_secret_entry.grid(row=5, column=1, sticky="ew", padx=4, pady=3)
 
         ttk.Label(api_frame, text="Nadawca (UPN/ID):").grid(
-            row=5, column=0, sticky="w", padx=8, pady=2
+            row=6, column=0, sticky="w", padx=4, pady=3
         )
         entra_sender_entry = ttk.Entry(api_frame, textvariable=entra_sender_var)
-        entra_sender_entry.grid(
-            row=5, column=1, sticky="ew", padx=8, pady=2
-        )
+        entra_sender_entry.grid(row=6, column=1, sticky="ew", padx=4, pady=3)
 
         ttk.Label(api_frame, text="Endpoint (opcjonalnie):").grid(
-            row=6, column=0, sticky="w", padx=8, pady=2
+            row=7, column=0, sticky="w", padx=4, pady=3
         )
         entra_endpoint_entry = ttk.Entry(api_frame, textvariable=entra_endpoint_var)
-        entra_endpoint_entry.grid(
-            row=6, column=1, sticky="ew", padx=8, pady=2
-        )
+        entra_endpoint_entry.grid(row=7, column=1, sticky="ew", padx=4, pady=3)
 
         ttk.Label(api_frame, text="Certyfikat (ID):").grid(
-            row=7, column=0, sticky="w", padx=8, pady=2
+            row=8, column=0, sticky="w", padx=4, pady=3
         )
         secret_key_id_entry = ttk.Entry(
             api_frame, textvariable=secret_key_id_var, state="readonly"
         )
-        secret_key_id_entry.grid(row=7, column=1, sticky="ew", padx=8, pady=2)
+        secret_key_id_entry.grid(row=8, column=1, sticky="ew", padx=4, pady=3)
         secret_key_status_label = ttk.Label(
             api_frame,
             textvariable=secret_key_status_var,
             justify="left",
-            wraplength=620,
+            wraplength=wrap_width - 40,
         )
         secret_key_status_label.grid(
-            row=8,
-            column=0,
-            columnspan=2,
-            sticky="w",
-            padx=8,
-            pady=(0, 2),
+            row=9, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 6)
         )
 
-        cert_btns = ttk.Frame(api_frame)
-        cert_btns.grid(row=9, column=1, sticky="w", padx=8, pady=(2, 2))
+        api_actions = ttk.Frame(api_frame, style="Panel.TFrame")
+        api_actions.grid(
+            row=10, column=0, columnspan=2, sticky="w", padx=4, pady=(2, 2)
+        )
         generate_cert_btn = ttk.Button(
-            cert_btns, text="Generuj certyfikat", command=lambda: None
+            api_actions, text="Generuj certyfikat", command=lambda: None
         )
         generate_cert_btn.pack(side="left")
-
         fetch_token_btn = ttk.Button(
-            api_frame, text="Pobierz token", command=lambda: None
+            api_actions, text="Pobierz token", command=lambda: None
         )
-        fetch_token_btn.grid(row=10, column=1, sticky="w", padx=8, pady=(4, 2))
+        fetch_token_btn.pack(side="left", padx=(8, 0))
 
-        ttk.Checkbutton(
+        show_sensitive_check = ttk.Checkbutton(
             api_frame,
             text="Pokaż pola wrażliwe (hasła/tokeny)",
             variable=show_sensitive_var,
-        ).grid(row=11, column=1, sticky="w", padx=8, pady=(0, 2))
-
-        ttk.Label(win, text="Temat (prefix):").grid(
-            row=4, column=0, sticky="w", padx=10, pady=2
         )
-        ttk.Entry(win, textvariable=subject_var).grid(
-            row=4, column=1, sticky="ew", padx=10, pady=2
+        show_sensitive_check.grid(
+            row=11, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 0)
         )
 
-        ttk.Label(win, text="Timeout [s]:").grid(
-            row=5, column=0, sticky="w", padx=10, pady=2
+        delivery_frame = ttk.LabelFrame(form, text="Wysyłka", style="Card.TLabelframe")
+        delivery_frame.pack(fill="x", pady=(0, 4))
+        delivery_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(delivery_frame, text="Temat (prefix):").grid(
+            row=0, column=0, sticky="w", padx=4, pady=3
         )
-        ttk.Entry(win, textvariable=timeout_var, width=10).grid(
-            row=5, column=1, sticky="w", padx=10, pady=2
+        ttk.Entry(delivery_frame, textvariable=subject_var).grid(
+            row=0, column=1, sticky="ew", padx=4, pady=3
+        )
+
+        ttk.Label(delivery_frame, text="Timeout [s]:").grid(
+            row=1, column=0, sticky="w", padx=4, pady=3
+        )
+        ttk.Entry(delivery_frame, textvariable=timeout_var, width=10).grid(
+            row=1, column=1, sticky="w", padx=4, pady=3
         )
 
         ttk.Label(
-            win,
-            text="Odbiorcy (jeden adres w linii, albo rozdzielone przecinkiem):",
-        ).grid(row=6, column=0, columnspan=2, sticky="w", padx=10, pady=(8, 2))
-        recipients_box = tk.Text(win, height=6, width=46)
-        recipients_box.grid(row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=2)
-        recipients_box.insert("1.0", mailer.recipients_to_text(cfg["recipients"]))
+            delivery_frame,
+            text="Odbiorcy (jeden adres w linii albo rozdzieleni przecinkiem):",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=4, pady=(8, 4))
 
-        btns = ttk.Frame(win)
-        btns.grid(row=8, column=0, columnspan=2, sticky="ew", padx=10, pady=(8, 10))
-        btns.columnconfigure(0, weight=1)
-        btns.columnconfigure(1, weight=1)
-        btns.columnconfigure(2, weight=1)
-        btns.columnconfigure(3, weight=1)
+        recipients_frame = ttk.Frame(delivery_frame, style="Panel.TFrame")
+        recipients_frame.grid(
+            row=3, column=0, columnspan=2, sticky="nsew", padx=4, pady=(0, 2)
+        )
+        recipients_frame.columnconfigure(0, weight=1)
+        recipients_frame.rowconfigure(0, weight=1)
+        recipients_box = tk.Text(
+            recipients_frame,
+            height=5,
+            width=46,
+            wrap="word",
+            borderwidth=1,
+            relief="solid",
+        )
+        recipients_box.grid(row=0, column=0, sticky="nsew")
+        recipients_scroll = ttk.Scrollbar(
+            recipients_frame, orient="vertical", command=recipients_box.yview
+        )
+        recipients_scroll.grid(row=0, column=1, sticky="ns")
+        recipients_box.configure(yscrollcommand=recipients_scroll.set)
+        recipients_box.insert("1.0", mailer.recipients_to_text(cfg["recipients"]))
 
         smtp_controls = [
             host_entry,
@@ -1280,6 +1485,7 @@ class PDSGeneratorGUI(tk.Tk):
             secret_key_id_entry,
             generate_cert_btn,
             fetch_token_btn,
+            show_sensitive_check,
         ]
 
         sensitive_toggle_guard = {"active": False}
@@ -1819,19 +2025,33 @@ class PDSGeneratorGUI(tk.Tk):
         def close():
             self._close_modal_window(win, "mail_settings_win")
 
-        ttk.Button(btns, text="Test połączenia", command=test_connection).grid(
-            row=0, column=0, sticky="ew"
-        )
-        ttk.Button(btns, text="Wyślij testową wiadomość", command=send_test_message).grid(
-            row=0, column=1, sticky="ew", padx=(6, 0)
-        )
-        ttk.Button(btns, text="Zapisz", command=save_only).grid(
-            row=0, column=2, sticky="ew", padx=(6, 0)
-        )
-        ttk.Button(btns, text="Zamknij", command=close).grid(
-            row=0, column=3, sticky="ew", padx=(6, 0)
-        )
+        ttk.Button(
+            btns,
+            text="Test połączenia",
+            command=test_connection,
+            style="Action.TButton",
+        ).grid(row=0, column=0, sticky="ew")
+        ttk.Button(
+            btns,
+            text="Wyślij testową wiadomość",
+            command=send_test_message,
+            style="Action.TButton",
+        ).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        ttk.Button(
+            btns,
+            text="Zapisz",
+            command=save_only,
+            style="Action.TButton",
+        ).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(
+            btns,
+            text="Zamknij",
+            command=close,
+            style="Action.TButton",
+        ).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
 
+        scroll_canvas.yview_moveto(0)
+        sync_scroll_region()
         win.protocol("WM_DELETE_WINDOW", close)
         self._present_modal_window(win)
 
@@ -1965,8 +2185,9 @@ class PDSGeneratorGUI(tk.Tk):
 
     def create_static_row(self, name, value=None):
         row = ttk.Frame(self.static_frame)
-        if hasattr(self, "add_static_btn"):
-            row.pack(fill="x", pady=2, before=self.add_static_btn)
+        add_btn = getattr(self, "add_static_btn", None)
+        if add_btn and str(add_btn.winfo_parent()) == str(row.winfo_parent()):
+            row.pack(fill="x", pady=2, before=add_btn)
         else:
             row.pack(fill="x", pady=2)
         indicator = tk.Frame(row, width=6, height=18, bg=self.panel_bg)
@@ -2970,7 +3191,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.push_history()
 
     def _on_mousewheel(self, event):
-        self.right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return self._scroll_widget_y(self.right_canvas, event)
 
 
     def acquire_excel_lock(self, path):
