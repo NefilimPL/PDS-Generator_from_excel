@@ -1942,6 +1942,75 @@ def _html_join_paths(paths):
     return "<br>".join(_html_escape(_short_path(item)) for item in cleaned)
 
 
+def _change_display_text(value):
+    text = str(value or "")
+    if text:
+        return text
+    return "(puste)"
+
+
+def _plain_text_cell(value):
+    return " ".join(_change_display_text(value).replace("|", "/").splitlines())
+
+
+def _normalize_updated_pdf_changes(report):
+    normalized = []
+    for item in report.get("updated_pdf_changes") or []:
+        if not isinstance(item, dict):
+            continue
+        row = item.get("row")
+        try:
+            row = int(row) if row is not None else None
+        except Exception:
+            row = None
+        pdf_name = str(item.get("pdf_name") or "").strip() or "-"
+        pdf_path = _short_path(item.get("pdf_path"))
+        changes = []
+        for change in item.get("changes") or []:
+            if not isinstance(change, dict):
+                continue
+            field = str(change.get("field") or "").strip()
+            sheet = str(change.get("sheet") or "").strip()
+            column = str(change.get("column") or "").strip()
+            if not column and field:
+                if ":" in field:
+                    sheet, column = field.split(":", 1)
+                else:
+                    column = field
+            changes.append(
+                {
+                    "field": field,
+                    "sheet": sheet or "-",
+                    "column": column or field or "-",
+                    "old_value": _change_display_text(change.get("old_value")),
+                    "new_value": _change_display_text(change.get("new_value")),
+                }
+            )
+        if not changes:
+            continue
+        normalized.append(
+            {
+                "row": row,
+                "pdf_name": pdf_name,
+                "pdf_path": pdf_path,
+                "changes": changes,
+            }
+        )
+    normalized.sort(
+        key=lambda item: (item.get("row") if item.get("row") is not None else 0, item["pdf_name"])
+    )
+    return normalized
+
+
+def _updated_pdf_change_title(item):
+    parts = []
+    row = item.get("row")
+    if row is not None:
+        parts.append(f"Wiersz {row}")
+    parts.append(str(item.get("pdf_name") or "-"))
+    return " | ".join(parts)
+
+
 def _format_exception_trace(exc_type, exc, tb):
     resolved_type = exc_type or (type(exc) if exc is not None else RuntimeError)
     resolved_exc = exc if exc is not None else resolved_type()
@@ -2057,6 +2126,8 @@ def _build_generation_html(report):
     skipped_image_global_issues = list(report.get("skipped_image_global_issues") or [])
     errors = list(report.get("errors") or [])
     warnings = list(report.get("warnings") or [])
+    updated_pdf_changes = _normalize_updated_pdf_changes(report)
+    updated_pdf_changes_note = str(report.get("updated_pdf_changes_note") or "").strip()
 
     summary_parts = []
     if total_rows is not None:
@@ -2080,6 +2151,46 @@ def _build_generation_html(report):
     green_rows_html = "".join(
         f"<tr><th>{_html_escape(label)}</th><td>{value_html}</td></tr>"
         for label, value_html in green_rows
+    )
+
+    change_cards_html = []
+    if updated_pdf_changes:
+        for item in updated_pdf_changes:
+            path_html = ""
+            if item.get("pdf_path"):
+                path_html = (
+                    f"<span class='change-card-path'>{_html_escape(item['pdf_path'])}</span>"
+                )
+            row_html = []
+            for change in item["changes"]:
+                row_html.append(
+                    "<tr>"
+                    f"<td>{_html_escape(change['sheet'])}</td>"
+                    f"<td>{_html_escape(change['column'])}</td>"
+                    f"<td>{_html_escape(change['old_value'])}</td>"
+                    f"<td>{_html_escape(change['new_value'])}</td>"
+                    "</tr>"
+                )
+            change_cards_html.append(
+                "<div class='change-card'>"
+                f"<div class='change-card-header'>{_html_escape(_updated_pdf_change_title(item))}{path_html}</div>"
+                "<table class='tbl-blue'>"
+                "<thead><tr><th>Arkusz</th><th>Pole</th><th>Było</th><th>Jest</th></tr></thead>"
+                f"<tbody>{''.join(row_html)}</tbody></table>"
+                "</div>"
+            )
+    else:
+        change_cards_html.append("<p class='muted'>brak</p>")
+    change_note_html = ""
+    if updated_pdf_changes_note:
+        change_note_html = (
+            f"<p class='change-note'>{_html_escape(updated_pdf_changes_note)}</p>"
+        )
+    change_section_html = (
+        "<div class='changes-section'>"
+        "<h3>Zmiany danych w zaktualizowanych PDF</h3>"
+        f"{change_note_html}{''.join(change_cards_html)}"
+        "</div>"
     )
 
     yellow_rows_html = []
@@ -2174,19 +2285,28 @@ def _build_generation_html(report):
         "<style>"
         "body{font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#1f2937;line-height:1.4;}"
         "h2{margin:0 0 10px 0;font-size:16px;}"
+        "h3{margin:18px 0 10px 0;font-size:14px;}"
         "table{width:100%;border-collapse:collapse;margin:0 0 14px 0;}"
-        "th,td{border:1px solid #cbd5e1;padding:8px;vertical-align:top;text-align:left;}"
+        "th,td{border:1px solid #cbd5e1;padding:8px;vertical-align:top;text-align:left;word-break:break-word;white-space:pre-wrap;}"
         ".tbl-green th{background:#2e7d32;color:#fff;}"
         ".tbl-green td{background:#e8f5e9;}"
+        ".tbl-blue th{background:#1565c0;color:#fff;}"
+        ".tbl-blue td{background:#eff6ff;}"
         ".tbl-yellow th{background:#f9a825;color:#111827;}"
         ".tbl-yellow td{background:#fff8e1;}"
         ".tbl-red th{background:#c62828;color:#fff;}"
         ".tbl-red td{background:#ffc7ce;}"
+        ".change-card{border:1px solid #bfdbfe;border-radius:10px;overflow:hidden;margin:0 0 14px 0;background:#f8fbff;}"
+        ".change-card-header{background:#dbeafe;padding:10px 12px;font-weight:600;}"
+        ".change-card-path{display:block;margin-top:4px;font-size:12px;font-weight:400;color:#475569;}"
+        ".change-note{margin:0 0 12px 0;padding:10px 12px;border:1px solid #fdba74;border-radius:8px;background:#fff7ed;color:#9a3412;}"
+        ".muted{margin:0 0 14px 0;color:#64748b;}"
         "</style></head><body>"
         "<h2>Raport generowania PDS</h2>"
         "<table class='tbl-green'>"
         "<thead><tr><th colspan='2'>Wynik generowania</th></tr></thead>"
         f"<tbody>{green_rows_html}</tbody></table>"
+        f"{change_section_html}"
         "<table class='tbl-yellow'>"
         "<thead><tr><th colspan='5'>Ostrzeżenia</th></tr>"
         "<tr><th>Typ</th><th>Wiersz</th><th>Akcja</th><th>Plik PDF</th><th>Szczegóły</th></tr>"
@@ -2216,6 +2336,8 @@ def _build_generation_body(report):
     skipped_image_global_issues = list(report.get("skipped_image_global_issues") or [])
     errors = list(report.get("errors") or [])
     warnings = list(report.get("warnings") or [])
+    updated_pdf_changes = _normalize_updated_pdf_changes(report)
+    updated_pdf_changes_note = str(report.get("updated_pdf_changes_note") or "").strip()
 
     lines = [
         "Raport generowania PDS",
@@ -2253,6 +2375,30 @@ def _build_generation_body(report):
             lines.append(f"- {_short_path(path)}")
     else:
         lines.append("- brak")
+
+    lines.append("")
+    lines.append("Zmiany danych w zaktualizowanych PDF:")
+    if updated_pdf_changes:
+        for item in updated_pdf_changes:
+            lines.append(_updated_pdf_change_title(item))
+            if item.get("pdf_path"):
+                lines.append(f"Plik: {item['pdf_path']}")
+            lines.append("Arkusz | Pole | Było | Jest")
+            lines.append("------ | ---- | ---- | ----")
+            for change in item["changes"]:
+                lines.append(
+                    f"{_plain_text_cell(change['sheet'])} | "
+                    f"{_plain_text_cell(change['column'])} | "
+                    f"{_plain_text_cell(change['old_value'])} | "
+                    f"{_plain_text_cell(change['new_value'])}"
+                )
+            lines.append("")
+        if lines[-1] == "":
+            lines.pop()
+    else:
+        lines.append("- brak")
+    if updated_pdf_changes_note:
+        lines.append(f"Uwaga: {updated_pdf_changes_note}")
 
     lines.append("")
     lines.append("Ostrzeżenia jakości danych:")

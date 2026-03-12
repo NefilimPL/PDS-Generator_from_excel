@@ -1013,6 +1013,8 @@ def generate_pds(app):
         "skipped_rows": 0,
         "new_pdfs": [],
         "updated_pdfs": [],
+        "updated_pdf_changes": [],
+        "updated_pdf_changes_note": "",
         "errors": [],
         "warnings": [],
         "skipped_image_files": [],
@@ -1084,11 +1086,12 @@ def generate_pds(app):
 
     cache_rows = None
     cache_changed_cols = {}
+    cache_row_changes = {}
     excel_rows = None
     tracking_mode = "none"
 
     try:
-        cache_rows, cache_changed_cols = update_tracking_cache(
+        cache_rows, cache_changed_cols, cache_row_changes = update_tracking_cache(
             app.excel_path, app.dataframes, total_rows, sheet_fields=sheet_fields_tracking
         )
     except Exception:
@@ -1099,6 +1102,7 @@ def generate_pds(app):
         )
         cache_rows = None
         cache_changed_cols = {}
+        cache_row_changes = {}
 
     try:
         excel_rows = update_tracking_column(
@@ -1239,6 +1243,7 @@ def generate_pds(app):
                 "name": unique_name,
                 "row_values": row_values,
                 "existed_before": existed_before,
+                "change_details": list(cache_row_changes.get(idx) or []),
             }
         )
 
@@ -1377,6 +1382,8 @@ def generate_pds(app):
         cancelled = False
         new_files = []
         updated_files = []
+        updated_pdf_changes = []
+        updated_pdf_changes_missing = False
 
         validation_warnings = []
         missing_image_issues = []
@@ -1551,6 +1558,18 @@ def generate_pds(app):
                     final_pdf = result.get("pdf_path", task["pdf_path"])
                     if task.get("existed_before"):
                         updated_files.append(final_pdf)
+                        change_details = list(task.get("change_details") or [])
+                        if change_details:
+                            updated_pdf_changes.append(
+                                {
+                                    "row": _excel_row_number(task["idx"]),
+                                    "pdf_name": os.path.basename(final_pdf),
+                                    "pdf_path": final_pdf,
+                                    "changes": change_details,
+                                }
+                            )
+                        else:
+                            updated_pdf_changes_missing = True
                     else:
                         new_files.append(final_pdf)
                 except Exception as exc:  # pragma: no cover - defensive logging
@@ -1603,6 +1622,15 @@ def generate_pds(app):
                 report["processed_rows"] = completed
                 report["new_pdfs"] = sorted(new_files)
                 report["updated_pdfs"] = sorted(updated_files)
+                report["updated_pdf_changes"] = sorted(
+                    updated_pdf_changes,
+                    key=lambda item: (item.get("row") or 0, item.get("pdf_name") or ""),
+                )
+                if report["updated_pdfs"] and updated_pdf_changes_missing:
+                    report["updated_pdf_changes_note"] = (
+                        "Dla części zaktualizowanych PDF brak pełnej historii poprzednich "
+                        "wartości, więc zestawienie zmian może być niepełne."
+                    )
                 for idx, name, err in failures:
                     if idx >= 0:
                         if name:

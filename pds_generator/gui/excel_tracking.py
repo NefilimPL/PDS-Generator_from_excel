@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 TRACKING_COLUMN = "__PDS_ROW_TRACKING__"
 _EXCEL_CELL_LIMIT = 32767
 _HASH_PREFIX = "sha256:"
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2
 _WARNING_FILL_RGB = "FFF8E1"
 _LEGACY_WARNING_FILL_RGB = "FF0000"
 _ERROR_FILL_RGB = "FFC7CE"
@@ -64,6 +64,30 @@ def _normalize_value(value):
     return str(value)
 
 
+def _display_value(value):
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    analysis = analyze_numeric_value(value, decimals=DEFAULT_DECIMALS)
+    if analysis is not None:
+        return analysis["formatted"]
+    if isinstance(value, (dt.datetime, dt.date, dt.time)):
+        return value.isoformat()
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if math.isnan(value):
+            return ""
+        if value.is_integer():
+            return str(int(value))
+        return repr(value)
+    return str(value)
+
+
 def _row_signature(values):
     normalized = [_normalize_value(v) for v in values]
     payload = json.dumps(normalized, ensure_ascii=True, separators=(",", ":"))
@@ -79,6 +103,58 @@ def _combined_signature(parts):
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         return f"{_HASH_PREFIX}{digest}"
     return payload
+
+
+def _coerce_row_value_map(value):
+    if not isinstance(value, dict):
+        return {}
+    normalized = {}
+    for key, item in value.items():
+        text_key = str(key or "").strip()
+        if not text_key or ":" not in text_key:
+            continue
+        text_value = str(item or "")
+        if text_value == "":
+            continue
+        normalized[text_key] = text_value
+    return normalized
+
+
+def _ordered_change_keys(columns_map, old_values, new_values):
+    keys = []
+    seen = set()
+    for sheet in sorted(columns_map.keys()):
+        for col in columns_map.get(sheet, []):
+            field_key = f"{sheet}:{col}"
+            if field_key not in old_values and field_key not in new_values:
+                continue
+            keys.append(field_key)
+            seen.add(field_key)
+    extras = sorted((set(old_values) | set(new_values)) - seen)
+    keys.extend(extras)
+    return keys
+
+
+def _build_row_change_details(columns_map, previous_row_values, current_row_values):
+    old_values = _coerce_row_value_map(previous_row_values)
+    new_values = _coerce_row_value_map(current_row_values)
+    changes = []
+    for field_key in _ordered_change_keys(columns_map, old_values, new_values):
+        old_value = old_values.get(field_key, "")
+        new_value = new_values.get(field_key, "")
+        if old_value == new_value:
+            continue
+        sheet, column = field_key.split(":", 1)
+        changes.append(
+            {
+                "field": field_key,
+                "sheet": sheet,
+                "column": column,
+                "old_value": old_value,
+                "new_value": new_value,
+            }
+        )
+    return changes
 
 
 def _update_cell_protection(cell, locked):
@@ -455,13 +531,21 @@ def _load_tracking_cache(paths):
     return _read_tracking_cache_file(paths), paths
 
 
-def _write_tracking_cache(path, sheet_names, rows, columns_map=None, column_signatures=None):
+def _write_tracking_cache(
+    path,
+    sheet_names,
+    rows,
+    columns_map=None,
+    column_signatures=None,
+    row_values=None,
+):
     payload = {
         "version": _CACHE_VERSION,
         "sheets": sheet_names,
         "columns": columns_map or {},
         "rows": rows,
         "column_signatures": column_signatures or {},
+        "row_values": row_values or [],
         "timestamp": time.time(),
     }
     with open(path, "w", encoding="utf-8") as fh:
@@ -483,9 +567,15 @@ def _resolve_sheet_columns(dataframes, sheet_fields=None):
 def _compute_cache_signatures(dataframes, total_rows, sheet_fields=None):
     sheet_names = sorted(dataframes.keys())
     columns_map = _resolve_sheet_columns(dataframes, sheet_fields)
+    available_columns = {
+        sheet: set(df.columns) if df is not None else set()
+        for sheet, df in dataframes.items()
+    }
     row_signatures = []
+    row_value_maps = []
     for row_idx in range(total_rows):
         per_sheet = []
+        row_values = {}
         for sheet in sheet_names:
             df = dataframes.get(sheet)
             if df is None:
@@ -494,14 +584,22 @@ def _compute_cache_signatures(dataframes, total_rows, sheet_fields=None):
             columns = columns_map.get(sheet, [])
             if row_idx < len(df):
                 row_series = df.iloc[row_idx]
-                values = [
-                    row_series[col] if col in df.columns else ""
-                    for col in columns
-                ]
+                values = []
+                sheet_columns = available_columns.get(sheet, set())
+                for col in columns:
+                    if col in sheet_columns:
+                        value = row_series[col]
+                    else:
+                        value = ""
+                    values.append(value)
+                    display_value = _display_value(value)
+                    if display_value != "":
+                        row_values[f"{sheet}:{col}"] = display_value
             else:
                 values = ["" for _ in columns]
             per_sheet.append(_row_signature(values))
         row_signatures.append(_combined_signature(per_sheet))
+        row_value_maps.append(row_values)
 
     column_signatures = {}
     for sheet in sheet_names:
@@ -519,12 +617,12 @@ def _compute_cache_signatures(dataframes, total_rows, sheet_fields=None):
             sigs[col] = _row_signature(values)
         column_signatures[sheet] = sigs
 
-    return sheet_names, columns_map, row_signatures, column_signatures
+    return sheet_names, columns_map, row_signatures, column_signatures, row_value_maps
 
 
 def update_tracking_cache(excel_path, dataframes, total_rows, sheet_fields=None):
     if not excel_path or not dataframes:
-        return set(), {}
+        return set(), {}, {}
     cache_paths = _tracking_cache_paths(excel_path)
     previous, cache_path = _load_tracking_cache(cache_paths)
     if not cache_path:
@@ -535,6 +633,7 @@ def update_tracking_cache(excel_path, dataframes, total_rows, sheet_fields=None)
     prev_column_signatures = (
         previous.get("column_signatures") if isinstance(previous, dict) else None
     )
+    prev_row_values = previous.get("row_values") if isinstance(previous, dict) else None
     if not isinstance(prev_rows, list):
         prev_rows = []
     if not isinstance(prev_sheets, list):
@@ -543,8 +642,16 @@ def update_tracking_cache(excel_path, dataframes, total_rows, sheet_fields=None)
         prev_columns = None
     if not isinstance(prev_column_signatures, dict):
         prev_column_signatures = None
+    if not isinstance(prev_row_values, list):
+        prev_row_values = []
 
-    sheet_names, columns_map, new_rows, column_signatures = _compute_cache_signatures(
+    (
+        sheet_names,
+        columns_map,
+        new_rows,
+        column_signatures,
+        row_value_maps,
+    ) = _compute_cache_signatures(
         dataframes, total_rows, sheet_fields
     )
     changed_rows = set()
@@ -565,6 +672,23 @@ def update_tracking_cache(excel_path, dataframes, total_rows, sheet_fields=None)
                 if prev_sigs.get(col) != sig:
                     changed_columns.setdefault(sheet, []).append(col)
 
+    row_change_details = {}
+    schema_changed = bool(
+        (prev_sheets and prev_sheets != sheet_names)
+        or (prev_columns is not None and prev_columns != columns_map)
+    )
+    if prev_row_values and not schema_changed:
+        for row_idx in sorted(changed_rows):
+            previous_values = prev_row_values[row_idx] if row_idx < len(prev_row_values) else {}
+            current_values = row_value_maps[row_idx] if row_idx < len(row_value_maps) else {}
+            changes = _build_row_change_details(
+                columns_map,
+                previous_values,
+                current_values,
+            )
+            if changes:
+                row_change_details[row_idx] = changes
+
     try:
         _write_tracking_cache(
             cache_path,
@@ -572,6 +696,7 @@ def update_tracking_cache(excel_path, dataframes, total_rows, sheet_fields=None)
             new_rows,
             columns_map,
             column_signatures,
+            row_value_maps,
         )
     except Exception:
         logger.exception("Failed to write tracking cache %s", cache_path)
@@ -586,6 +711,7 @@ def update_tracking_cache(excel_path, dataframes, total_rows, sheet_fields=None)
                     new_rows,
                     columns_map,
                     column_signatures,
+                    row_value_maps,
                 )
             except Exception:
                 logger.exception("Failed to write tracking cache %s", fallback)
@@ -605,4 +731,4 @@ def update_tracking_cache(excel_path, dataframes, total_rows, sheet_fields=None)
             "Tracking cache changed columns (sample): %s",
             ", ".join(preview),
         )
-    return changed_rows, changed_columns
+    return changed_rows, changed_columns, row_change_details

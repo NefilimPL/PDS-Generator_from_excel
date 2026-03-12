@@ -127,6 +127,69 @@ class MailerExceptionEmailTests(unittest.TestCase):
         self.assertEqual(kwargs["attachment_paths"], ["/tmp/pds-runtime.txt"])
         self.assertIn("Tkinter callback", kwargs["html_body"])
 
+    def test_generation_report_renders_changes_grouped_per_pdf(self):
+        report = {
+            "status": "success",
+            "updated_pdfs": [
+                "/tmp/PDS/produkt-a.pdf",
+                "/tmp/PDS/produkt-b.pdf",
+            ],
+            "updated_pdf_changes": [
+                {
+                    "row": 2,
+                    "pdf_name": "produkt-a.pdf",
+                    "pdf_path": "/tmp/PDS/produkt-a.pdf",
+                    "changes": [
+                        {
+                            "sheet": "Arkusz1",
+                            "column": "Cena",
+                            "old_value": "10",
+                            "new_value": "12",
+                        },
+                        {
+                            "sheet": "Arkusz1",
+                            "column": "Opis",
+                            "old_value": "",
+                            "new_value": "Nowy opis",
+                        },
+                    ],
+                },
+                {
+                    "row": 5,
+                    "pdf_name": "produkt-b.pdf",
+                    "pdf_path": "/tmp/PDS/produkt-b.pdf",
+                    "changes": [
+                        {
+                            "sheet": "Arkusz2",
+                            "column": "Status",
+                            "old_value": "roboczy",
+                            "new_value": "aktywny",
+                        }
+                    ],
+                },
+            ],
+            "warnings": [],
+            "errors": [],
+            "skipped_image_files": [],
+            "skipped_image_global_issues": [],
+        }
+
+        body = mailer._build_generation_body(report)
+        html = mailer._build_generation_html(report)
+
+        self.assertIn("Zmiany danych w zaktualizowanych PDF:", body)
+        self.assertIn("Wiersz 2 | produkt-a.pdf", body)
+        self.assertIn("Arkusz1 | Cena | 10 | 12", body)
+        self.assertIn("Arkusz1 | Opis | (puste) | Nowy opis", body)
+        self.assertIn("Wiersz 5 | produkt-b.pdf", body)
+
+        self.assertIn("Zmiany danych w zaktualizowanych PDF", html)
+        self.assertIn("Wiersz 2 | produkt-a.pdf", html)
+        self.assertIn(">Cena<", html)
+        self.assertIn(">10<", html)
+        self.assertIn(">12<", html)
+        self.assertIn("Wiersz 5 | produkt-b.pdf", html)
+
 
 if __name__ == "__main__":
     unittest.main()
