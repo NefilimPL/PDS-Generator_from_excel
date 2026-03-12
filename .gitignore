@@ -1,3 +1,5 @@
 __pycache__/
 PDS/
 config.json
+logs/
+tests/
