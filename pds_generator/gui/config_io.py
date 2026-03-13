@@ -7,6 +7,7 @@ from tkinter import messagebox
 from .. import app_paths
 from ..elements import DraggableElement
 from ..groups import GroupArea
+from ..pdf_settings import DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT
 from . import locks
 from . import mailer
 
@@ -120,6 +121,11 @@ def save_config(app):
         "excel_path": app.excel_path,
         "page_width": app.page_width,
         "page_height": app.page_height,
+        "pdf_image_compression_percent": getattr(
+            app,
+            "pdf_image_compression_percent",
+            DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT,
+        ),
         "elements": [el.to_dict() for el in app.elements.values()],
         "static_fields": {name: var.get() for name, var in app.static_entries.items()},
         "image_fields": sorted(getattr(app, "image_fields", set())),
@@ -272,6 +278,26 @@ def load_config(app, startup=False, path=None):
     app.mail_config = mailer.load_mail_config(config.get("mail", {}))
     app.image_fields = set(config.get("image_fields", []))
     app.image_dirs = list(config.get("image_dirs", []))
+    if hasattr(app, "set_pdf_image_compression_percent"):
+        app.set_pdf_image_compression_percent(
+            config.get(
+                "pdf_image_compression_percent",
+                getattr(
+                    app,
+                    "pdf_image_compression_percent",
+                    DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT,
+                ),
+            )
+        )
+    else:
+        app.pdf_image_compression_percent = config.get(
+            "pdf_image_compression_percent",
+            getattr(
+                app,
+                "pdf_image_compression_percent",
+                DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT,
+            ),
+        )
     app.image_cache = {}
     if hasattr(app, "_invalidate_image_index"):
         app._invalidate_image_index()

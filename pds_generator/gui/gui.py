@@ -22,6 +22,11 @@ from .pdf_export import (
     generate_pds as export_pds,
     draw_pdf_element as render_pdf_element,
 )
+from ..pdf_settings import (
+    DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT,
+    get_pdf_image_compression_profile,
+    normalize_pdf_image_compression_percent,
+)
 from .config_io import (
     save_config as save_config_func,
     load_config as load_config_func,
@@ -107,6 +112,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.image_index_data = None
         self.image_index_roots = ()
         self.image_index_lock = threading.Lock()
+        self.pdf_image_compression_percent = DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT
         self.excel_lock_path = None
         self.config_lock_path = None
         self.selected_elements = []
@@ -831,6 +837,34 @@ class PDSGeneratorGUI(tk.Tk):
             group.height = max(step, round(group.height / step) * step)
             group.sync_canvas()
         self.resize_canvas()
+
+    # ------------------------------------------------------------------
+    def set_pdf_image_compression_percent(self, value):
+        percent = normalize_pdf_image_compression_percent(value)
+        self.pdf_image_compression_percent = percent
+        if hasattr(self, "pdf_image_compression_var"):
+            current = self.pdf_image_compression_var.get()
+            if current != percent:
+                self.pdf_image_compression_var.set(percent)
+        if hasattr(self, "pdf_image_compression_value_var"):
+            self.pdf_image_compression_value_var.set(f"{percent}%")
+        if hasattr(self, "pdf_image_compression_hint_var"):
+            profile = get_pdf_image_compression_profile(percent)
+            if profile.get("passthrough"):
+                self.pdf_image_compression_hint_var.set(
+                    "Oryginał: bez zmiany rozdzielczości i bez rekompresji"
+                )
+            else:
+                self.pdf_image_compression_hint_var.set(
+                    f"DPI ~{profile['target_dpi']}, JPEG ~{profile['jpeg_quality']}%"
+                )
+        cache = getattr(self, "_prepared_pdf_image_cache", None)
+        if cache is not None:
+            cache.clear()
+        return percent
+
+    def on_pdf_image_compression_changed(self, value):
+        self.set_pdf_image_compression_percent(value)
 
     # ------------------------------------------------------------------
     def toggle_column(self, name, state):
