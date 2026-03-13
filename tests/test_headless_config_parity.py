@@ -110,6 +110,20 @@ class HeadlessConfigParityTests(unittest.TestCase):
         self.assertTrue(conf["auto_font"])
         self.assertIs(conf["is_image"], False)
 
+    def test_headless_app_reads_pdf_image_compression_percent_from_config(self):
+        app = pds_headless.HeadlessApp(
+            {
+                "pdf_image_compression_percent": 62,
+                "elements": [],
+                "groups": [],
+                "static_fields": {},
+            },
+            excel_path=str(ROOT / "sample.xlsx"),
+            dataframes={},
+        )
+
+        self.assertEqual(app.pdf_image_compression_percent, 62)
+
 
 if __name__ == "__main__":
     unittest.main()

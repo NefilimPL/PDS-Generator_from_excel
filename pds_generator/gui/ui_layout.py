@@ -1,6 +1,8 @@
 import tkinter as tk
 from tkinter import ttk
 
+from ..pdf_settings import DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT
+
 
 def setup_ui(app):
     top_frame = ttk.Frame(app, padding=(8, 8, 8, 4), style="Toolbar.TFrame")
@@ -378,6 +380,58 @@ def setup_ui(app):
     )
     app.image_index_status_label.pack(fill="x")
 
+    pdf_section = ttk.LabelFrame(
+        right_frame,
+        text="PDF",
+        style="Card.TLabelframe",
+    )
+    pdf_section.pack(fill="x", pady=(0, 8))
+    ttk.Label(pdf_section, text="Kompresja obrazów:").pack(anchor="w")
+    compression_row = ttk.Frame(pdf_section, style="Panel.TFrame")
+    compression_row.pack(fill="x", pady=(6, 0))
+    app.pdf_image_compression_var = tk.IntVar(
+        value=getattr(
+            app,
+            "pdf_image_compression_percent",
+            DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT,
+        )
+    )
+    app.pdf_image_compression_scale = ttk.Scale(
+        compression_row,
+        from_=0,
+        to=100,
+        orient="horizontal",
+        variable=app.pdf_image_compression_var,
+        command=app.on_pdf_image_compression_changed,
+    )
+    app.pdf_image_compression_scale.pack(side="left", fill="x", expand=True)
+    app.pdf_image_compression_value_var = tk.StringVar(value="")
+    ttk.Label(
+        compression_row,
+        textvariable=app.pdf_image_compression_value_var,
+        width=5,
+        anchor="e",
+    ).pack(side="left", padx=(8, 0))
+    app.pdf_image_compression_hint_var = tk.StringVar(value="")
+    ttk.Label(
+        pdf_section,
+        textvariable=app.pdf_image_compression_hint_var,
+        anchor="w",
+        justify="left",
+    ).pack(fill="x", pady=(6, 0))
+    ttk.Label(
+        pdf_section,
+        text="0% = oryginał, 100% = mniejszy plik",
+        justify="left",
+    ).pack(fill="x", pady=(4, 0))
+    app.set_pdf_image_compression_percent(
+        getattr(
+            app,
+            "pdf_image_compression_percent",
+            DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT,
+        )
+    )
+
     static_section = ttk.LabelFrame(
         right_frame,
         text="Pola statyczne",
@@ -581,6 +635,10 @@ def setup_ui(app):
         app.tooltip.bind(
             app.image_index_btn,
             text="Przeskanuj katalogi i odśwież indeks obrazów",
+        )
+        app.tooltip.bind(
+            app.pdf_image_compression_scale,
+            text="Ustaw procent kompresji obrazów w PDF",
         )
         app.tooltip.bind(app.add_static_btn, text="Dodaj nowe pole statyczne")
         app.tooltip.bind(app.preview_btn, text="Podgląd wiersza z Excela")
