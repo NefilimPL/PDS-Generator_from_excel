@@ -5,6 +5,7 @@ import threading
 import re
 import math
 import hashlib
+from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import suppress
 from io import BytesIO
@@ -12,7 +13,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 import requests
-from PIL import Image
+from PIL import Image, ImageOps, UnidentifiedImageError
 from openpyxl import load_workbook
 
 
@@ -70,6 +71,12 @@ from tkinter import messagebox
 
 from ..number_format import round_numeric_value
 from .. import image_index as image_index_utils
+from ..pdf_settings import (
+    DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT,
+    blend_pdf_image_target_size,
+    get_pdf_image_compression_profile,
+    normalize_pdf_image_compression_percent,
+)
 from ..text_layout import fit_text_lines, pdf_font_name, wrap_text_lines
 
 from .excel_tracking import (
@@ -98,6 +105,8 @@ REMOTE_IMAGE_CHECK_LIMIT_WARNING = (
 )
 MISSING_IMAGE_ISSUE_ROW_RE = re.compile(r"^Wiersz\s+(\d+):")
 EXCEL_DATA_START_ROW = 2
+PDF_PAGE_COMPRESSION = 1
+PDF_IMAGE_CACHE_LIMIT = 256
 
 
 def _excel_row_number(data_row_idx):
@@ -524,51 +533,274 @@ def _get_filename_value(df, name_column, idx):
     return value
 
 
+def _pdf_image_compression_profile_for_app(app):
+    return get_pdf_image_compression_profile(
+        getattr(
+            app,
+            "pdf_image_compression_percent",
+            DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT,
+        )
+    )
+
+
+def _pdf_image_target_pixels(width_points, height_points, dpi):
+    width_px = max(1, int(math.ceil(float(width_points) * float(dpi) / 72.0)))
+    height_px = max(1, int(math.ceil(float(height_points) * float(dpi) / 72.0)))
+    return width_px, height_px
+
+
+def _blended_pdf_image_target_size(
+    original_width,
+    original_height,
+    width_points,
+    height_points,
+    dpi,
+    compression_percent,
+):
+    full_target_width, full_target_height = _pdf_image_target_pixels(
+        width_points,
+        height_points,
+        dpi=dpi,
+    )
+    return blend_pdf_image_target_size(
+        original_width,
+        original_height,
+        full_target_width,
+        full_target_height,
+        compression_percent,
+    )
+
+
+def _image_has_transparency(image):
+    if image.mode in {"RGBA", "LA"}:
+        alpha = image.getchannel("A")
+        alpha_min, _alpha_max = alpha.getextrema()
+        return alpha_min < 255
+    if image.mode == "P":
+        transparency = image.info.get("transparency")
+        return transparency is not None
+    return False
+
+
+def _normalise_pdf_image(image, width_points, height_points, dpi, compression_percent):
+    prepared = ImageOps.exif_transpose(image)
+    prepared.load()
+    resized_width, resized_height = _blended_pdf_image_target_size(
+        prepared.width,
+        prepared.height,
+        width_points,
+        height_points,
+        dpi,
+        compression_percent,
+    )
+    resized_size = (max(1, resized_width), max(1, resized_height))
+    if prepared.size != resized_size:
+        prepared = prepared.resize(resized_size, Image.LANCZOS)
+    return prepared
+
+
+def _encode_png_for_pdf(image):
+    png_image = image
+    if png_image.mode not in {"1", "L", "LA", "P", "RGB", "RGBA"}:
+        png_image = png_image.convert("RGBA" if _image_has_transparency(png_image) else "RGB")
+    output = BytesIO()
+    png_image.save(output, format="PNG", optimize=True, compress_level=9)
+    output.seek(0)
+    return output
+
+
+def _encode_jpeg_for_pdf(image, quality):
+    jpeg_image = image.convert("RGB")
+    output = BytesIO()
+    jpeg_image.save(
+        output,
+        format="JPEG",
+        quality=quality,
+        optimize=True,
+        progressive=True,
+        subsampling=2,
+    )
+    output.seek(0)
+    return output
+
+
+def _compress_image_for_pdf(
+    image,
+    width_points,
+    height_points,
+    compression_percent=None,
+    dpi=None,
+    jpeg_quality=None,
+):
+    if compression_percent is None or dpi is None or jpeg_quality is None:
+        default_profile = get_pdf_image_compression_profile(
+            DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT
+        )
+        if compression_percent is None:
+            compression_percent = default_profile["compression_percent"]
+        if dpi is None:
+            dpi = default_profile["target_dpi"]
+        if jpeg_quality is None:
+            jpeg_quality = default_profile["jpeg_quality"]
+    prepared = _normalise_pdf_image(
+        image,
+        width_points,
+        height_points,
+        dpi=dpi,
+        compression_percent=compression_percent,
+    )
+    png_buffer = _encode_png_for_pdf(prepared)
+    if _image_has_transparency(prepared):
+        return png_buffer, "PNG", prepared.size
+
+    jpeg_buffer = _encode_jpeg_for_pdf(prepared, quality=jpeg_quality)
+    if len(png_buffer.getbuffer()) <= len(jpeg_buffer.getbuffer()):
+        return png_buffer, "PNG", prepared.size
+    return jpeg_buffer, "JPEG", prepared.size
+
+
+def _pdf_image_cache_key(
+    source_kind,
+    source_ref,
+    width_points,
+    height_points,
+    compression_percent,
+):
+    return (
+        source_kind,
+        source_ref,
+        int(round(float(width_points) * 10)),
+        int(round(float(height_points) * 10)),
+        int(compression_percent),
+    )
+
+
+def _pdf_image_cache_for_app(app):
+    cache = getattr(app, "_prepared_pdf_image_cache", None)
+    if cache is None:
+        cache = OrderedDict()
+        setattr(app, "_prepared_pdf_image_cache", cache)
+    return cache
+
+
+def _cache_prepared_pdf_image(app, key, prepared_image):
+    cache = _pdf_image_cache_for_app(app)
+    if key in cache:
+        cache.move_to_end(key)
+    cache[key] = prepared_image
+    while len(cache) > PDF_IMAGE_CACHE_LIMIT:
+        cache.popitem(last=False)
+
+
+def _load_image_source_bytes(app, value_str):
+    source_value = str(value_str or "").strip()
+    if not source_value:
+        return None, None, None
+
+    if source_value.lower().startswith("http"):
+        response = None
+        try:
+            response = requests.get(source_value, timeout=10)
+            response.raise_for_status()
+            return "remote", source_value, response.content
+        finally:
+            if response is not None:
+                with suppress(Exception):
+                    response.close()
+
+    local_path = None
+    if hasattr(app, "find_local_image"):
+        local_path = app.find_local_image(source_value)
+    elif os.path.isfile(source_value):
+        local_path = source_value
+    if not local_path:
+        return None, None, None
+
+    with open(local_path, "rb") as handle:
+        return "local", os.path.normcase(os.path.abspath(local_path)), handle.read()
+
+
+def _prepare_pdf_image(app, value_str, width_points, height_points):
+    source_kind, source_ref, source_bytes = _load_image_source_bytes(app, value_str)
+    if not source_kind or not source_bytes:
+        return None
+
+    compression_profile = _pdf_image_compression_profile_for_app(app)
+    cache_key = _pdf_image_cache_key(
+        source_kind,
+        source_ref,
+        width_points,
+        height_points,
+        compression_profile["compression_percent"],
+    )
+    cache = _pdf_image_cache_for_app(app)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        cache.move_to_end(cache_key)
+        return cached
+
+    if compression_profile.get("passthrough"):
+        with Image.open(BytesIO(source_bytes)) as image:
+            image.load()
+            original_image = image.copy()
+        prepared_image = SimpleNamespace(
+            image=original_image,
+            reader=ImageReader(original_image),
+            format="ORIGINAL",
+            pixel_size=original_image.size,
+        )
+    else:
+        with Image.open(BytesIO(source_bytes)) as image:
+            buffer, encoded_format, pixel_size = _compress_image_for_pdf(
+                image,
+                width_points,
+                height_points,
+                compression_percent=compression_profile["compression_percent"],
+                dpi=compression_profile["target_dpi"],
+                jpeg_quality=compression_profile["jpeg_quality"],
+            )
+
+        prepared_image = SimpleNamespace(
+            buffer=buffer,
+            reader=ImageReader(buffer),
+            format=encoded_format,
+            pixel_size=pixel_size,
+        )
+    _cache_prepared_pdf_image(app, cache_key, prepared_image)
+    return prepared_image
+
+
 def draw_pdf_element(app, c, element, value, x, y):
     value_str = value if isinstance(value, str) else str(value)
+    box_width = element.width / app.scale
+    box_height = element.height / app.scale
     if getattr(element, "is_image", False) and value_str:
-        if value_str.lower().startswith("http"):
-            try:
-                resp = requests.get(value_str, timeout=5)
-                img = Image.open(BytesIO(resp.content))
+        try:
+            prepared_image = _prepare_pdf_image(app, value_str, box_width, box_height)
+        except (OSError, UnidentifiedImageError, requests.RequestException):
+            logger.exception("Failed to prepare image %s for PDF", value_str)
+        else:
+            if prepared_image is not None:
                 c.drawImage(
-                    ImageReader(img),
+                    prepared_image.reader,
                     x,
                     y,
-                    width=element.width / app.scale,
-                    height=element.height / app.scale,
+                    width=box_width,
+                    height=box_height,
                 )
                 return
-            except (requests.RequestException, OSError):
-                logger.exception("Failed to load remote image %s", value_str)
-        local_path = app.find_local_image(value_str)
-        if local_path:
-            try:
-                img = Image.open(local_path)
-                c.drawImage(
-                    ImageReader(img),
-                    x,
-                    y,
-                    width=element.width / app.scale,
-                    height=element.height / app.scale,
-                )
-                return
-            except OSError:
-                logger.exception("Failed to load local image %s", local_path)
     if element.bg_visible:
         c.setFillColor(to_reportlab_color(element.bg_color))
         c.rect(
             x,
             y,
-            element.width / app.scale,
-            element.height / app.scale,
+            box_width,
+            box_height,
             fill=1,
             stroke=0,
         )
     c.setFillColor(to_reportlab_color(element.text_color))
     font_name = pdf_font_name(getattr(element, "bold", False))
-    box_width = element.width / app.scale
-    box_height = element.height / app.scale
     base_font_size = element.font_size / app.scale
     max_font_size = getattr(element, "max_font_size", element.font_size) / app.scale
     auto_fit = getattr(element, "auto_font", True)
@@ -602,10 +834,20 @@ _render_proxy = None
 
 
 class RenderAppProxy:
-    def __init__(self, scale, excel_dir, image_dirs=None, image_index_path=""):
+    def __init__(
+        self,
+        scale,
+        excel_dir,
+        image_dirs=None,
+        image_index_path="",
+        pdf_image_compression_percent=DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT,
+    ):
         self.scale = scale
         self.excel_dir = excel_dir or ""
         self.image_dirs = list(image_dirs or [])
+        self.pdf_image_compression_percent = normalize_pdf_image_compression_percent(
+            pdf_image_compression_percent
+        )
         self._image_cache = {}
         self._image_index_data = None
         roots = image_index_utils.normalize_roots([self.excel_dir] + self.image_dirs)
@@ -708,6 +950,10 @@ def _init_render_context(context):
         context["excel_dir"],
         context.get("image_dirs", []),
         context.get("image_index_path", ""),
+        context.get(
+            "pdf_image_compression_percent",
+            DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT,
+        ),
     )
 
 
@@ -804,7 +1050,11 @@ def render_single_pdf(task):
         if pd.isna(values.get(src)) or values.get(src) == "":
             hidden.add(tgt)
 
-    c = pdf_canvas.Canvas(tmp_path, pagesize=(page_width, page_height))
+    c = pdf_canvas.Canvas(
+        tmp_path,
+        pagesize=(page_width, page_height),
+        pageCompression=PDF_PAGE_COMPRESSION,
+    )
     success = False
     try:
         for group in groups:
@@ -1219,6 +1469,13 @@ def generate_pds(app):
         "page_width": page_width,
         "page_height": page_height,
         "excel_dir": os.path.dirname(app.excel_path),
+        "pdf_image_compression_percent": normalize_pdf_image_compression_percent(
+            getattr(
+                app,
+                "pdf_image_compression_percent",
+                DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT,
+            )
+        ),
         "image_fields": sorted(getattr(app, "image_fields", set())),
         "image_dirs": list(getattr(app, "image_dirs", [])),
         "tasks": tasks,
@@ -1290,6 +1547,10 @@ def generate_pds(app):
             "conditions": payload["conditions"],
             "static_entries": payload["static_entries"],
             "excel_dir": payload["excel_dir"],
+            "pdf_image_compression_percent": payload.get(
+                "pdf_image_compression_percent",
+                DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT,
+            ),
             "image_fields": payload.get("image_fields", []),
             "image_dirs": payload.get("image_dirs", []),
             "image_index_path": payload.get("image_index_path", ""),
