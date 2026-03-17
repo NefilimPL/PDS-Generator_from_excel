@@ -1713,7 +1713,7 @@ def generate_pds(app):
                 )
                 _notify_generation_complete(app, report)
 
-            app.after(0, finish_only_skipped)
+            _ui_call(app, finish_only_skipped)
             return
 
         max_workers = max(1, min(len(tasks_local), os.cpu_count() or 1))
@@ -1889,7 +1889,7 @@ def generate_pds(app):
                         )
                 _notify_generation_complete(app, report)
 
-            app.after(0, finish)
+            _ui_call(app, finish)
 
     threading.Thread(target=worker, args=(worker_payload,), daemon=True).start()
     return True

@@ -347,10 +347,26 @@ class DraggableElement:
             else:
                 self._show_text_value(value_str)
 
-        if hasattr(self.parent, "ui_call"):
-            self.parent.ui_call(apply_result)
-        else:
-            self.canvas.after(0, apply_result)
+        self._dispatch_ui(apply_result)
+
+    def _dispatch_ui(self, func, *args, **kwargs):
+        target = self.parent
+        seen = set()
+        while target is not None and id(target) not in seen:
+            seen.add(id(target))
+            ui_call = getattr(target, "ui_call", None)
+            if callable(ui_call):
+                ui_call(func, *args, **kwargs)
+                return True
+            target = getattr(target, "parent", None)
+        if threading.get_ident() == threading.main_thread().ident:
+            func(*args, **kwargs)
+            return True
+        logger.warning(
+            "Skipping UI update for %s because no thread-safe ui_call dispatcher was found",
+            self.name,
+        )
+        return False
 
     def update_value(self, value):
         """Update displayed value (text or image) without blocking UI."""

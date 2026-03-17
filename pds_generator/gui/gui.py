@@ -1,5 +1,6 @@
 import logging
 import os
+import queue
 import sys
 import time
 import webbrowser
@@ -63,6 +64,8 @@ IMAGE_EXTENSIONS = (
 )
 
 class PDSGeneratorGUI(tk.Tk):
+    UI_QUEUE_POLL_MS = 25
+
     PAGE_SIZES = {
         "A4": (595, 842),  # 210 x 297 mm in points
         "B5": (516, 729),  # 176 x 250 mm
@@ -90,6 +93,10 @@ class PDSGeneratorGUI(tk.Tk):
         self.version = get_version(self.repo_dir)
         self.remote_version = None
         self.remote_date = None
+        self._main_thread_id = threading.get_ident()
+        self._ui_call_queue = queue.Queue()
+        self._ui_call_queue_after_id = None
+        self._ui_call_shutdown = False
         icon_path = os.path.join(os.path.dirname(__file__), "github_icon.png")
         self.github_image = None
         if os.path.exists(icon_path):
@@ -163,6 +170,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.tooltip = Tooltip(self)
         self._configure_styles()
         self.setup_ui()
+        self._schedule_ui_call_queue_drain()
         self.bind_all("<Control-z>", self.undo)
         self.bind_all("<Control-x>", self.redo)
         self.update_idletasks()
@@ -2712,8 +2720,39 @@ class PDSGeneratorGUI(tk.Tk):
         if hasattr(self, "cancel_btn") and self.cancel_btn:
             self.cancel_btn.state(["disabled"])
 
+    def _schedule_ui_call_queue_drain(self):
+        if self._ui_call_shutdown:
+            return
+        try:
+            self._ui_call_queue_after_id = self.after(
+                self.UI_QUEUE_POLL_MS,
+                self._drain_ui_call_queue,
+            )
+        except tk.TclError:
+            self._ui_call_queue_after_id = None
+
+    def _drain_ui_call_queue(self):
+        self._ui_call_queue_after_id = None
+        if self._ui_call_shutdown:
+            return
+        while True:
+            try:
+                func, args, kwargs = self._ui_call_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                func(*args, **kwargs)
+            except Exception as exc:
+                self.report_callback_exception(type(exc), exc, exc.__traceback__)
+        self._schedule_ui_call_queue_drain()
+
     def ui_call(self, func, *args, **kwargs):
-        self.after(0, lambda: func(*args, **kwargs))
+        if self._ui_call_shutdown:
+            return
+        if threading.get_ident() == self._main_thread_id:
+            func(*args, **kwargs)
+            return
+        self._ui_call_queue.put((func, args, kwargs))
 
     def set_status(self, text):
         if hasattr(self, "status_var") and self.status_var:
@@ -3321,6 +3360,13 @@ class PDSGeneratorGUI(tk.Tk):
             except Exception:
                 pass
             self.preview_animation_after = None
+        self._ui_call_shutdown = True
+        if self._ui_call_queue_after_id is not None:
+            try:
+                self.after_cancel(self._ui_call_queue_after_id)
+            except Exception:
+                pass
+            self._ui_call_queue_after_id = None
         self.release_lock("excel_lock_path")
         self.release_lock("config_lock_path")
         self.destroy()
