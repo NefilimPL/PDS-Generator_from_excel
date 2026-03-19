@@ -39,6 +39,15 @@ from ..excel_io import read_excel_data, detect_formula_columns, collect_formula_
 from . import locks
 
 from ..number_format import round_numeric_value
+from ..value_sources import (
+    FILE_DATE_KIND_CREATED,
+    FILE_DATE_KIND_MODIFIED,
+    VALUE_SOURCE_DEFAULT,
+    VALUE_SOURCE_FILE_DATE,
+    normalize_file_date_kind,
+    normalize_value_source,
+    resolve_element_value,
+)
 
 from ..github_utils import (
     get_repo_info,
@@ -74,6 +83,11 @@ class PDSGeneratorGUI(tk.Tk):
     grid_size = 5
 
     DEFAULT_STATIC_FIELDS = ["Data", "Naglowek", "Stopka"]
+    VALUE_SOURCE_LABELS = {
+        (VALUE_SOURCE_DEFAULT, FILE_DATE_KIND_MODIFIED): "Domyślne",
+        (VALUE_SOURCE_FILE_DATE, FILE_DATE_KIND_MODIFIED): "Data modyfikacji pliku",
+        (VALUE_SOURCE_FILE_DATE, FILE_DATE_KIND_CREATED): "Data utworzenia pliku",
+    }
 
     def __init__(self):
         super().__init__()
@@ -902,14 +916,31 @@ class PDSGeneratorGUI(tk.Tk):
         self.image_cache = {}
         self.push_history()
 
-    def _resolve_preview_value(self, name):
+    @classmethod
+    def _value_source_label(cls, value_source, file_date_kind):
+        key = (
+            normalize_value_source(value_source),
+            normalize_file_date_kind(file_date_kind),
+        )
+        return cls.VALUE_SOURCE_LABELS.get(key, cls.VALUE_SOURCE_LABELS[(VALUE_SOURCE_DEFAULT, FILE_DATE_KIND_MODIFIED)])
+
+    @classmethod
+    def _value_source_from_label(cls, label):
+        text = str(label or "").strip()
+        for (value_source, file_date_kind), current_label in cls.VALUE_SOURCE_LABELS.items():
+            if text == current_label:
+                return value_source, file_date_kind
+        return VALUE_SOURCE_DEFAULT, FILE_DATE_KIND_MODIFIED
+
+    def _base_preview_value(self, name, idx=None):
         if ":" in name:
             if not self.dataframes:
                 return ""
-            try:
-                idx = int(self.row_var.get()) - 1
-            except (ValueError, AttributeError):
-                idx = 0
+            if idx is None:
+                try:
+                    idx = int(self.row_var.get()) - 1
+                except (ValueError, AttributeError):
+                    idx = 0
             sheet, col = name.split(":", 1)
             df = self.dataframes.get(sheet)
             value = None
@@ -920,6 +951,56 @@ class PDSGeneratorGUI(tk.Tk):
         if name in getattr(self, "static_entries", {}):
             return self.static_entries[name].get()
         return name
+
+    def _resolve_preview_value(self, name, idx=None):
+        return resolve_element_value(
+            self._base_preview_value(name, idx=idx),
+            self.elements.get(name),
+            self.excel_path,
+        )
+
+    def refresh_value_source_elements(self, names=None):
+        target_names = names or list(self.elements.keys())
+        try:
+            idx = int(self.row_var.get()) - 1
+        except (ValueError, AttributeError):
+            idx = 0
+        for name in target_names:
+            element = self.elements.get(name)
+            if element is None:
+                continue
+            if normalize_value_source(getattr(element, "value_source", VALUE_SOURCE_DEFAULT)) != VALUE_SOURCE_FILE_DATE:
+                continue
+            element.update_value(self._resolve_preview_value(name, idx=idx))
+
+    def _sync_value_source_controls(self):
+        if not hasattr(self, "value_source_combo") or not hasattr(self, "value_source_var"):
+            return
+        if not self.selected_elements:
+            self.value_source_var.set("")
+            self.value_source_combo.configure(state="disabled")
+            return
+        labels = {
+            self._value_source_label(
+                getattr(el, "value_source", VALUE_SOURCE_DEFAULT),
+                getattr(el, "file_date_kind", FILE_DATE_KIND_MODIFIED),
+            )
+            for el in self.selected_elements
+        }
+        self.value_source_var.set(labels.pop() if len(labels) == 1 else "")
+        self.value_source_combo.configure(state="readonly")
+
+    def on_value_source_changed(self, _event=None):
+        if not self.selected_elements:
+            return
+        value_source, file_date_kind = self._value_source_from_label(
+            getattr(self, "value_source_var", None).get()
+        )
+        for element in self.selected_elements:
+            element.value_source = value_source
+            element.file_date_kind = file_date_kind
+            element.update_value(self._resolve_preview_value(element.name))
+        self.push_history()
 
     def apply_image_field_state(self):
         for name, var in self.image_vars.items():
@@ -2181,19 +2262,17 @@ class PDSGeneratorGUI(tk.Tk):
             if name not in self.elements:
                 element = DraggableElement(self, self.canvas, name, value)
                 element.is_image = name in self.image_fields
-                element.update_value(value)
                 self.elements[name] = element
                 self.restack_elements()
-            else:
-                self.elements[name].is_image = name in self.image_fields
-                self.elements[name].update_value(value)
+            self.elements[name].is_image = name in self.image_fields
+            self.elements[name].update_value(self._resolve_preview_value(name))
         else:
             self.remove_element(name)
         self.push_history()
 
     def update_static_value(self, name):
         if name in self.elements:
-            self.elements[name].update_value(self.static_entries[name].get())
+            self.elements[name].update_value(self._resolve_preview_value(name))
             self.push_history()
 
     def display_name(self, name):
@@ -2314,6 +2393,7 @@ class PDSGeneratorGUI(tk.Tk):
                 self.layer_entry.configure(state="disabled")
                 self.layer_var.set("")
         self.restack_elements()
+        self._sync_value_source_controls()
         self.update_field_highlights()
 
     def restack_elements(self):
@@ -2377,6 +2457,12 @@ class PDSGeneratorGUI(tk.Tk):
             el.align = conf.get("align", "left")
             el.auto_font = conf.get("auto_font", True)
             el.layer = conf.get("layer", el.layer)
+            el.value_source = normalize_value_source(
+                conf.get("value_source", VALUE_SOURCE_DEFAULT)
+            )
+            el.file_date_kind = normalize_file_date_kind(
+                conf.get("file_date_kind", FILE_DATE_KIND_MODIFIED)
+            )
             if conf.get("is_image"):
                 self.image_fields.add(name)
             el.is_image = name in self.image_fields
@@ -2425,6 +2511,7 @@ class PDSGeneratorGUI(tk.Tk):
             for name in self.groups:
                 self.groups_list.insert("end", name)
         self.apply_image_field_state()
+        self.refresh_value_source_elements()
 
     def undo(self, event=None):
         if len(self.history) < 2:
@@ -2624,18 +2711,7 @@ class PDSGeneratorGUI(tk.Tk):
             try:
                 values = {}
                 for name in self.elements.keys():
-                    if ":" in name:
-                        sheet, col = name.split(":", 1)
-                        df = self.dataframes.get(sheet)
-                        value = ""
-                        if df is not None and 0 <= idx < len(df):
-                            value = df.iloc[idx].get(col)
-                            value = round_numeric_value(value)
-                    else:
-                        if name in getattr(self, "static_entries", {}):
-                            value = self.static_entries[name].get()
-                        else:
-                            value = name
+                    value = self._resolve_preview_value(name, idx=idx)
                     try:
                         if pd.isna(value):
                             value = ""
@@ -3122,6 +3198,7 @@ class PDSGeneratorGUI(tk.Tk):
             self.bg_check.state(["disabled"])
             self.layer_entry.configure(state="disabled")
             self.layer_var.set("")
+        self._sync_value_source_controls()
         self.update_field_highlights()
 
     def canvas_button_press(self, event):
@@ -3326,6 +3403,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.selected_element = None
         self.font_entry.configure(state="disabled")
         self.font_size_var.set("")
+        self._sync_value_source_controls()
         self.push_history()
 
     def _on_mousewheel(self, event):

@@ -211,6 +211,20 @@ def setup_ui(app):
     )
     app.layer_entry.pack(side="left", padx=(6, 0))
     app.layer_entry.bind("<Return>", lambda e: app.set_layer())
+    ttk.Separator(format_row, orient="vertical").pack(
+        side="left", fill="y", padx=8, pady=2
+    )
+    ttk.Label(format_row, text="Źródło:", style="Panel.TLabel").pack(side="left")
+    app.value_source_var = tk.StringVar(value="")
+    app.value_source_combo = ttk.Combobox(
+        format_row,
+        textvariable=app.value_source_var,
+        values=list(app.VALUE_SOURCE_LABELS.values()),
+        width=24,
+        state="disabled",
+    )
+    app.value_source_combo.pack(side="left", padx=(6, 0))
+    app.value_source_combo.bind("<<ComboboxSelected>>", app.on_value_source_changed)
 
     workspace = ttk.Panedwindow(app, orient="horizontal")
     workspace.pack(fill="both", expand=True, padx=8, pady=(0, 8))
@@ -618,6 +632,10 @@ def setup_ui(app):
         app.tooltip.bind(
             app.layer_entry,
             text="Warstwa elementu (wyższa = na wierzchu)",
+        )
+        app.tooltip.bind(
+            app.value_source_combo,
+            text="Źródło wartości elementu: domyślne lub data utworzenia/modyfikacji pliku Excel",
         )
         app.tooltip.bind(
             app.tracking_btn,

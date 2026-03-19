@@ -26,6 +26,12 @@ from pds_generator.gui import mailer, pdf_export
 from pds_generator.excel_io import read_excel_data, detect_formula_columns
 from pds_generator import app_paths, image_index as image_index_utils
 from pds_generator.pdf_settings import normalize_pdf_image_compression_percent
+from pds_generator.value_sources import (
+    FILE_DATE_KIND_MODIFIED,
+    VALUE_SOURCE_DEFAULT,
+    normalize_file_date_kind,
+    normalize_value_source,
+)
 
 LOG_PREFIX = "pds_headless_"
 LOG_RETENTION_DAYS = 7
@@ -387,6 +393,12 @@ def _build_elements(elements_conf, image_fields):
             auto_font=el.get("auto_font", True),
             layer=el.get("layer", 1),
             is_image=el.get("is_image", name in image_fields),
+            value_source=normalize_value_source(
+                el.get("value_source", VALUE_SOURCE_DEFAULT)
+            ),
+            file_date_kind=normalize_file_date_kind(
+                el.get("file_date_kind", FILE_DATE_KIND_MODIFIED)
+            ),
         )
     return elements
 

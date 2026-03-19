@@ -8,6 +8,12 @@ from .. import app_paths
 from ..elements import DraggableElement
 from ..groups import GroupArea
 from ..pdf_settings import DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT
+from ..value_sources import (
+    FILE_DATE_KIND_MODIFIED,
+    VALUE_SOURCE_DEFAULT,
+    normalize_file_date_kind,
+    normalize_value_source,
+)
 from . import locks
 from . import mailer
 
@@ -85,6 +91,15 @@ def _apply_element_config(app, element, elconf):
     element.align = elconf.get("align", element.align)
     element.auto_font = elconf.get("auto_font", element.auto_font)
     element.layer = elconf.get("layer", element.layer)
+    element.value_source = normalize_value_source(
+        elconf.get("value_source", getattr(element, "value_source", VALUE_SOURCE_DEFAULT))
+    )
+    element.file_date_kind = normalize_file_date_kind(
+        elconf.get(
+            "file_date_kind",
+            getattr(element, "file_date_kind", FILE_DATE_KIND_MODIFIED),
+        )
+    )
     if elconf.get("is_image"):
         app.image_fields.add(element.name)
     element.is_image = element.name in app.image_fields
@@ -374,7 +389,10 @@ def load_config(app, startup=False, path=None):
             app.columns_vars[name].set(True)
         if name in app.static_vars:
             app.static_vars[name].set(True)
-            app.static_entries[name].set(element.text)
+            if normalize_value_source(
+                getattr(element, "value_source", VALUE_SOURCE_DEFAULT)
+            ) == VALUE_SOURCE_DEFAULT:
+                app.static_entries[name].set(element.text)
 
     _clear_groups(app)
     for gconf in config.get("groups", []):
@@ -410,4 +428,6 @@ def load_config(app, startup=False, path=None):
     app.restack_elements()
     if hasattr(app, "apply_image_field_state"):
         app.apply_image_field_state()
+    if hasattr(app, "refresh_value_source_elements"):
+        app.refresh_value_source_elements()
     app.push_history()

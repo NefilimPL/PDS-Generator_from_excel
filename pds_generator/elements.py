@@ -8,6 +8,12 @@ from PIL import Image, ImageTk, UnidentifiedImageError
 import tkinter as tk
 
 from .text_layout import DEFAULT_FONT_FAMILY, fit_text_lines, pdf_font_name
+from .value_sources import (
+    FILE_DATE_KIND_MODIFIED,
+    VALUE_SOURCE_DEFAULT,
+    normalize_file_date_kind,
+    normalize_value_source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,8 @@ class DraggableElement:
         self.bg_color = "white"
         self.bg_visible = True
         self.align = "left"
+        self.value_source = VALUE_SOURCE_DEFAULT
+        self.file_date_kind = FILE_DATE_KIND_MODIFIED
         # layering (1-based, 0 reserved for page background)
         self.layer = max((el.layer for el in parent.elements.values()), default=0) + 1
         self._image_request_id = 0
@@ -214,6 +222,12 @@ class DraggableElement:
             "align": self.align,
             "layer": self.layer,
             "is_image": self.is_image,
+            "value_source": normalize_value_source(
+                getattr(self, "value_source", VALUE_SOURCE_DEFAULT)
+            ),
+            "file_date_kind": normalize_file_date_kind(
+                getattr(self, "file_date_kind", FILE_DATE_KIND_MODIFIED)
+            ),
         }
 
     def sync_canvas(self):

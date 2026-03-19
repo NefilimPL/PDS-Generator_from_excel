@@ -1,10 +1,12 @@
 import importlib.util
+import os
 import queue
 import sys
 import threading
 import types
 import unittest
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 
@@ -270,6 +272,14 @@ class _DummyParent:
         self.parent = parent
 
 
+class _DummyVar:
+    def __init__(self, value):
+        self._value = value
+
+    def get(self):
+        return self._value
+
+
 class GuiUiDispatchTests(unittest.TestCase):
     def test_ui_call_runs_immediately_on_main_thread(self):
         app = _DummyGUI(threading.get_ident())
@@ -311,6 +321,29 @@ class GuiUiDispatchTests(unittest.TestCase):
         self.assertEqual(args, (123,))
         self.assertEqual(kwargs, {})
         self.assertEqual(func(123), 123)
+
+    def test_resolve_preview_value_uses_excel_file_date_source(self):
+        app = types.SimpleNamespace()
+        app.dataframes = {}
+        app.static_entries = {"Data": _DummyVar("fallback")}
+        app.row_var = _DummyVar("1")
+        app.excel_path = str(ROOT / "VERSION")
+        app.elements = {
+            "Data": types.SimpleNamespace(
+                value_source="file_date",
+                file_date_kind="modified",
+            )
+        }
+        app._base_preview_value = PDSGeneratorGUI._base_preview_value.__get__(
+            app, PDSGeneratorGUI
+        )
+
+        value = PDSGeneratorGUI._resolve_preview_value(app, "Data")
+        expected = datetime.fromtimestamp(
+            os.path.getmtime(app.excel_path)
+        ).strftime("%d.%m.%Y")
+
+        self.assertEqual(value, expected)
 
 
 if __name__ == "__main__":
