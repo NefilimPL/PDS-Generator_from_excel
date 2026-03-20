@@ -82,6 +82,23 @@ class HeadlessConfigParityTests(unittest.TestCase):
         self.assertEqual(element.text, "Arkusz1:Opis")
         self.assertTrue(element.auto_font)
 
+    def test_build_elements_preserves_value_source_configuration(self):
+        elements = pds_headless._build_elements(
+            [
+                {
+                    "name": "Data",
+                    "value_source": "file_date",
+                    "file_date_kind": "created",
+                }
+            ],
+            image_fields=set(),
+        )
+
+        element = elements["Data"]
+
+        self.assertEqual(element.value_source, "file_date")
+        self.assertEqual(element.file_date_kind, "created")
+
     def test_build_groups_normalizes_field_conf_like_gui_loader(self):
         groups = pds_headless._build_groups(
             [

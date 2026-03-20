@@ -78,6 +78,13 @@ from ..pdf_settings import (
     normalize_pdf_image_compression_percent,
 )
 from ..text_layout import fit_text_lines, pdf_font_name, wrap_text_lines
+from ..value_sources import (
+    FILE_DATE_KIND_MODIFIED,
+    VALUE_SOURCE_DEFAULT,
+    normalize_file_date_kind,
+    normalize_value_source,
+    resolve_element_value,
+)
 
 from .excel_tracking import (
     TRACKING_COLUMN,
@@ -976,6 +983,12 @@ def _collect_element_specs(app):
             "auto_font": getattr(element, "auto_font", True),
             "layer": element.layer,
             "is_image": getattr(element, "is_image", False),
+            "value_source": normalize_value_source(
+                getattr(element, "value_source", VALUE_SOURCE_DEFAULT)
+            ),
+            "file_date_kind": normalize_file_date_kind(
+                getattr(element, "file_date_kind", FILE_DATE_KIND_MODIFIED)
+            ),
         }
         order.append(name)
     return elements, order
@@ -1037,6 +1050,11 @@ def render_single_pdf(task):
             value = row_values.get(name, "")
         else:
             value = static_entries.get(name, "")
+        value = resolve_element_value(
+            value,
+            elements.get(name),
+            context.get("excel_path", ""),
+        )
         if pd.isna(value):
             value = ""
         values[name] = value
@@ -1468,6 +1486,7 @@ def generate_pds(app):
         "scale": app.scale,
         "page_width": page_width,
         "page_height": page_height,
+        "excel_path": getattr(app, "excel_path", ""),
         "excel_dir": os.path.dirname(app.excel_path),
         "pdf_image_compression_percent": normalize_pdf_image_compression_percent(
             getattr(
@@ -1541,6 +1560,7 @@ def generate_pds(app):
             "scale": payload["scale"],
             "page_width": payload["page_width"],
             "page_height": payload["page_height"],
+            "excel_path": payload.get("excel_path", ""),
             "elements": payload["elements"],
             "element_order": payload["element_order"],
             "groups": payload["groups"],
