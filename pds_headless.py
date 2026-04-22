@@ -25,6 +25,7 @@ except ImportError as exc:  # pragma: no cover - runtime guard
 from pds_generator.gui import mailer, pdf_export
 from pds_generator.excel_io import read_excel_data, detect_formula_columns
 from pds_generator import app_paths, image_index as image_index_utils
+from pds_generator.layout_dependencies import normalize_dependencies
 from pds_generator.pdf_settings import normalize_pdf_image_compression_percent
 from pds_generator.value_sources import (
     FILE_DATE_KIND_MODIFIED,
@@ -179,6 +180,7 @@ class HeadlessApp:
             config.get("pdf_image_compression_percent")
         )
         self.conditions = config.get("conditions", [])
+        self.dependencies = normalize_dependencies(config.get("dependencies", []))
         self.tracking_excluded = set(config.get("tracking_excluded", []))
         self.mail_config = mailer.load_mail_config(config.get("mail", {}))
         self.image_fields = set(config.get("image_fields", []))

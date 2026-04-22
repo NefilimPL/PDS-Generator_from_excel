@@ -71,6 +71,11 @@ from tkinter import messagebox
 
 from ..number_format import round_numeric_value
 from .. import image_index as image_index_utils
+from ..layout_dependencies import (
+    DEFAULT_GRID_SIZE,
+    apply_layout_dependencies,
+    normalize_dependencies,
+)
 from ..pdf_settings import (
     DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT,
     blend_pdf_image_target_size,
@@ -1016,6 +1021,10 @@ def _collect_static_entries(app):
     return {name: var.get() for name, var in getattr(app, "static_entries", {}).items()}
 
 
+def _collect_dependencies(app):
+    return normalize_dependencies(getattr(app, "dependencies", []))
+
+
 def render_single_pdf(task):
     if _render_context is None or _render_proxy is None:
         raise RuntimeError("Render context not initialised")
@@ -1034,6 +1043,7 @@ def render_single_pdf(task):
     element_order = context["element_order"]
     groups = context["groups"]
     conditions = context["conditions"]
+    dependencies = context.get("dependencies", [])
     static_entries = context["static_entries"]
     image_fields = set(context.get("image_fields", []))
     elements = {name: SimpleNamespace(**spec) for name, spec in element_specs.items()}
@@ -1067,6 +1077,13 @@ def render_single_pdf(task):
             continue
         if pd.isna(values.get(src)) or values.get(src) == "":
             hidden.add(tgt)
+
+    apply_layout_dependencies(
+        elements,
+        hidden_names=hidden,
+        dependencies=dependencies,
+        grid_step=context.get("grid_size", DEFAULT_GRID_SIZE) * scale,
+    )
 
     c = pdf_canvas.Canvas(
         tmp_path,
@@ -1237,6 +1254,7 @@ def generate_pds(app):
     element_specs, element_order = _collect_element_specs(app)
     group_specs = _collect_group_specs(app)
     conditions = [tuple(cond) for cond in app.conditions]
+    dependencies = _collect_dependencies(app)
 
     dynamic_fields = set()
 
@@ -1483,7 +1501,9 @@ def generate_pds(app):
         "element_order": element_order,
         "groups": group_specs,
         "conditions": conditions,
+        "dependencies": dependencies,
         "scale": app.scale,
+        "grid_size": getattr(app, "grid_size", DEFAULT_GRID_SIZE),
         "page_width": page_width,
         "page_height": page_height,
         "excel_path": getattr(app, "excel_path", ""),
@@ -1565,8 +1585,10 @@ def generate_pds(app):
             "element_order": payload["element_order"],
             "groups": payload["groups"],
             "conditions": payload["conditions"],
+            "dependencies": payload.get("dependencies", []),
             "static_entries": payload["static_entries"],
             "excel_dir": payload["excel_dir"],
+            "grid_size": payload.get("grid_size", DEFAULT_GRID_SIZE),
             "pdf_image_compression_percent": payload.get(
                 "pdf_image_compression_percent",
                 DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT,

@@ -536,6 +536,12 @@ def setup_ui(app):
         command=app.open_conditions,
     )
     conditions_btn.pack(fill="x", pady=(8, 0))
+    dependencies_btn = ttk.Button(
+        actions_section,
+        text="Edytor zależności",
+        command=app.open_dependencies_editor,
+    )
+    dependencies_btn.pack(fill="x", pady=(8, 0))
     add_group_btn = ttk.Button(
         actions_section,
         text="Dodaj grupę",
@@ -663,6 +669,10 @@ def setup_ui(app):
         app.tooltip.bind(remove_group_btn, text="Usuń wybraną grupę")
         app.tooltip.bind(save_btn, text="Zapisz konfigurację do pliku")
         app.tooltip.bind(conditions_btn, text="Edytuj warunki widoczności")
+        app.tooltip.bind(
+            dependencies_btn,
+            text="Skonfiguruj łączniki dosuwające zakresy bloków po ukryciu elementów",
+        )
         app.tooltip.bind(add_group_btn, text="Dodaj nową grupę pól")
         app.tooltip.bind(app.generate_btn, text="Wygeneruj PDS")
         app.tooltip.bind(app.cancel_btn, text="Przerwij generowanie")
