@@ -1,9 +1,17 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 from reportlab.pdfgen import canvas
 
-from pds_generator.gui.pdf_export import _compress_image_for_pdf, draw_pdf_element
+from io import BytesIO
+
+from pds_generator.gui.pdf_export import (
+    _compress_image_for_pdf,
+    _image_has_transparency,
+    _prepare_pdf_image,
+    draw_pdf_element,
+)
 from pds_generator.pdf_settings import (
     DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT,
     blend_pdf_image_target_size,
@@ -154,3 +162,130 @@ def test_draw_pdf_element_separates_pdf_cache_for_auto_zoom_variants(tmp_path):
     pdf.save()
 
     assert len(app._prepared_pdf_image_cache) == 2
+
+
+def test_draw_pdf_element_uses_auto_mask_for_transparent_images():
+    class DummyCanvas:
+        def __init__(self):
+            self.calls = []
+
+        def drawImage(self, reader, x, y, width, height, mask=None):
+            self.calls.append(
+                {
+                    "reader": reader,
+                    "x": x,
+                    "y": y,
+                    "width": width,
+                    "height": height,
+                    "mask": mask,
+                }
+            )
+
+    app = SimpleNamespace(scale=1.0)
+    element = SimpleNamespace(
+        is_image=True,
+        image_auto_zoom=True,
+        width=144,
+        height=96,
+        font_size=12,
+        max_font_size=12,
+        bg_visible=False,
+        text_color="black",
+        bold=False,
+        align="left",
+        auto_font=True,
+    )
+    transparent_prepared = SimpleNamespace(
+        reader=object(),
+        has_transparency=True,
+    )
+
+    pdf = DummyCanvas()
+    with patch(
+        "pds_generator.gui.pdf_export._prepare_pdf_image",
+        return_value=transparent_prepared,
+    ):
+        draw_pdf_element(app, pdf, element, "product", 20, 30)
+
+    assert len(pdf.calls) == 1
+    assert pdf.calls[0]["mask"] == "auto"
+
+
+def test_draw_pdf_element_does_not_use_auto_mask_for_opaque_images():
+    class DummyCanvas:
+        def __init__(self):
+            self.calls = []
+
+        def drawImage(self, reader, x, y, width, height, mask=None):
+            self.calls.append(mask)
+
+    app = SimpleNamespace(scale=1.0)
+    element = SimpleNamespace(
+        is_image=True,
+        image_auto_zoom=False,
+        width=144,
+        height=96,
+        font_size=12,
+        max_font_size=12,
+        bg_visible=False,
+        text_color="black",
+        bold=False,
+        align="left",
+        auto_font=True,
+    )
+    opaque_prepared = SimpleNamespace(
+        reader=object(),
+        has_transparency=False,
+    )
+
+    pdf = DummyCanvas()
+    with patch(
+        "pds_generator.gui.pdf_export._prepare_pdf_image",
+        return_value=opaque_prepared,
+    ):
+        draw_pdf_element(app, pdf, element, "product", 20, 30)
+
+    assert pdf.calls == [None]
+
+
+def test_prepare_pdf_image_flattens_autozoom_padding_for_pdf():
+    source_image = Image.new("RGB", (100, 60), "white")
+    source_buffer = BytesIO()
+    source_image.save(source_buffer, format="PNG")
+    source_bytes = source_buffer.getvalue()
+
+    zoomed_image = Image.new("RGBA", (80, 80), (255, 255, 255, 0))
+    draw = ImageDraw.Draw(zoomed_image)
+    draw.rectangle((10, 10, 70, 70), fill=(166, 111, 66, 255))
+
+    captured = {}
+
+    def fake_encode(image, jpeg_quality):
+        captured["mode"] = image.mode
+        captured["has_transparency"] = _image_has_transparency(image)
+        return BytesIO(b"pdf-image"), "PNG", image.size, False
+
+    app = SimpleNamespace(scale=1.0, pdf_image_compression_percent=35)
+    with patch(
+        "pds_generator.gui.pdf_export._load_image_source_bytes",
+        return_value=("local", "source", source_bytes),
+    ), patch(
+        "pds_generator.gui.pdf_export.build_auto_zoom_image",
+        return_value=zoomed_image,
+    ), patch(
+        "pds_generator.gui.pdf_export._encode_prepared_image_for_pdf",
+        side_effect=fake_encode,
+    ):
+        prepared = _prepare_pdf_image(
+            app,
+            "product",
+            144,
+            96,
+            auto_zoom=True,
+            background_rgb=(255, 255, 255),
+        )
+
+    assert prepared is not None
+    assert captured["mode"] == "RGB"
+    assert captured["has_transparency"] is False
+    assert prepared.has_transparency is False
