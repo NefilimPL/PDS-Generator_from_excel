@@ -7,6 +7,7 @@ from tkinter import messagebox
 from .. import app_paths
 from ..elements import DraggableElement
 from ..groups import GroupArea
+from ..layout_dependencies import normalize_dependencies
 from ..pdf_settings import DEFAULT_PDF_IMAGE_COMPRESSION_PERCENT
 from ..value_sources import (
     FILE_DATE_KIND_MODIFIED,
@@ -146,6 +147,7 @@ def save_config(app):
         "image_fields": sorted(getattr(app, "image_fields", set())),
         "image_dirs": list(getattr(app, "image_dirs", [])),
         "conditions": app.conditions,
+        "dependencies": normalize_dependencies(getattr(app, "dependencies", [])),
         "groups": [g.to_dict() for g in app.groups.values()],
         "tracking_excluded": sorted(getattr(app, "tracking_excluded", set())),
         "ignore_updates": getattr(app, "ignore_updates", False),
@@ -352,6 +354,7 @@ def load_config(app, startup=False, path=None):
         else:
             app.static_entries[name].set(val)
     app.conditions = config.get("conditions", [])
+    app.dependencies = normalize_dependencies(config.get("dependencies", []))
     for var in app.columns_vars.values():
         var.set(False)
     for var in app.static_vars.values():
@@ -370,29 +373,35 @@ def load_config(app, startup=False, path=None):
         element_configs.append(elconf)
         target_element_names.add(name)
 
-    for name in list(app.elements.keys()):
-        if name not in target_element_names:
-            app.remove_element(name)
+    if hasattr(app, "_suspend_dependency_prune"):
+        app._suspend_dependency_prune = True
+    try:
+        for name in list(app.elements.keys()):
+            if name not in target_element_names:
+                app.remove_element(name)
 
-    for elconf in element_configs:
-        name = elconf["name"]
-        if name not in app.elements:
-            app.elements[name] = DraggableElement(
-                app,
-                app.canvas,
-                name,
-                elconf.get("text", name),
-            )
-        element = app.elements[name]
-        _apply_element_config(app, element, elconf)
-        if name in app.columns_vars:
-            app.columns_vars[name].set(True)
-        if name in app.static_vars:
-            app.static_vars[name].set(True)
-            if normalize_value_source(
-                getattr(element, "value_source", VALUE_SOURCE_DEFAULT)
-            ) == VALUE_SOURCE_DEFAULT:
-                app.static_entries[name].set(element.text)
+        for elconf in element_configs:
+            name = elconf["name"]
+            if name not in app.elements:
+                app.elements[name] = DraggableElement(
+                    app,
+                    app.canvas,
+                    name,
+                    elconf.get("text", name),
+                )
+            element = app.elements[name]
+            _apply_element_config(app, element, elconf)
+            if name in app.columns_vars:
+                app.columns_vars[name].set(True)
+            if name in app.static_vars:
+                app.static_vars[name].set(True)
+                if normalize_value_source(
+                    getattr(element, "value_source", VALUE_SOURCE_DEFAULT)
+                ) == VALUE_SOURCE_DEFAULT:
+                    app.static_entries[name].set(element.text)
+    finally:
+        if hasattr(app, "_suspend_dependency_prune"):
+            app._suspend_dependency_prune = False
 
     _clear_groups(app)
     for gconf in config.get("groups", []):
@@ -425,6 +434,8 @@ def load_config(app, startup=False, path=None):
         app.groups[group.name] = group
         if hasattr(app, "groups_list"):
             app.groups_list.insert("end", group.name)
+    if hasattr(app, "_prune_dependencies"):
+        app._prune_dependencies()
     app.restack_elements()
     if hasattr(app, "apply_image_field_state"):
         app.apply_image_field_state()

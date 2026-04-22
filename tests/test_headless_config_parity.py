@@ -141,6 +141,37 @@ class HeadlessConfigParityTests(unittest.TestCase):
 
         self.assertEqual(app.pdf_image_compression_percent, 62)
 
+    def test_headless_app_reads_layout_dependencies_from_config(self):
+        app = pds_headless.HeadlessApp(
+            {
+                "elements": [],
+                "groups": [],
+                "static_fields": {},
+                "dependencies": [
+                    {
+                        "anchor_names": ["Header", "Optional"],
+                        "mover_names": ["Summary"],
+                        "direction": "below",
+                        "gap_steps": 2,
+                    }
+                ],
+            },
+            excel_path=str(ROOT / "sample.xlsx"),
+            dataframes={},
+        )
+
+        self.assertEqual(
+            app.dependencies,
+            [
+                {
+                    "anchor_names": ["Header", "Optional"],
+                    "mover_names": ["Summary"],
+                    "direction": "below",
+                    "gap_steps": 2,
+                }
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

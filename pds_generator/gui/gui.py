@@ -16,8 +16,10 @@ from PIL import Image, ImageTk
 
 from ..elements import DraggableElement
 from ..groups import GroupArea, GroupEditor
+from ..layout_dependencies import normalize_dependencies
 
 from .ui_layout import setup_ui as build_ui
+from .dependencies_editor import DependenciesEditor
 from .tooltips import Tooltip
 from .pdf_export import (
     generate_pds as export_pds,
@@ -126,6 +128,9 @@ class PDSGeneratorGUI(tk.Tk):
         self.groups = {}
         self.conditions = []
         self.conditions_win = None
+        self.dependencies = []
+        self.dependencies_win = None
+        self._suspend_dependency_prune = False
         self.image_cache = {}
         self.image_fields = set()
         self.image_vars = {}
@@ -958,6 +963,40 @@ class PDSGeneratorGUI(tk.Tk):
             self.elements.get(name),
             self.excel_path,
         )
+
+    def _normalize_preview_value(self, value):
+        try:
+            if pd.isna(value):
+                return ""
+        except TypeError:
+            if value is None:
+                return ""
+        except Exception:
+            pass
+        return value
+
+    def _compute_hidden_elements_for_values(self, values):
+        hidden = set()
+        for src, tgt in self.conditions:
+            if src not in values:
+                continue
+            src_val = values.get(src, "")
+            try:
+                empty = pd.isna(src_val) or src_val == ""
+            except TypeError:
+                empty = src_val == ""
+            if empty:
+                hidden.add(tgt)
+        return hidden
+
+    def build_preview_layout_state(self, idx=None):
+        values = {}
+        for name in self.elements.keys():
+            values[name] = self._normalize_preview_value(
+                self._resolve_preview_value(name, idx=idx)
+            )
+        hidden = self._compute_hidden_elements_for_values(values)
+        return values, hidden
 
     def refresh_value_source_elements(self, names=None):
         target_names = names or list(self.elements.keys())
@@ -2392,9 +2431,33 @@ class PDSGeneratorGUI(tk.Tk):
                 self.font_size_var.set("")
                 self.layer_entry.configure(state="disabled")
                 self.layer_var.set("")
+        if not getattr(self, "_suspend_dependency_prune", False):
+            self._prune_dependencies()
         self.restack_elements()
         self._sync_value_source_controls()
         self.update_field_highlights()
+
+    def _prune_dependencies(self):
+        valid_names = set(self.elements.keys())
+        dependencies = []
+        for dependency in normalize_dependencies(getattr(self, "dependencies", [])):
+            anchor_names = [name for name in dependency["anchor_names"] if name in valid_names]
+            mover_names = [name for name in dependency["mover_names"] if name in valid_names]
+            if not anchor_names or not mover_names:
+                continue
+            if set(anchor_names).intersection(mover_names):
+                continue
+            dependencies.append(
+                {
+                    "anchor_names": anchor_names,
+                    "mover_names": mover_names,
+                    "direction": dependency["direction"],
+                    "gap_steps": dependency["gap_steps"],
+                }
+            )
+        self.dependencies = dependencies
+        if getattr(self, "dependencies_win", None) and self.dependencies_win.winfo_exists():
+            self.dependencies_win.refresh_from_parent()
 
     def restack_elements(self):
         if not self.elements:
@@ -2423,6 +2486,8 @@ class PDSGeneratorGUI(tk.Tk):
         state = {
             "elements": [el.to_dict() for el in self.elements.values()],
             "groups": [g.to_dict() for g in self.groups.values()],
+            "conditions": list(self.conditions),
+            "dependencies": deepcopy(self.dependencies),
             "image_fields": sorted(self.image_fields),
             "image_dirs": list(self.image_dirs),
         }
@@ -2434,39 +2499,45 @@ class PDSGeneratorGUI(tk.Tk):
     def restore_state(self, state):
         self.image_fields = set(state.get("image_fields", []))
         self.image_dirs = list(state.get("image_dirs", []))
+        self.conditions = list(state.get("conditions", []))
+        self.dependencies = normalize_dependencies(state.get("dependencies", []))
         self.refresh_image_dir_list()
         target = {conf["name"]: conf for conf in state.get("elements", [])}
-        # remove elements not in target
-        for name in list(self.elements.keys()):
-            if name not in target:
-                self.remove_element(name)
-        for name, conf in target.items():
-            if name not in self.elements:
-                element = DraggableElement(self, self.canvas, name, conf.get("text", name))
-                self.elements[name] = element
-            el = self.elements[name]
-            el.x = conf.get("x", 0) * self.scale
-            el.y = conf.get("y", 0) * self.scale
-            el.width = conf.get("width", 100) * self.scale
-            el.height = conf.get("height", 40) * self.scale
-            el.font_size = conf.get("font_size", 12) * self.scale
-            el.bold = conf.get("bold", False)
-            el.text_color = conf.get("text_color", "black")
-            el.bg_color = conf.get("bg_color", "white")
-            el.bg_visible = conf.get("bg_visible", True)
-            el.align = conf.get("align", "left")
-            el.auto_font = conf.get("auto_font", True)
-            el.layer = conf.get("layer", el.layer)
-            el.value_source = normalize_value_source(
-                conf.get("value_source", VALUE_SOURCE_DEFAULT)
-            )
-            el.file_date_kind = normalize_file_date_kind(
-                conf.get("file_date_kind", FILE_DATE_KIND_MODIFIED)
-            )
-            if conf.get("is_image"):
-                self.image_fields.add(name)
-            el.is_image = name in self.image_fields
-            el.sync_canvas()
+        self._suspend_dependency_prune = True
+        try:
+            # remove elements not in target
+            for name in list(self.elements.keys()):
+                if name not in target:
+                    self.remove_element(name)
+            for name, conf in target.items():
+                if name not in self.elements:
+                    element = DraggableElement(self, self.canvas, name, conf.get("text", name))
+                    self.elements[name] = element
+                el = self.elements[name]
+                el.x = conf.get("x", 0) * self.scale
+                el.y = conf.get("y", 0) * self.scale
+                el.width = conf.get("width", 100) * self.scale
+                el.height = conf.get("height", 40) * self.scale
+                el.font_size = conf.get("font_size", 12) * self.scale
+                el.bold = conf.get("bold", False)
+                el.text_color = conf.get("text_color", "black")
+                el.bg_color = conf.get("bg_color", "white")
+                el.bg_visible = conf.get("bg_visible", True)
+                el.align = conf.get("align", "left")
+                el.auto_font = conf.get("auto_font", True)
+                el.layer = conf.get("layer", el.layer)
+                el.value_source = normalize_value_source(
+                    conf.get("value_source", VALUE_SOURCE_DEFAULT)
+                )
+                el.file_date_kind = normalize_file_date_kind(
+                    conf.get("file_date_kind", FILE_DATE_KIND_MODIFIED)
+                )
+                if conf.get("is_image"):
+                    self.image_fields.add(name)
+                el.is_image = name in self.image_fields
+                el.sync_canvas()
+        finally:
+            self._suspend_dependency_prune = False
 
         self.restack_elements()
 
@@ -2510,6 +2581,7 @@ class PDSGeneratorGUI(tk.Tk):
             self.groups_list.delete(0, "end")
             for name in self.groups:
                 self.groups_list.insert("end", name)
+        self._prune_dependencies()
         self.apply_image_field_state()
         self.refresh_value_source_elements()
 
@@ -2618,6 +2690,7 @@ class PDSGeneratorGUI(tk.Tk):
             if s and t and (s, t) not in self.conditions:
                 self.conditions.append((s, t))
                 tree.insert("", "end", values=(s, t))
+                self.push_history()
         ttk.Button(win, text="Dodaj", command=add).grid(
             row=2, column=0, columnspan=2, pady=5, sticky="ew"
         )
@@ -2633,6 +2706,7 @@ class PDSGeneratorGUI(tk.Tk):
                     except ValueError:
                         pass
                 tree.delete(item)
+            self.push_history()
         ttk.Button(win, text="Usuń zaznaczone", command=remove).grid(
             row=4, column=0, columnspan=2, pady=5, sticky="ew"
         )
@@ -2642,6 +2716,15 @@ class PDSGeneratorGUI(tk.Tk):
             win.destroy()
 
         win.protocol("WM_DELETE_WINDOW", close)
+
+    def open_dependencies_editor(self):
+        self._prune_dependencies()
+        if self.dependencies_win and self.dependencies_win.winfo_exists():
+            self.dependencies_win.refresh_from_parent()
+            self.dependencies_win.lift()
+            self.dependencies_win.focus_force()
+            return
+        self.dependencies_win = DependenciesEditor(self)
 
     def element_in_group(self, el, group):
         return (
@@ -2709,28 +2792,7 @@ class PDSGeneratorGUI(tk.Tk):
 
         def worker():
             try:
-                values = {}
-                for name in self.elements.keys():
-                    value = self._resolve_preview_value(name, idx=idx)
-                    try:
-                        if pd.isna(value):
-                            value = ""
-                    except TypeError:
-                        if value is None:
-                            value = ""
-                    values[name] = value
-
-                hidden = set()
-                for src, tgt in self.conditions:
-                    if src not in values:
-                        continue
-                    src_val = values.get(src, "")
-                    try:
-                        empty = pd.isna(src_val) or src_val == ""
-                    except TypeError:
-                        empty = src_val == ""
-                    if empty:
-                        hidden.add(tgt)
+                values, hidden = self.build_preview_layout_state(idx=idx)
                 ordered = sorted(self.elements.items(), key=lambda kv: kv[1].layer)
             except Exception as exc:
                 logger.exception("Failed to prepare preview row")
