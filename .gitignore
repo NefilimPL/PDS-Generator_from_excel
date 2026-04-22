@@ -2,3 +2,4 @@ __pycache__/
 PDS/
 config.json
 logs/
+.codex
