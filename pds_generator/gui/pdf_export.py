@@ -69,6 +69,7 @@ from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from tkinter import messagebox
 
+from ..image_auto_zoom import build_auto_zoom_image
 from ..number_format import round_numeric_value
 from .. import image_index as image_index_utils
 from ..layout_dependencies import (
@@ -119,6 +120,7 @@ MISSING_IMAGE_ISSUE_ROW_RE = re.compile(r"^Wiersz\s+(\d+):")
 EXCEL_DATA_START_ROW = 2
 PDF_PAGE_COMPRESSION = 1
 PDF_IMAGE_CACHE_LIMIT = 256
+PDF_IMAGE_CACHE_REVISION = 3
 
 
 def _excel_row_number(data_row_idx):
@@ -671,19 +673,65 @@ def _compress_image_for_pdf(
     return jpeg_buffer, "JPEG", prepared.size
 
 
+def _encode_prepared_image_for_pdf(image, jpeg_quality):
+    png_buffer = _encode_png_for_pdf(image)
+    if _image_has_transparency(image):
+        return png_buffer, "PNG", image.size, True
+
+    jpeg_buffer = _encode_jpeg_for_pdf(image, quality=jpeg_quality)
+    if len(png_buffer.getbuffer()) <= len(jpeg_buffer.getbuffer()):
+        return png_buffer, "PNG", image.size, False
+    return jpeg_buffer, "JPEG", image.size, False
+
+
+def _background_rgb_for_element(element):
+    if getattr(element, "bg_visible", False):
+        try:
+            color = to_reportlab_color(getattr(element, "bg_color", "white"))
+            return (
+                int(round(float(getattr(color, "red", 1.0)) * 255.0)),
+                int(round(float(getattr(color, "green", 1.0)) * 255.0)),
+                int(round(float(getattr(color, "blue", 1.0)) * 255.0)),
+            )
+        except Exception:
+            logger.exception("Failed to resolve image background color, using white fallback")
+    return (255, 255, 255)
+
+
+def _flatten_image_to_background(image, background_rgb):
+    rgba_image = image.convert("RGBA")
+    base = Image.new(
+        "RGBA",
+        rgba_image.size,
+        (
+            int(background_rgb[0]),
+            int(background_rgb[1]),
+            int(background_rgb[2]),
+            255,
+        ),
+    )
+    base.alpha_composite(rgba_image)
+    return base.convert("RGB")
+
+
 def _pdf_image_cache_key(
     source_kind,
     source_ref,
     width_points,
     height_points,
     compression_percent,
+    auto_zoom,
+    background_rgb=None,
 ):
     return (
+        int(PDF_IMAGE_CACHE_REVISION),
         source_kind,
         source_ref,
         int(round(float(width_points) * 10)),
         int(round(float(height_points) * 10)),
         int(compression_percent),
+        bool(auto_zoom),
+        tuple(background_rgb) if background_rgb is not None else None,
     )
 
 
@@ -732,7 +780,14 @@ def _load_image_source_bytes(app, value_str):
         return "local", os.path.normcase(os.path.abspath(local_path)), handle.read()
 
 
-def _prepare_pdf_image(app, value_str, width_points, height_points):
+def _prepare_pdf_image(
+    app,
+    value_str,
+    width_points,
+    height_points,
+    auto_zoom=False,
+    background_rgb=None,
+):
     source_kind, source_ref, source_bytes = _load_image_source_bytes(app, value_str)
     if not source_kind or not source_bytes:
         return None
@@ -744,6 +799,8 @@ def _prepare_pdf_image(app, value_str, width_points, height_points):
         width_points,
         height_points,
         compression_profile["compression_percent"],
+        auto_zoom,
+        background_rgb,
     )
     cache = _pdf_image_cache_for_app(app)
     cached = cache.get(cache_key)
@@ -751,32 +808,83 @@ def _prepare_pdf_image(app, value_str, width_points, height_points):
         cache.move_to_end(cache_key)
         return cached
 
+    with Image.open(BytesIO(source_bytes)) as image:
+        image.load()
+        prepared_source = image.copy()
+    if auto_zoom and compression_profile.get("passthrough"):
+        zoomed_image = build_auto_zoom_image(
+            prepared_source,
+            width_points,
+            height_points,
+            resize_to_target=False,
+        )
+        if zoomed_image is not None:
+            prepared_source = zoomed_image
+    if auto_zoom and background_rgb is not None and _image_has_transparency(prepared_source):
+        prepared_source = _flatten_image_to_background(prepared_source, background_rgb)
+
     if compression_profile.get("passthrough"):
-        with Image.open(BytesIO(source_bytes)) as image:
-            image.load()
-            original_image = image.copy()
         prepared_image = SimpleNamespace(
-            image=original_image,
-            reader=ImageReader(original_image),
+            image=prepared_source,
+            reader=ImageReader(prepared_source),
             format="ORIGINAL",
-            pixel_size=original_image.size,
+            pixel_size=prepared_source.size,
+            has_transparency=_image_has_transparency(prepared_source),
         )
     else:
-        with Image.open(BytesIO(source_bytes)) as image:
+        if auto_zoom:
+            target_width_px, target_height_px = _blended_pdf_image_target_size(
+                prepared_source.width,
+                prepared_source.height,
+                width_points,
+                height_points,
+                dpi=compression_profile["target_dpi"],
+                compression_percent=compression_profile["compression_percent"],
+            )
+            zoomed_image = build_auto_zoom_image(
+                prepared_source,
+                target_width_px,
+                target_height_px,
+                resize_to_target=True,
+            )
+            if zoomed_image is not None:
+                prepared_source = zoomed_image
+                if background_rgb is not None and _image_has_transparency(prepared_source):
+                    prepared_source = _flatten_image_to_background(
+                        prepared_source,
+                        background_rgb,
+                    )
+                buffer, encoded_format, pixel_size, has_transparency = _encode_prepared_image_for_pdf(
+                    prepared_source,
+                    jpeg_quality=compression_profile["jpeg_quality"],
+                )
+            else:
+                buffer, encoded_format, pixel_size = _compress_image_for_pdf(
+                    prepared_source,
+                    width_points,
+                    height_points,
+                    compression_percent=compression_profile["compression_percent"],
+                    dpi=compression_profile["target_dpi"],
+                    jpeg_quality=compression_profile["jpeg_quality"],
+                )
+                has_transparency = _image_has_transparency(prepared_source)
+        else:
             buffer, encoded_format, pixel_size = _compress_image_for_pdf(
-                image,
+                prepared_source,
                 width_points,
                 height_points,
                 compression_percent=compression_profile["compression_percent"],
                 dpi=compression_profile["target_dpi"],
                 jpeg_quality=compression_profile["jpeg_quality"],
             )
+            has_transparency = _image_has_transparency(prepared_source)
 
         prepared_image = SimpleNamespace(
             buffer=buffer,
             reader=ImageReader(buffer),
             format=encoded_format,
             pixel_size=pixel_size,
+            has_transparency=has_transparency,
         )
     _cache_prepared_pdf_image(app, cache_key, prepared_image)
     return prepared_image
@@ -788,7 +896,14 @@ def draw_pdf_element(app, c, element, value, x, y):
     box_height = element.height / app.scale
     if getattr(element, "is_image", False) and value_str:
         try:
-            prepared_image = _prepare_pdf_image(app, value_str, box_width, box_height)
+            prepared_image = _prepare_pdf_image(
+                app,
+                value_str,
+                box_width,
+                box_height,
+                auto_zoom=getattr(element, "image_auto_zoom", False),
+                background_rgb=_background_rgb_for_element(element),
+            )
         except (OSError, UnidentifiedImageError, requests.RequestException):
             logger.exception("Failed to prepare image %s for PDF", value_str)
         else:
@@ -799,6 +914,7 @@ def draw_pdf_element(app, c, element, value, x, y):
                     y,
                     width=box_width,
                     height=box_height,
+                    mask="auto" if getattr(prepared_image, "has_transparency", False) else None,
                 )
                 return
     if element.bg_visible:
@@ -988,6 +1104,7 @@ def _collect_element_specs(app):
             "auto_font": getattr(element, "auto_font", True),
             "layer": element.layer,
             "is_image": getattr(element, "is_image", False),
+            "image_auto_zoom": getattr(element, "image_auto_zoom", False),
             "value_source": normalize_value_source(
                 getattr(element, "value_source", VALUE_SOURCE_DEFAULT)
             ),
@@ -1165,6 +1282,15 @@ def render_single_pdf(task):
                             conf.get("is_image")
                             if conf is not None and "is_image" in conf
                             else (el.is_image if el and hasattr(el, "is_image") else fname in image_fields)
+                        ),
+                        image_auto_zoom=(
+                            conf.get("image_auto_zoom")
+                            if conf is not None and "image_auto_zoom" in conf
+                            else (
+                                el.image_auto_zoom
+                                if el and hasattr(el, "image_auto_zoom")
+                                else False
+                            )
                         ),
                     )
                     x_pdf = group["x"] / scale + x0

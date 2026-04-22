@@ -129,6 +129,15 @@ def setup_ui(app):
     )
     app.auto_font_check.pack(side="left", padx=(6, 0))
     app.auto_font_check.state(["disabled"])
+    app.image_auto_zoom_var = tk.BooleanVar(value=False)
+    app.image_auto_zoom_check = ttk.Checkbutton(
+        format_row,
+        text="Zoom IMG",
+        variable=app.image_auto_zoom_var,
+        command=app.toggle_image_auto_zoom,
+    )
+    app.image_auto_zoom_check.pack(side="left", padx=(6, 0))
+    app.image_auto_zoom_check.state(["disabled"])
     ttk.Separator(format_row, orient="vertical").pack(
         side="left", fill="y", padx=8, pady=2
     )
@@ -626,6 +635,10 @@ def setup_ui(app):
         app.tooltip.bind(app.font_entry, text="Rozmiar czcionki (pt)")
         app.tooltip.bind(
             app.auto_font_check, text="Auto dopasuj rozmiar czcionki"
+        )
+        app.tooltip.bind(
+            app.image_auto_zoom_check,
+            text="Dla obrazów: przytnij białe marginesy i powiększ bez ucinania produktu",
         )
         app.tooltip.bind(text_color_btn, text="Kolor tekstu")
         app.tooltip.bind(bg_color_btn, text="Kolor tła")

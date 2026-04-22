@@ -91,6 +91,10 @@ def _apply_element_config(app, element, elconf):
     element.bg_visible = elconf.get("bg_visible", element.bg_visible)
     element.align = elconf.get("align", element.align)
     element.auto_font = elconf.get("auto_font", element.auto_font)
+    element.image_auto_zoom = elconf.get(
+        "image_auto_zoom",
+        getattr(element, "image_auto_zoom", False),
+    )
     element.layer = elconf.get("layer", element.layer)
     element.value_source = normalize_value_source(
         elconf.get("value_source", getattr(element, "value_source", VALUE_SOURCE_DEFAULT))
@@ -424,6 +428,7 @@ def load_config(app, startup=False, path=None):
                 "bg_visible": fc.get("bg_visible", True),
                 "align": fc.get("align", "left"),
                 "auto_font": fc.get("auto_font", True),
+                "image_auto_zoom": fc.get("image_auto_zoom", False),
                 "layer": fc.get("layer", 1),
             }
             for k, fc in gconf.get("field_conf", {}).items()

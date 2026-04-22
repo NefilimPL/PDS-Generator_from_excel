@@ -395,6 +395,7 @@ def _build_elements(elements_conf, image_fields):
             auto_font=el.get("auto_font", True),
             layer=el.get("layer", 1),
             is_image=el.get("is_image", name in image_fields),
+            image_auto_zoom=el.get("image_auto_zoom", False),
             value_source=normalize_value_source(
                 el.get("value_source", VALUE_SOURCE_DEFAULT)
             ),
@@ -418,6 +419,7 @@ def _normalize_group_field_conf(conf):
         "bg_visible": conf.get("bg_visible", True),
         "align": conf.get("align", "left"),
         "auto_font": conf.get("auto_font", True),
+        "image_auto_zoom": conf.get("image_auto_zoom", False),
         "layer": conf.get("layer", 1),
     }
     if "is_image" in conf:

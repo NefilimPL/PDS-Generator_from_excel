@@ -89,6 +89,7 @@ class HeadlessConfigParityTests(unittest.TestCase):
                     "name": "Data",
                     "value_source": "file_date",
                     "file_date_kind": "created",
+                    "image_auto_zoom": True,
                 }
             ],
             image_fields=set(),
@@ -98,6 +99,7 @@ class HeadlessConfigParityTests(unittest.TestCase):
 
         self.assertEqual(element.value_source, "file_date")
         self.assertEqual(element.file_date_kind, "created")
+        self.assertTrue(element.image_auto_zoom)
 
     def test_build_groups_normalizes_field_conf_like_gui_loader(self):
         groups = pds_headless._build_groups(
@@ -111,6 +113,7 @@ class HeadlessConfigParityTests(unittest.TestCase):
                             "max_font_size": 12,
                             "auto_font": True,
                             "is_image": False,
+                            "image_auto_zoom": True,
                         }
                     },
                 }
@@ -126,6 +129,7 @@ class HeadlessConfigParityTests(unittest.TestCase):
         self.assertEqual(conf["align"], "left")
         self.assertTrue(conf["auto_font"])
         self.assertIs(conf["is_image"], False)
+        self.assertTrue(conf["image_auto_zoom"])
 
     def test_headless_app_reads_pdf_image_compression_percent_from_config(self):
         app = pds_headless.HeadlessApp(

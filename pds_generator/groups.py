@@ -207,6 +207,7 @@ class GroupArea:
                     "bg_visible": conf.get("bg_visible", True),
                     "align": conf.get("align", "left"),
                     "auto_font": conf.get("auto_font", True),
+                    "image_auto_zoom": conf.get("image_auto_zoom", False),
                     "layer": conf.get("layer", 1),
                 }
                 for k, conf in self.field_conf.items()
@@ -324,6 +325,15 @@ class GroupEditor(tk.Toplevel):
         )
         self.auto_font_check.pack(side="left", padx=2)
         self.auto_font_check.state(["disabled"])
+        self.image_auto_zoom_var = tk.BooleanVar(value=False)
+        self.image_auto_zoom_check = ttk.Checkbutton(
+            toolbar,
+            text="Zoom IMG",
+            variable=self.image_auto_zoom_var,
+            command=self.toggle_image_auto_zoom,
+        )
+        self.image_auto_zoom_check.pack(side="left", padx=2)
+        self.image_auto_zoom_check.state(["disabled"])
         zoom_in_btn = ttk.Button(toolbar, text="Z+", command=lambda: self.ctrl_zoom(factor=1.1))
         zoom_in_btn.pack(side="left", padx=2)
         zoom_out_btn = ttk.Button(toolbar, text="Z-", command=lambda: self.ctrl_zoom(factor=0.9))
@@ -358,6 +368,10 @@ class GroupEditor(tk.Toplevel):
             self.tooltip.bind(dec_btn, text="Zmniejsz rozmiar czcionki")
             self.tooltip.bind(self.font_entry, text="Rozmiar czcionki (pt)")
             self.tooltip.bind(self.auto_font_check, text="Auto dopasuj rozmiar czcionki")
+            self.tooltip.bind(
+                self.image_auto_zoom_check,
+                text="Dla obrazów: przytnij białe marginesy i powiększ bez ucinania produktu",
+            )
             self.tooltip.bind(zoom_in_btn, text="Przybliż")
             self.tooltip.bind(zoom_out_btn, text="Oddal")
             self.tooltip.bind(fit_btn, text="Dopasuj widok do okna")
@@ -510,6 +524,7 @@ class GroupEditor(tk.Toplevel):
             el.bg_visible = conf.get("bg_visible", el.bg_visible)
             el.align = conf.get("align", el.align)
             el.auto_font = conf.get("auto_font", el.auto_font)
+            el.image_auto_zoom = conf.get("image_auto_zoom", el.image_auto_zoom)
             el.layer = conf.get("layer", el.layer)
         else:
             src = self.parent.elements.get(name)
@@ -524,6 +539,7 @@ class GroupEditor(tk.Toplevel):
                 el.bg_visible = src.bg_visible
                 el.align = src.align
                 el.auto_font = src.auto_font
+                el.image_auto_zoom = getattr(src, "image_auto_zoom", False)
                 el.layer = src.layer
         if pos is not None:
             el.x, el.y = pos[0] * self.scale, pos[1] * self.scale
@@ -562,6 +578,7 @@ class GroupEditor(tk.Toplevel):
             self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
             self.auto_font_var.set(bool(getattr(self.selected_element, "auto_font", True)))
             self.auto_font_check.state(["!disabled"])
+            self._sync_image_auto_zoom_control()
             self.transparent_var.set(not self.selected_element.bg_visible)
             self.bg_check.state(["!disabled"])
             self.layer_entry.configure(state="normal")
@@ -571,10 +588,22 @@ class GroupEditor(tk.Toplevel):
             self.font_size_var.set("")
             self.auto_font_var.set(False)
             self.auto_font_check.state(["disabled"])
+            self._sync_image_auto_zoom_control()
             self.transparent_var.set(False)
             self.bg_check.state(["disabled"])
             self.layer_entry.configure(state="disabled")
             self.layer_var.set("")
+
+    def _sync_image_auto_zoom_control(self):
+        selected = self.selected_element
+        if selected and getattr(selected, "is_image", False):
+            self.image_auto_zoom_var.set(
+                bool(getattr(selected, "image_auto_zoom", False))
+            )
+            self.image_auto_zoom_check.state(["!disabled"])
+            return
+        self.image_auto_zoom_var.set(False)
+        self.image_auto_zoom_check.state(["disabled"])
 
     def canvas_button_press(self, event):
         if self.canvas.find_withtag("current"):
@@ -671,6 +700,17 @@ class GroupEditor(tk.Toplevel):
                 el.max_font_size = el.font_size
             el.auto_font = state
             el.sync_canvas()
+
+    def toggle_image_auto_zoom(self):
+        if not self.selected_elements:
+            return
+        state = bool(self.image_auto_zoom_var.get())
+        for el in self.selected_elements:
+            if not getattr(el, "is_image", False):
+                continue
+            el.image_auto_zoom = state
+            if hasattr(el, "raw_image") and hasattr(el, "image_id"):
+                el.sync_canvas()
 
     def set_layer(self):
         el = self.selected_element
@@ -845,6 +885,7 @@ class GroupEditor(tk.Toplevel):
                 "bg_visible": el.bg_visible,
                 "align": el.align,
                 "auto_font": el.auto_font,
+                "image_auto_zoom": getattr(el, "image_auto_zoom", False),
                 "layer": el.layer,
             }
             for name, el in self.elements.items()

@@ -7,6 +7,7 @@ import requests
 from PIL import Image, ImageTk, UnidentifiedImageError
 import tkinter as tk
 
+from .image_auto_zoom import render_image_to_box
 from .text_layout import DEFAULT_FONT_FAMILY, fit_text_lines, pdf_font_name
 from .value_sources import (
     FILE_DATE_KIND_MODIFIED,
@@ -41,6 +42,7 @@ class DraggableElement:
         self.bg_color = "white"
         self.bg_visible = True
         self.align = "left"
+        self.image_auto_zoom = False
         self.value_source = VALUE_SOURCE_DEFAULT
         self.file_date_kind = FILE_DATE_KIND_MODIFIED
         # layering (1-based, 0 reserved for page background)
@@ -222,6 +224,7 @@ class DraggableElement:
             "align": self.align,
             "layer": self.layer,
             "is_image": self.is_image,
+            "image_auto_zoom": getattr(self, "image_auto_zoom", False),
             "value_source": normalize_value_source(
                 getattr(self, "value_source", VALUE_SOURCE_DEFAULT)
             ),
@@ -239,7 +242,7 @@ class DraggableElement:
             self.y + self.height,
         )
         if hasattr(self, "image_id") and hasattr(self, "raw_image"):
-            resized = self.raw_image.resize((int(self.width), int(self.height)), Image.LANCZOS)
+            resized = self._render_preview_image(self.raw_image)
             self.image_obj = ImageTk.PhotoImage(resized)
             self.canvas.itemconfig(self.image_id, image=self.image_obj)
             self.canvas.coords(self.image_id, self.x, self.y)
@@ -299,14 +302,20 @@ class DraggableElement:
         if hasattr(self.parent, "restack_elements"):
             self.parent.restack_elements()
 
+    def _render_preview_image(self, image):
+        return render_image_to_box(
+            image,
+            self.width,
+            self.height,
+            auto_zoom=getattr(self, "image_auto_zoom", False),
+        )
+
     def _apply_loaded_image(self, request_id, value_str, loaded_image):
         if request_id != self._image_request_id:
             return
         self._clear_image()
         self.raw_image = loaded_image
-        width = max(1, int(self.width))
-        height = max(1, int(self.height))
-        resized = self.raw_image.resize((width, height), Image.LANCZOS)
+        resized = self._render_preview_image(self.raw_image)
         self.image_obj = ImageTk.PhotoImage(resized)
         self.image_id = self.canvas.create_image(
             self.x,
