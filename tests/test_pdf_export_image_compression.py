@@ -110,3 +110,47 @@ def test_draw_pdf_element_embeds_smaller_image_payload(tmp_path):
 
     assert pdf_path.stat().st_size < image_path.stat().st_size
     assert len(app._prepared_pdf_image_cache) == 1
+
+
+def test_draw_pdf_element_separates_pdf_cache_for_auto_zoom_variants(tmp_path):
+    image_path = tmp_path / "product.png"
+    pdf_path = tmp_path / "out.pdf"
+    image = Image.new("RGB", (600, 400), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((180, 160, 420, 280), fill=(166, 111, 66))
+    image.save(image_path, format="PNG")
+
+    class DummyApp:
+        scale = 1.0
+
+        def __init__(self, path):
+            self.path = str(path)
+
+        def find_local_image(self, filename):
+            if filename == "product":
+                return self.path
+            return None
+
+    base_kwargs = dict(
+        is_image=True,
+        width=144,
+        height=96,
+        font_size=12,
+        max_font_size=12,
+        bg_visible=False,
+        text_color="black",
+        bold=False,
+        align="left",
+        auto_font=True,
+    )
+    plain_element = SimpleNamespace(image_auto_zoom=False, **base_kwargs)
+    zoomed_element = SimpleNamespace(image_auto_zoom=True, **base_kwargs)
+
+    app = DummyApp(image_path)
+    pdf = canvas.Canvas(str(pdf_path), pagesize=(200, 200))
+    draw_pdf_element(app, pdf, plain_element, "product", 20, 20)
+    draw_pdf_element(app, pdf, zoomed_element, "product", 20, 120)
+    pdf.showPage()
+    pdf.save()
+
+    assert len(app._prepared_pdf_image_cache) == 2

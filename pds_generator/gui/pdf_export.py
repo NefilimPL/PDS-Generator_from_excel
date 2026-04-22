@@ -69,6 +69,7 @@ from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from tkinter import messagebox
 
+from ..image_auto_zoom import build_auto_zoom_image
 from ..number_format import round_numeric_value
 from .. import image_index as image_index_utils
 from ..layout_dependencies import (
@@ -677,6 +678,7 @@ def _pdf_image_cache_key(
     width_points,
     height_points,
     compression_percent,
+    auto_zoom,
 ):
     return (
         source_kind,
@@ -684,6 +686,7 @@ def _pdf_image_cache_key(
         int(round(float(width_points) * 10)),
         int(round(float(height_points) * 10)),
         int(compression_percent),
+        bool(auto_zoom),
     )
 
 
@@ -732,7 +735,7 @@ def _load_image_source_bytes(app, value_str):
         return "local", os.path.normcase(os.path.abspath(local_path)), handle.read()
 
 
-def _prepare_pdf_image(app, value_str, width_points, height_points):
+def _prepare_pdf_image(app, value_str, width_points, height_points, auto_zoom=False):
     source_kind, source_ref, source_bytes = _load_image_source_bytes(app, value_str)
     if not source_kind or not source_bytes:
         return None
@@ -744,6 +747,7 @@ def _prepare_pdf_image(app, value_str, width_points, height_points):
         width_points,
         height_points,
         compression_profile["compression_percent"],
+        auto_zoom,
     )
     cache = _pdf_image_cache_for_app(app)
     cached = cache.get(cache_key)
@@ -751,26 +755,35 @@ def _prepare_pdf_image(app, value_str, width_points, height_points):
         cache.move_to_end(cache_key)
         return cached
 
+    with Image.open(BytesIO(source_bytes)) as image:
+        image.load()
+        prepared_source = image.copy()
+    if auto_zoom:
+        zoomed_image = build_auto_zoom_image(
+            prepared_source,
+            width_points,
+            height_points,
+            resize_to_target=False,
+        )
+        if zoomed_image is not None:
+            prepared_source = zoomed_image
+
     if compression_profile.get("passthrough"):
-        with Image.open(BytesIO(source_bytes)) as image:
-            image.load()
-            original_image = image.copy()
         prepared_image = SimpleNamespace(
-            image=original_image,
-            reader=ImageReader(original_image),
+            image=prepared_source,
+            reader=ImageReader(prepared_source),
             format="ORIGINAL",
-            pixel_size=original_image.size,
+            pixel_size=prepared_source.size,
         )
     else:
-        with Image.open(BytesIO(source_bytes)) as image:
-            buffer, encoded_format, pixel_size = _compress_image_for_pdf(
-                image,
-                width_points,
-                height_points,
-                compression_percent=compression_profile["compression_percent"],
-                dpi=compression_profile["target_dpi"],
-                jpeg_quality=compression_profile["jpeg_quality"],
-            )
+        buffer, encoded_format, pixel_size = _compress_image_for_pdf(
+            prepared_source,
+            width_points,
+            height_points,
+            compression_percent=compression_profile["compression_percent"],
+            dpi=compression_profile["target_dpi"],
+            jpeg_quality=compression_profile["jpeg_quality"],
+        )
 
         prepared_image = SimpleNamespace(
             buffer=buffer,
@@ -788,7 +801,13 @@ def draw_pdf_element(app, c, element, value, x, y):
     box_height = element.height / app.scale
     if getattr(element, "is_image", False) and value_str:
         try:
-            prepared_image = _prepare_pdf_image(app, value_str, box_width, box_height)
+            prepared_image = _prepare_pdf_image(
+                app,
+                value_str,
+                box_width,
+                box_height,
+                auto_zoom=getattr(element, "image_auto_zoom", False),
+            )
         except (OSError, UnidentifiedImageError, requests.RequestException):
             logger.exception("Failed to prepare image %s for PDF", value_str)
         else:
@@ -988,6 +1007,7 @@ def _collect_element_specs(app):
             "auto_font": getattr(element, "auto_font", True),
             "layer": element.layer,
             "is_image": getattr(element, "is_image", False),
+            "image_auto_zoom": getattr(element, "image_auto_zoom", False),
             "value_source": normalize_value_source(
                 getattr(element, "value_source", VALUE_SOURCE_DEFAULT)
             ),
@@ -1165,6 +1185,15 @@ def render_single_pdf(task):
                             conf.get("is_image")
                             if conf is not None and "is_image" in conf
                             else (el.is_image if el and hasattr(el, "is_image") else fname in image_fields)
+                        ),
+                        image_auto_zoom=(
+                            conf.get("image_auto_zoom")
+                            if conf is not None and "image_auto_zoom" in conf
+                            else (
+                                el.image_auto_zoom
+                                if el and hasattr(el, "image_auto_zoom")
+                                else False
+                            )
                         ),
                     )
                     x_pdf = group["x"] / scale + x0

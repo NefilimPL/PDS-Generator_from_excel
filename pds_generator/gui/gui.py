@@ -918,6 +918,8 @@ class PDSGeneratorGUI(tk.Tk):
             element.is_image = state
             value = self._resolve_preview_value(name)
             element.update_value(value)
+            if element is self.selected_element:
+                self._sync_image_auto_zoom_control()
         self.image_cache = {}
         self.push_history()
 
@@ -2525,6 +2527,7 @@ class PDSGeneratorGUI(tk.Tk):
                 el.bg_visible = conf.get("bg_visible", True)
                 el.align = conf.get("align", "left")
                 el.auto_font = conf.get("auto_font", True)
+                el.image_auto_zoom = conf.get("image_auto_zoom", False)
                 el.layer = conf.get("layer", el.layer)
                 el.value_source = normalize_value_source(
                     conf.get("value_source", VALUE_SOURCE_DEFAULT)
@@ -2569,6 +2572,7 @@ class PDSGeneratorGUI(tk.Tk):
                     "bg_visible": fc.get("bg_visible", True),
                     "align": fc.get("align", "left"),
                     "auto_font": fc.get("auto_font", True),
+                    "image_auto_zoom": fc.get("image_auto_zoom", False),
                     "layer": fc.get("layer", 1),
                 }
                 for k, fc in gconf.get("field_conf", {}).items()
@@ -2584,6 +2588,7 @@ class PDSGeneratorGUI(tk.Tk):
         self._prune_dependencies()
         self.apply_image_field_state()
         self.refresh_value_source_elements()
+        self._sync_image_auto_zoom_control()
 
     def undo(self, event=None):
         if len(self.history) < 2:
@@ -3245,6 +3250,7 @@ class PDSGeneratorGUI(tk.Tk):
                 self.auto_font_var.set(bool(getattr(self.selected_element, "auto_font", True)))
             if hasattr(self, "auto_font_check"):
                 self.auto_font_check.state(["!disabled"])
+            self._sync_image_auto_zoom_control()
             self.bg_check.state(["!disabled"])
             self.transparent_var.set(not self.selected_element.bg_visible)
             self.layer_entry.configure(state="normal")
@@ -3256,12 +3262,28 @@ class PDSGeneratorGUI(tk.Tk):
                 self.auto_font_var.set(False)
             if hasattr(self, "auto_font_check"):
                 self.auto_font_check.state(["disabled"])
+            self._sync_image_auto_zoom_control()
             self.transparent_var.set(False)
             self.bg_check.state(["disabled"])
             self.layer_entry.configure(state="disabled")
             self.layer_var.set("")
         self._sync_value_source_controls()
         self.update_field_highlights()
+
+    def _sync_image_auto_zoom_control(self):
+        if not hasattr(self, "image_auto_zoom_var") or not hasattr(
+            self, "image_auto_zoom_check"
+        ):
+            return
+        selected = self.selected_element
+        if selected and getattr(selected, "is_image", False):
+            self.image_auto_zoom_var.set(
+                bool(getattr(selected, "image_auto_zoom", False))
+            )
+            self.image_auto_zoom_check.state(["!disabled"])
+            return
+        self.image_auto_zoom_var.set(False)
+        self.image_auto_zoom_check.state(["disabled"])
 
     def canvas_button_press(self, event):
         current = self.canvas.find_withtag("current")
@@ -3379,6 +3401,23 @@ class PDSGeneratorGUI(tk.Tk):
             el.auto_font = state
             el.sync_canvas()
         self.push_history()
+
+    def toggle_image_auto_zoom(self):
+        if not self.selected_elements:
+            return
+        state = bool(self.image_auto_zoom_var.get())
+        changed = False
+        for el in self.selected_elements:
+            if not getattr(el, "is_image", False):
+                continue
+            el.image_auto_zoom = state
+            if hasattr(el, "raw_image") and hasattr(el, "image_id"):
+                el.sync_canvas()
+            else:
+                el.update_value(self._resolve_preview_value(el.name))
+            changed = True
+        if changed:
+            self.push_history()
 
     def set_layer(self):
         el = self.selected_element

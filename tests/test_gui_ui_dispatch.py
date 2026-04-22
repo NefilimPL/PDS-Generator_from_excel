@@ -119,6 +119,10 @@ def _load_test_modules():
         fit_text_lines=lambda *args, **kwargs: [],
         pdf_font_name=lambda bold=False: "Helvetica-Bold" if bold else "Helvetica",
     )
+    image_auto_zoom_module = _module(
+        "test_pds_generator.image_auto_zoom",
+        render_image_to_box=lambda image, width, height, auto_zoom=False: image,
+    )
 
     base_stubs = {
         "pandas": pandas_module,
@@ -135,6 +139,7 @@ def _load_test_modules():
         "test_pds_generator": package,
         "test_pds_generator.gui": gui_package,
         "test_pds_generator.text_layout": text_layout_module,
+        "test_pds_generator.image_auto_zoom": image_auto_zoom_module,
     }
 
     elements_module = _load_module(
