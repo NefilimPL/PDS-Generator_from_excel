@@ -69,7 +69,7 @@ from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from tkinter import messagebox
 
-from ..image_auto_zoom import build_auto_zoom_image
+from ..image_auto_zoom import build_auto_zoom_image, fit_image_to_box
 from ..number_format import round_numeric_value
 from .. import image_index as image_index_utils
 from ..layout_dependencies import (
@@ -607,10 +607,12 @@ def _normalise_pdf_image(image, width_points, height_points, dpi, compression_pe
         dpi,
         compression_percent,
     )
-    resized_size = (max(1, resized_width), max(1, resized_height))
-    if prepared.size != resized_size:
-        prepared = prepared.resize(resized_size, Image.LANCZOS)
-    return prepared
+    return fit_image_to_box(
+        prepared,
+        max(1, resized_width),
+        max(1, resized_height),
+        resize_to_target=True,
+    )
 
 
 def _encode_png_for_pdf(image):
@@ -820,6 +822,13 @@ def _prepare_pdf_image(
         )
         if zoomed_image is not None:
             prepared_source = zoomed_image
+    elif not auto_zoom and compression_profile.get("passthrough"):
+        prepared_source = fit_image_to_box(
+            prepared_source,
+            width_points,
+            height_points,
+            resize_to_target=False,
+        )
     if auto_zoom and background_rgb is not None and _image_has_transparency(prepared_source):
         prepared_source = _flatten_image_to_background(prepared_source, background_rgb)
 

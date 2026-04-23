@@ -678,7 +678,10 @@ def setup_ui(app):
             text="Ustaw procent kompresji obrazów w PDF",
         )
         app.tooltip.bind(app.add_static_btn, text="Dodaj nowe pole statyczne")
-        app.tooltip.bind(app.preview_btn, text="Podgląd wiersza z Excela")
+        app.tooltip.bind(
+            app.preview_btn,
+            text="Podgląd wiersza z Excela oraz wierny podgląd PDF bezpośrednio na stronie",
+        )
         app.tooltip.bind(remove_group_btn, text="Usuń wybraną grupę")
         app.tooltip.bind(save_btn, text="Zapisz konfigurację do pliku")
         app.tooltip.bind(conditions_btn, text="Edytuj warunki widoczności")

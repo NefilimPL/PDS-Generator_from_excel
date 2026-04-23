@@ -169,6 +169,27 @@ def _pad_to_aspect(image, target_width, target_height):
     return canvas
 
 
+def fit_image_to_box(image, target_width, target_height, resize_to_target=True):
+    prepared = ImageOps.exif_transpose(image)
+    prepared.load()
+    target_width = max(1, int(round(target_width)))
+    target_height = max(1, int(round(target_height)))
+
+    if not resize_to_target:
+        return _pad_to_aspect(prepared, target_width, target_height)
+
+    contained = ImageOps.contain(
+        prepared.convert("RGBA"),
+        (target_width, target_height),
+        Image.LANCZOS,
+    )
+    canvas = Image.new("RGBA", (target_width, target_height), (255, 255, 255, 0))
+    offset_x = (target_width - contained.width) // 2
+    offset_y = (target_height - contained.height) // 2
+    canvas.paste(contained, (offset_x, offset_y), contained)
+    return canvas
+
+
 def build_auto_zoom_image(image, target_width, target_height, resize_to_target=False):
     prepared = ImageOps.exif_transpose(image)
     prepared.load()
@@ -192,7 +213,12 @@ def render_image_to_box(image, width, height, auto_zoom=False):
     prepared.load()
 
     if not auto_zoom:
-        return prepared.resize(target_size, Image.LANCZOS)
+        return fit_image_to_box(
+            prepared,
+            target_size[0],
+            target_size[1],
+            resize_to_target=True,
+        )
 
     zoomed = build_auto_zoom_image(
         prepared,
@@ -201,5 +227,10 @@ def render_image_to_box(image, width, height, auto_zoom=False):
         resize_to_target=True,
     )
     if zoomed is None:
-        return prepared.resize(target_size, Image.LANCZOS)
+        return fit_image_to_box(
+            prepared,
+            target_size[0],
+            target_size[1],
+            resize_to_target=True,
+        )
     return zoomed

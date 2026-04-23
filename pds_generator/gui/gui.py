@@ -172,6 +172,11 @@ class PDSGeneratorGUI(tk.Tk):
         self.preview_in_progress = False
         self.preview_animation_after = None
         self.preview_animation_step = 0
+        self.pdf_preview_backdrop_id = None
+        self.pdf_preview_overlay_id = None
+        self.pdf_preview_message_id = None
+        self.pdf_preview_photo = None
+        self._pdf_preview_request_id = 0
         self.mail_settings_win = None
         self.update_prompt_win = None
         self.last_generation_report = None
@@ -824,6 +829,7 @@ class PDSGeneratorGUI(tk.Tk):
 
     # ------------------------------------------------------------------
     def update_canvas_size(self):
+        self._clear_pdf_preview_overlay(cancel_pending=True)
         value = self.size_var.get().strip()
         if "x" in value.lower():
             try:
@@ -977,6 +983,31 @@ class PDSGeneratorGUI(tk.Tk):
             pass
         return value
 
+    def _preview_field_names(self):
+        names = []
+        seen = set()
+
+        def add(name):
+            if not name or name in seen:
+                return
+            seen.add(name)
+            names.append(name)
+
+        for name in self.elements.keys():
+            add(name)
+        for name in getattr(self, "static_entries", {}).keys():
+            add(name)
+        for src, tgt in self.conditions:
+            add(src)
+            add(tgt)
+        for group in self.groups.values():
+            for name in getattr(group, "fields", []) or list(getattr(group, "field_pos", {}).keys()):
+                add(name)
+            for src, tgt in getattr(group, "conditions", []):
+                add(src)
+                add(tgt)
+        return names
+
     def _compute_hidden_elements_for_values(self, values):
         hidden = set()
         for src, tgt in self.conditions:
@@ -993,7 +1024,7 @@ class PDSGeneratorGUI(tk.Tk):
 
     def build_preview_layout_state(self, idx=None):
         values = {}
-        for name in self.elements.keys():
+        for name in self._preview_field_names():
             values[name] = self._normalize_preview_value(
                 self._resolve_preview_value(name, idx=idx)
             )
@@ -2481,10 +2512,12 @@ class PDSGeneratorGUI(tk.Tk):
         self.canvas.tag_lower("grid")
         self.canvas.tag_raise("grid", "page")
         self.canvas.tag_raise("ruler", "grid")
+        self._raise_pdf_preview_overlay()
         if self.selected_element:
             self.layer_var.set(str(int(self.selected_element.layer)))
         
     def push_history(self):
+        self._clear_pdf_preview_overlay(cancel_pending=True)
         state = {
             "elements": [el.to_dict() for el in self.elements.values()],
             "groups": [g.to_dict() for g in self.groups.values()],
@@ -2782,6 +2815,133 @@ class PDSGeneratorGUI(tk.Tk):
         if status_text:
             self.after(1500, self._clear_preview_status)
 
+    def _reset_pdf_preview_refs(self):
+        self.pdf_preview_backdrop_id = None
+        self.pdf_preview_overlay_id = None
+        self.pdf_preview_message_id = None
+        self.pdf_preview_photo = None
+    
+    def _clear_pdf_preview_overlay(self, cancel_pending=False):
+        had_preview = any(
+            item is not None
+            for item in (
+                getattr(self, "pdf_preview_backdrop_id", None),
+                getattr(self, "pdf_preview_overlay_id", None),
+                getattr(self, "pdf_preview_message_id", None),
+            )
+        ) or getattr(self, "pdf_preview_photo", None) is not None
+        if cancel_pending:
+            self._pdf_preview_request_id += 1
+        for item in (
+            getattr(self, "pdf_preview_backdrop_id", None),
+            getattr(self, "pdf_preview_overlay_id", None),
+            getattr(self, "pdf_preview_message_id", None),
+        ):
+            if item is None:
+                continue
+            try:
+                self.canvas.delete(item)
+            except Exception:
+                pass
+        self._reset_pdf_preview_refs()
+        return had_preview
+
+    def _raise_pdf_preview_overlay(self):
+        for item in (
+            getattr(self, "pdf_preview_backdrop_id", None),
+            getattr(self, "pdf_preview_overlay_id", None),
+            getattr(self, "pdf_preview_message_id", None),
+        ):
+            if item is not None:
+                self.canvas.tag_raise(item)
+        self.canvas.tag_raise("ruler")
+
+    def _pdf_preview_canvas_size(self):
+        width = max(1, int(round(self.page_width * self.scale)))
+        height = max(1, int(round(self.page_height * self.scale)))
+        return width, height
+
+    def _show_pdf_preview_image(self, preview_image, row_number=None):
+        self._clear_pdf_preview_overlay()
+        width, height = self._pdf_preview_canvas_size()
+        if preview_image.size != (width, height):
+            preview_image = preview_image.resize((width, height), Image.LANCZOS)
+        self.pdf_preview_photo = ImageTk.PhotoImage(preview_image)
+        self.pdf_preview_overlay_id = self.canvas.create_image(
+            0,
+            0,
+            anchor="nw",
+            image=self.pdf_preview_photo,
+            tags=("pdf-preview",),
+        )
+        self._raise_pdf_preview_overlay()
+        row_text = f"wiersz {int(row_number)}" if row_number is not None else "bieżący widok"
+        self._set_preview_status(
+            f"Podgląd PDF na stronie: {row_text}. Kliknij stronę, aby wrócić do edycji."
+        )
+
+    def _show_pdf_preview_message(self, message, row_number=None):
+        self._clear_pdf_preview_overlay()
+        width, height = self._pdf_preview_canvas_size()
+        self.pdf_preview_backdrop_id = self.canvas.create_rectangle(
+            0,
+            0,
+            width,
+            height,
+            fill="white",
+            outline="",
+            tags=("pdf-preview",),
+        )
+        row_text = f"Wiersz {int(row_number)}" if row_number is not None else "Bieżący widok"
+        self.pdf_preview_message_id = self.canvas.create_text(
+            width / 2,
+            height / 2,
+            text=f"{message}\n{row_text}",
+            fill="#435166",
+            font=("TkDefaultFont", 12, "bold"),
+            justify="center",
+            width=max(width - 48, 120),
+            tags=("pdf-preview",),
+        )
+        self._raise_pdf_preview_overlay()
+
+    def _start_pdf_preview_render(self, values, hidden, row_number):
+        self._pdf_preview_request_id += 1
+        request_id = self._pdf_preview_request_id
+        preview_dpi = max(24, round(72 * (getattr(self, "scale", 1.0) or 1.0)))
+        self._show_pdf_preview_message("Ładowanie wiernego podglądu PDF...", row_number=row_number)
+
+        def worker():
+            try:
+                from .pdf_preview import render_pdf_preview_image
+
+                image = render_pdf_preview_image(
+                    self,
+                    values,
+                    hidden_names=hidden,
+                    dpi=preview_dpi,
+                )
+            except Exception as exc:
+                logger.exception("Failed to prepare PDF-faithful preview")
+                error_text = str(exc).strip()
+
+                def on_error():
+                    if request_id != self._pdf_preview_request_id:
+                        return
+                    self._show_pdf_preview_message(error_text or "Nie udało się przygotować podglądu PDF.", row_number=row_number)
+
+                self.ui_call(on_error)
+                return
+
+            def on_success():
+                if request_id != self._pdf_preview_request_id:
+                    return
+                self._show_pdf_preview_image(image, row_number=row_number)
+
+            self.ui_call(on_success)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     # ------------------------------------------------------------------
     def preview_row(self):
         if not self.dataframes:
@@ -2793,6 +2953,7 @@ class PDSGeneratorGUI(tk.Tk):
         except ValueError:
             messagebox.showerror("Błąd", "Nieprawidłowy numer wiersza")
             return
+        self._clear_pdf_preview_overlay(cancel_pending=True)
         self._start_preview_animation()
 
         def worker():
@@ -2830,6 +2991,7 @@ class PDSGeneratorGUI(tk.Tk):
                     self.after(1, lambda: apply_batch(end))
                 else:
                     self._finish_preview_animation("Podgląd gotowy")
+                    self._start_pdf_preview_render(values, hidden, idx + 1)
 
             self.ui_call(apply_batch)
 
@@ -2991,6 +3153,7 @@ class PDSGeneratorGUI(tk.Tk):
                 self.draw_grid()
 
     def draw_grid(self):
+        self._clear_pdf_preview_overlay(cancel_pending=True)
         self.canvas.delete("grid")
         self.canvas.delete("page")
         self.canvas.delete("ruler")
@@ -3137,6 +3300,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.canvas.xview_moveto(left / total_w)
         self.canvas.yview_moveto(top / total_h)
     def ctrl_zoom(self, event, delta=None):
+        self._clear_pdf_preview_overlay(cancel_pending=True)
         if delta is None:
             delta = event.delta
         self.fit_mode = False
@@ -3184,6 +3348,7 @@ class PDSGeneratorGUI(tk.Tk):
         self.canvas.yview_moveto((y * factor - event.y + self.margin + 20) / total_h)
 
     def fit_to_window(self):
+        self._clear_pdf_preview_overlay(cancel_pending=True)
         self.fit_mode = True
         container_w = self.canvas_container.winfo_width()
         container_h = self.canvas_container.winfo_height()
@@ -3226,6 +3391,8 @@ class PDSGeneratorGUI(tk.Tk):
             self.font_size_var.set(str(int(self.selected_element.font_size / self.scale)))
 
     def start_pan(self, event):
+        if self._clear_pdf_preview_overlay(cancel_pending=True):
+            return
         self.fit_mode = False
         self.canvas.scan_mark(event.x, event.y)
 
@@ -3286,6 +3453,8 @@ class PDSGeneratorGUI(tk.Tk):
         self.image_auto_zoom_check.state(["disabled"])
 
     def canvas_button_press(self, event):
+        if self._clear_pdf_preview_overlay(cancel_pending=True):
+            return
         current = self.canvas.find_withtag("current")
         if current:
             item = current[0]
@@ -3546,6 +3715,7 @@ class PDSGeneratorGUI(tk.Tk):
             except Exception:
                 pass
             self._ui_call_queue_after_id = None
+        self._clear_pdf_preview_overlay(cancel_pending=True)
         self.release_lock("excel_lock_path")
         self.release_lock("config_lock_path")
         self.destroy()
