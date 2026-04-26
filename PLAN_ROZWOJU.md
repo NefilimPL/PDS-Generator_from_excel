@@ -27,6 +27,125 @@ Plan roboczy przygotowany na podstawie przegladu repo z dnia 2026-04-26. Ten pli
 3. Dopiero na ustabilizowanej bazie wejsc w wiekszy refactor modulow GUI, mailera i eksportu PDF.
 4. Nastepnie realizowac UX/QoL i optymalizacje wydajnosci.
 
+## Rozwiniecie kluczowych tematow
+
+### 1. Bezpieczna aktualizacja aplikacji
+
+Cel:
+Wykluczyc sytuacje, w ktorej update nadpisuje lokalne zmiany, zostawia repo w stanie czesciowo zaktualizowanym albo miesza pliki z roznych wersji.
+
+Zakres:
+- Rozdzielic dwa scenariusze: aktualizacja repo git i aktualizacja z paczki ZIP.
+- Przed aktualizacja wykrywac lokalne modyfikacje i informowac uzytkownika, czy aktualizacja bedzie bezpieczna.
+- Dla wariantu ZIP nie rozpakowywac "na zywo" do katalogu roboczego, tylko najpierw do katalogu tymczasowego, potem wykonac atomowa podmiane wybranych plikow.
+- Jawnie zdefiniowac liste plikow i katalogow, ktorych updater nie moze ruszac: np. `config.json`, logi, cache, lokalne artefakty uzytkownika.
+- Dodac plan rollbacku, jezeli aktualizacja przerwie sie w polowie.
+
+Definicja done:
+- Aktualizacja nie rusza lokalnych danych uzytkownika.
+- Aplikacja nie zostaje w stanie "pol wersji".
+- Bledy aktualizacji sa czytelne i nie wymagaja recznego sprzatania repo.
+
+### 2. Realne blokady plikow i odporne zapisy konfiguracji
+
+Cel:
+Zapobiec rownoleglym zapisom `config.json`, jednoczesnym uruchomieniom eksportu na tych samych danych i przypadkowemu uszkodzeniu plikow roboczych.
+
+Zakres:
+- Zdecydowac, czy locki maja byc funkcja obowiazkowa, czy opcjonalna, ale dzialajaca.
+- Jezeli zostaja: wlaczyc je naprawde, przetestowac stale locki, przejmowanie locka i crash recovery.
+- Zapis konfiguracji robic przez plik tymczasowy i rename zamiast nadpisywania docelowego pliku wprost.
+- Czytelnie rozdzielic lock dla konfiguracji, lock dla arkusza i lock dla procesu eksportu.
+- Dla headless i GUI utrzymac te same zasady zachowania.
+
+Definicja done:
+- Nie da sie latwo uszkodzic `config.json` przez przerwany zapis.
+- Uzytkownik dostaje jasny komunikat, kto trzyma blokade i co moze zrobic.
+- Locki dzialaja tak samo w typowych przeplywach GUI i headless.
+
+### 3. Refactor najwiekszych modulow
+
+Cel:
+Zmniejszyc koszt utrzymania i ryzyko regresji przez rozbicie modulow, ktore dzis lacza UI, logike biznesowa, IO, siec i obsluge bledow w jednym miejscu.
+
+Zakres:
+- `gui.py`: wydzielic shell aplikacji, kontrolery akcji UI, obsluge background jobs i logike canvasu.
+- `mailer.py`: rozdzielic konfiguracje, szyfrowanie sekretow, pobieranie tokenow, wysylke SMTP/Graph i reminder workflow.
+- `pdf_export.py`: wydzielic render jednego dokumentu, przygotowanie danych, obsluge obrazow, raportowanie wynikow i orchestration batcha.
+- Ustalic publiczne API miedzy modulami, zamiast odwolania do wielu atrybutow `app`.
+- Tam, gdzie sie da, zastapic bezposrednie `messagebox` wynikiem/wyjatkiem zwracanym do warstwy UI.
+
+Definicja done:
+- Kazdy duzy obszar ma mniejsze moduly o jasnej odpowiedzialnosci.
+- Testy jednostkowe da sie pisac bez stawiania calego `tkinter`.
+- Mniej zmian wymaga dotykania kilku niepowiazanych miejsc naraz.
+
+### 4. Jawny model konfiguracji wspolny dla GUI i headless
+
+Cel:
+Usunac rozjazdy miedzy tym, co zapisuje GUI, a tym, co interpretuje tryb headless i eksport PDF.
+
+Zakres:
+- Zdefiniowac jeden model konfiguracji: pola, grupy, zaleznosci, ustawienia PDF, mail, image dirs, tracking, feature flags.
+- Przy ladowaniu stosowac normalizacje i walidacje w jednym miejscu.
+- Wymusic wersjonowanie formatu configu i przygotowac migracje starszych wersji.
+- Wszystkie sciezki startowe maja korzystac z tej samej warstwy odczytu i walidacji.
+
+Definicja done:
+- Ten sam `config.json` daje przewidywalny wynik w GUI i headless.
+- Bledna konfiguracja jest wykrywana przed startem generowania.
+- Dodanie nowego pola do configu nie wymaga zmian w pieciu roznych miejscach.
+
+### 5. CI, testy i srodowisko developerskie
+
+Cel:
+Sprawic, zeby jakosc projektu nie zalezal od recznego sprawdzania zmian lokalnie.
+
+Zakres:
+- Dodac jawny zestaw narzedzi developerskich i sposob uruchamiania testow.
+- Wlaczyc automatyczne odpalanie testow przy push/PR.
+- Podzielic testy na szybkie jednostkowe, integracyjne i e2e dla headless.
+- Dodac fixture z przykladowym Excelem, obrazami i przykladowym configiem.
+- Ustalic minimalny standard: testy, lint, ewentualnie coverage dla najwazniejszych modulow.
+
+Definicja done:
+- Nowy dev potrafi uruchomic testy bez zgadywania.
+- Kazdy PR ma automatyczny sygnal, czy nie zepsul bazowych przeplywow.
+- Najbardziej ryzykowne obszary maja testy regresyjne.
+
+### 6. Panel "health check projektu"
+
+Cel:
+Zamiast odkrywac problemy dopiero podczas eksportu, pokazac je od razu po wczytaniu projektu.
+
+Zakres:
+- Sprawdzanie brakujacych kolumn, pustych mapowan, nieistniejacych pol w zaleznosciach i grupach.
+- Weryfikacja obrazow: brak pliku, zly URL, konflikt wielu trafien, uszkodzony format.
+- Weryfikacja konfiguracji maila i sekretow bez wysylki produkcyjnej.
+- Czytelny raport z poziomami: blad, ostrzezenie, informacja.
+- Szybkie przejscie z raportu do problematycznego elementu lub ustawienia.
+
+Definicja done:
+- Uzytkownik przed eksportem wie, co na pewno nie zadziala.
+- Typowe problemy sa diagnozowane w jednym miejscu.
+- Zmniejsza sie liczba bledow odkrywanych dopiero po wygenerowaniu batcha.
+
+### 7. Wydajnosc dla duzych wsadow i obrazow
+
+Cel:
+Utrzymac przewidywalny czas generowania przy wiekszych plikach Excel i duzej liczbie assetow graficznych.
+
+Zakres:
+- Zmierzyc czasy: ladowanie Excela, przebudowa indeksu obrazow, render jednej strony, batch export.
+- Dodac cache dla pobranych obrazow z URL i lepsze reuse juz przetworzonych obrazow lokalnych.
+- Ograniczyc pelne przeliczenia podgladu po drobnych zmianach w edytorze.
+- Sprawdzic, czy wieloprocesowosc realnie pomaga, czy tylko zwieksza koszt serializacji i zuzycie RAM.
+
+Definicja done:
+- Istnieja benchmarki przed/po.
+- Da sie wskazac, ktore operacje sa najdrozsze.
+- Optymalizacje sa oparte na pomiarach, nie na zgadywaniu.
+
 ## Stabilnosc i bezpieczenstwo
 
 - [ ] `P0` `BUG/SEC` Zabezpieczyc mechanizm aktualizacji przed nadpisaniem lokalnych zmian i polowicznym overlayem ZIP.

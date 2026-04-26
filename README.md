@@ -1,6 +1,12 @@
 # PDS-Generator_from_excel
 <img width="1920" height="1040" alt="image" src="https://github.com/user-attachments/assets/252bb043-014d-47ed-bdc0-853664916e82" />
 
+## Nawigacja / Navigation
+
+| Polski | English |
+|---|---|
+| Plan rozwoju, backlog i lista zadan: [PLAN_ROZWOJU.md](PLAN_ROZWOJU.md) | Development roadmap, backlog, and task list: [PLAN_ROZWOJU.md](PLAN_ROZWOJU.md) |
+
 ## Opis / Description
 
 | Polski | English |
