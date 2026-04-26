@@ -201,11 +201,28 @@ def _load_test_modules():
     )
     github_utils_module = _module(
         "test_pds_generator.github_utils",
+        ensure_zip_install_manifest=lambda *args, **kwargs: False,
         get_repo_info=lambda *args, **kwargs: (None, None, None),
         get_remote_commit_info=lambda *args, **kwargs: (None, None),
         get_remote_version=lambda *args, **kwargs: None,
-        pull_updates=lambda *args, **kwargs: False,
         get_version=lambda *args, **kwargs: "0",
+        inspect_update_preflight=lambda *args, **kwargs: types.SimpleNamespace(
+            safe=True,
+            summary="OK",
+            details=(),
+            mode="git",
+        ),
+        perform_update=lambda *args, **kwargs: types.SimpleNamespace(
+            success=True,
+            message="OK",
+            details=(),
+            mode="git",
+        ),
+        recover_pending_update=lambda *args, **kwargs: types.SimpleNamespace(
+            recovered=False,
+            message="",
+            warning=False,
+        ),
     )
     image_index_module = _module("test_pds_generator.image_index")
 
@@ -286,6 +303,77 @@ class _DummyVar:
 
 
 class GuiUiDispatchTests(unittest.TestCase):
+    def test_build_update_message_formats_summary_and_details(self):
+        message = PDSGeneratorGUI._build_update_message(
+            "Bezpieczna aktualizacja",
+            ("Repo czyste", "", "Rollback gotowy"),
+        )
+
+        self.assertEqual(
+            message,
+            "Bezpieczna aktualizacja\n- Repo czyste\n- Rollback gotowy",
+        )
+
+    def test_confirm_update_preflight_blocks_unsafe_update(self):
+        app = types.SimpleNamespace(repo_dir=str(ROOT))
+        app._build_update_message = PDSGeneratorGUI._build_update_message
+
+        warnings = []
+        questions = []
+        original_messagebox = GUI_MODULE.messagebox
+        original_preflight = GUI_MODULE.inspect_update_preflight
+        try:
+            GUI_MODULE.messagebox = types.SimpleNamespace(
+                showwarning=lambda title, message: warnings.append((title, message)),
+                askyesno=lambda title, message: questions.append((title, message)),
+            )
+            GUI_MODULE.inspect_update_preflight = lambda _repo_dir: types.SimpleNamespace(
+                safe=False,
+                summary="Aktualizacja zablokowana",
+                details=("Zmodyfikowany plik aplikacji: app.py",),
+                mode="zip",
+            )
+
+            confirmed = PDSGeneratorGUI._confirm_update_preflight(app)
+        finally:
+            GUI_MODULE.messagebox = original_messagebox
+            GUI_MODULE.inspect_update_preflight = original_preflight
+
+        self.assertFalse(confirmed)
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(questions, [])
+        self.assertIn("app.py", warnings[0][1])
+
+    def test_confirm_update_preflight_prompts_when_safe(self):
+        app = types.SimpleNamespace(repo_dir=str(ROOT))
+        app._build_update_message = PDSGeneratorGUI._build_update_message
+
+        warnings = []
+        questions = []
+        original_messagebox = GUI_MODULE.messagebox
+        original_preflight = GUI_MODULE.inspect_update_preflight
+        try:
+            GUI_MODULE.messagebox = types.SimpleNamespace(
+                showwarning=lambda title, message: warnings.append((title, message)),
+                askyesno=lambda title, message: questions.append((title, message)) or False,
+            )
+            GUI_MODULE.inspect_update_preflight = lambda _repo_dir: types.SimpleNamespace(
+                safe=True,
+                summary="Aktualizacja bezpieczna",
+                details=("Repo czyste",),
+                mode="git",
+            )
+
+            confirmed = PDSGeneratorGUI._confirm_update_preflight(app)
+        finally:
+            GUI_MODULE.messagebox = original_messagebox
+            GUI_MODULE.inspect_update_preflight = original_preflight
+
+        self.assertFalse(confirmed)
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(questions), 1)
+        self.assertIn("Tryb aktualizacji: git.", questions[0][1])
+
     def test_ui_call_runs_immediately_on_main_thread(self):
         app = _DummyGUI(threading.get_ident())
         calls = []

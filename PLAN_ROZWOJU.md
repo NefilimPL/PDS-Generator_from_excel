@@ -46,6 +46,11 @@ Definicja done:
 - Aplikacja nie zostaje w stanie "pol wersji".
 - Bledy aktualizacji sa czytelne i nie wymagaja recznego sprzatania repo.
 
+Status 2026-04-26:
+- [x] Rozdzielono preflight i wykonanie dla `git` oraz `ZIP`; `git` blokuje update przy brudnym checkoutcie i uzywa tylko `fetch` + `merge --ff-only`.
+- [x] Dodano manifest instalacji ZIP, liste sciezek chronionych, staging do `.pds-updater/` oraz rollback/recovery po przerwanym update.
+- [x] GUI pokazuje przed aktualizacja, czy update jest bezpieczny, a testy regresyjne obejmuja manifest, rollback i komunikaty preflight.
+
 ### 2. Realne blokady plikow i odporne zapisy konfiguracji
 
 Cel:
@@ -148,7 +153,7 @@ Definicja done:
 
 ## Stabilnosc i bezpieczenstwo
 
-- [ ] `P0` `BUG/SEC` Zabezpieczyc mechanizm aktualizacji przed nadpisaniem lokalnych zmian i polowicznym overlayem ZIP.
+- [x] `P0` `BUG/SEC` Zabezpieczono mechanizm aktualizacji przed nadpisaniem lokalnych zmian i polowicznym overlayem ZIP. (2026-04-26: osobne flow `git`/`ZIP`, preflight, staging, rollback, recovery)
 - [ ] `P0` `BUG/TECH-DEBT` Podjac decyzje dla systemu blokad plikow: wlaczyc i przetestowac realne blokowanie albo usunac martwy kod; obecnie `LOCKS_ENABLED = False`.
 - [ ] `P1` `BUG` Ujednolicic obsluge wyjatkow i raportowanie bledow, z ograniczeniem szerokich `except Exception` w krytycznych sciezkach.
 - [ ] `P1` `SEC` Przejrzec przeplyw sekretow miedzy GUI, `config.json`, AppData i ENV; dopisac testy regresyjne dla precedencji zrodel.

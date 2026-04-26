@@ -52,11 +52,14 @@ from ..value_sources import (
 )
 
 from ..github_utils import (
+    ensure_zip_install_manifest,
     get_repo_info,
     get_remote_commit_info,
     get_remote_version,
-    pull_updates,
     get_version,
+    inspect_update_preflight,
+    perform_update,
+    recover_pending_update,
 )
 from .. import image_index as image_index_utils
 
@@ -106,6 +109,8 @@ class PDSGeneratorGUI(tk.Tk):
         self.repo_dir = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..")
         )
+        self._update_startup_notice = ""
+        self._prepare_update_environment()
         self.version = get_version(self.repo_dir)
         self.remote_version = None
         self.remote_date = None
@@ -200,6 +205,8 @@ class PDSGeneratorGUI(tk.Tk):
         self.update_idletasks()
         self.resize_canvas()
         self.load_config(startup=True)
+        if self._update_startup_notice:
+            messagebox.showwarning("Aktualizacja", self._update_startup_notice)
         self.check_for_updates()
         if not self.history:
             self.push_history()
@@ -338,6 +345,53 @@ class PDSGeneratorGUI(tk.Tk):
         except tk.TclError:
             pass
 
+    def _prepare_update_environment(self):
+        notices = []
+        try:
+            recovery = recover_pending_update(self.repo_dir)
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to recover interrupted update")
+            notices.append(
+                "Nie udało się sprawdzić, czy poprzednia aktualizacja została przerwana."
+            )
+        else:
+            if recovery.message:
+                notices.append(recovery.message)
+        try:
+            ensure_zip_install_manifest(self.repo_dir)
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to prepare ZIP manifest")
+            notices.append(
+                "Nie udało się przygotować lokalnego manifestu bezpiecznych aktualizacji ZIP."
+            )
+        self._update_startup_notice = "\n\n".join(notices)
+
+    @staticmethod
+    def _build_update_message(summary, details=()):
+        lines = [str(summary or "").strip()]
+        for detail in details or ():
+            text = str(detail or "").strip()
+            if text:
+                lines.append(f"- {text}")
+        return "\n".join(line for line in lines if line)
+
+    def _confirm_update_preflight(self):
+        preflight = inspect_update_preflight(self.repo_dir)
+        if not preflight.safe:
+            messagebox.showwarning(
+                "Aktualizacja",
+                self._build_update_message(preflight.summary, preflight.details),
+            )
+            return False
+        details = tuple(preflight.details) + (
+            f"Tryb aktualizacji: {preflight.mode}.",
+            "Kontynuować aktualizację teraz?",
+        )
+        return messagebox.askyesno(
+            "Aktualizacja",
+            self._build_update_message(preflight.summary, details),
+        )
+
     # ------------------------------------------------------------------
     def check_for_updates(self):
         local_hash, owner, repo = get_repo_info(self.repo_dir)
@@ -432,6 +486,8 @@ class PDSGeneratorGUI(tk.Tk):
         self._run_update()
 
     def _run_update(self):
+        if not self._confirm_update_preflight():
+            return
         previous_excel_lock = self.excel_lock_path
         previous_config_lock = self.config_lock_path
 
@@ -439,20 +495,37 @@ class PDSGeneratorGUI(tk.Tk):
         self.release_lock("config_lock_path")
 
         try:
-            updated = pull_updates(self.repo_dir)
+            result = perform_update(self.repo_dir)
         except Exception:  # pragma: no cover - defensive logging
-            logger.exception("Unexpected error while pulling updates")
-            updated = False
+            logger.exception("Unexpected error while updating application")
+            result = None
 
-        if not updated:
-            messagebox.showerror("Błąd", "Aktualizacja nie powiodła się")
+        if not result or not result.success:
+            if result is None:
+                message = "Aktualizacja nie powiodła się."
+            else:
+                message = self._build_update_message(result.message, result.details)
+            messagebox.showerror("Błąd", message)
             self._restore_locks_after_failed_update(
                 previous_excel_lock, previous_config_lock
             )
             return
 
         python = sys.executable
-        os.execl(python, python, *sys.argv)
+        try:
+            os.execl(python, python, *sys.argv)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.exception("Failed to restart application after update")
+            messagebox.showerror(
+                "Błąd",
+                self._build_update_message(
+                    "Aktualizacja została pobrana, ale restart aplikacji nie powiódł się.",
+                    (str(exc), "Uruchom aplikację ponownie ręcznie."),
+                ),
+            )
+            self._restore_locks_after_failed_update(
+                previous_excel_lock, previous_config_lock
+            )
 
     def _restore_locks_after_failed_update(
         self, excel_lock_path, config_lock_path
