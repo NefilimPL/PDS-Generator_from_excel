@@ -63,12 +63,24 @@ def blend_pdf_image_target_size(
     compression_percent = normalize_pdf_image_compression_percent(compression_percent)
     original_width = max(1, int(original_width))
     original_height = max(1, int(original_height))
-    target_width = min(original_width, max(1, int(target_width)))
-    target_height = min(original_height, max(1, int(target_height)))
+    target_width = max(1, int(target_width))
+    target_height = max(1, int(target_height))
     if compression_percent == 0:
         return original_width, original_height
 
+    target_ratio = float(target_width) / float(target_height)
+    original_ratio = float(original_width) / float(original_height)
+    if original_ratio > target_ratio:
+        source_width = original_width
+        source_height = max(1, int(round(float(source_width) / target_ratio)))
+    else:
+        source_height = original_height
+        source_width = max(1, int(round(float(source_height) * target_ratio)))
+
+    target_width = min(source_width, target_width)
+    target_height = min(source_height, target_height)
+
     strength = compression_percent / 100.0
-    blended_width = original_width - (original_width - target_width) * strength
-    blended_height = original_height - (original_height - target_height) * strength
+    blended_width = source_width - (source_width - target_width) * strength
+    blended_height = source_height - (source_height - target_height) * strength
     return max(1, int(round(blended_width))), max(1, int(round(blended_height)))
