@@ -151,6 +151,10 @@
 |---|---|
 | Pakiety instalowane automatycznie (lista w `requirements.txt`):<br>• `pandas`<br>• `Pillow`<br>• `reportlab`<br>• `requests`<br>• `openpyxl`<br>• `cryptography` | Packages installed automatically (listed in `requirements.txt`):<br>• `pandas`<br>• `Pillow`<br>• `reportlab`<br>• `requests`<br>• `openpyxl`<br>• `cryptography` |
 
+| Polski | English |
+|---|---|
+| `rlPyCairo` jest opcjonalnym backendem ReportLab do renderowania podglądu. Jeśli nie jest dostępny, aplikacja używa renderowania przez Pillow. | `rlPyCairo` is an optional ReportLab preview rendering backend. If it is unavailable, the application uses Pillow rendering. |
+
 ## Aktualizacje / Updates
 
 | Polski | English |
