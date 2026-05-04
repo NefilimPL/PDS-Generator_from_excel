@@ -1,7 +1,6 @@
 pandas
 Pillow
 reportlab
-rlPyCairo
 requests
 openpyxl
 cryptography
